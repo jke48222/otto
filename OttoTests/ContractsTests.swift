@@ -873,7 +873,7 @@ final class ContractsModelTests: XCTestCase {
         XCTAssertFalse(chat.isStreaming)
         let reply = try XCTUnwrap(chat.messages.last)
         XCTAssertEqual(reply.toolCalls.map(\.id), ["toolu_a", "toolu_b", "toolu_c"], "a repeated start adds nothing")
-        XCTAssertEqual(reply.toolCalls.map(\.status), [.queued, .queued, .queued])
+        XCTAssertEqual(reply.toolCalls.map(\.status), Array(repeating: .skipped("Reply was cut off"), count: 3))
         XCTAssertEqual(reply.toolCalls[0].input, ["title": "Dentist"])
         XCTAssertNil(reply.toolCalls[0].invalidInput)
         XCTAssertEqual(reply.toolCalls[0].presentation, .generic(toolName: "calendar_create_event"))

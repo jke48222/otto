@@ -158,7 +158,19 @@ final class StreamAccumulatorTests: XCTestCase {
     private struct Replay {
         var events: [StreamEvent]
         var accumulator: StreamAccumulator
-        var descriptions: [String] { events.map(describe) }
+        /// Every event except `.usage` (usage has its own tests).
+        var descriptions: [String] {
+            events.filter { event in
+                if case .usage = event { return false }
+                return true
+            }.map(describe)
+        }
+        var usageEvents: [JSONValue] {
+            events.compactMap { event in
+                if case .usage(let usage) = event { return usage }
+                return nil
+            }
+        }
     }
 
     /// Runs a raw SSE transcript through the same splitter → parser → accumulator path the client uses.
@@ -296,8 +308,12 @@ final class StreamAccumulatorTests: XCTestCase {
             "nested": ["n": 3],
         ])
         XCTAssertEqual(block["id"], "toolu_01A")
-        // Client tool calls are not server activity.
-        XCTAssertEqual(run.descriptions, ["messageStart(claude-sonnet-5)"])
+        // Client tool calls are announced as tool_use events, never as server activity.
+        XCTAssertEqual(run.descriptions, [
+            "messageStart(claude-sonnet-5)",
+            "toolUseStarted(toolu_01A|get_weather)",
+            "toolUseReady(toolu_01A|get_weather|" + (block["input"]?.encodedString() ?? "") + "|" + fragments.joined() + ")",
+        ])
     }
 
     func testUnparseableOrEmptyToolInputKeepsStartInput() throws {
@@ -315,7 +331,11 @@ final class StreamAccumulatorTests: XCTestCase {
         let content = run.accumulator.result().content
         XCTAssertEqual(content[0]["input"], ["url": "https://example.com"])
         XCTAssertEqual(content[1]["input"], [:])
-        XCTAssertEqual(run.descriptions, ["toolActivity(srvtoolu_bad|webFetch|Reading example.com|running)"])
+        XCTAssertEqual(run.descriptions, [
+            "toolActivity(srvtoolu_bad|webFetch|Reading example.com|running)",
+            "toolUseStarted(toolu_empty|noop)",
+            "toolUseReady(toolu_empty|noop|{}|)",
+        ])
     }
 
     // MARK: - Server tools
@@ -575,5 +595,113 @@ final class StreamAccumulatorTests: XCTestCase {
     func testTranscriptWithCRLFLineEndingsParsesIdentically() throws {
         let crlf = APIStreamFixtures.webSearchTranscript.replacingOccurrences(of: "\n", with: "\r\n")
         XCTAssertEqual(try replay(crlf).descriptions, try replay(APIStreamFixtures.webSearchTranscript).descriptions)
+    }
+
+    // MARK: - Client tool calls and usage
+
+    func testInvalidPartialToolJSONReportsRawInputAndKeepsStartInput() throws {
+        let raw = #"{"text": "cut off"#
+        let run = try replay(events: [
+            ["type": "message_start", "message": ["model": "claude-opus-5"]],
+            ["type": "content_block_start", "index": 0,
+             "content_block": ["type": "tool_use", "id": "toolu_bad", "name": "echo", "input": [:]]],
+            ["type": "content_block_delta", "index": 0, "delta": ["type": "input_json_delta", "partial_json": .string(raw)]],
+            ["type": "content_block_stop", "index": 0],
+            ["type": "message_delta", "delta": ["stop_reason": "tool_use"]],
+            ["type": "message_stop"],
+        ])
+
+        let ready = run.events.compactMap { event -> (JSONValue?, String)? in
+            if case .toolUseReady(let id, let name, let input, let rawInput) = event, id == "toolu_bad", name == "echo" {
+                return (input, rawInput)
+            }
+            return nil
+        }
+        XCTAssertEqual(ready.count, 1)
+        XCTAssertNil(ready.first?.0)
+        XCTAssertEqual(ready.first?.1, raw)
+        let block = try XCTUnwrap(run.accumulator.result().content.first)
+        XCTAssertEqual(block["input"], [:], "the stored block keeps its start input")
+        XCTAssertEqual(run.accumulator.result().stopReason, "tool_use")
+    }
+
+    func testToolInputThatIsNotAnObjectIsInvalid() throws {
+        let run = try replay(events: [
+            ["type": "content_block_start", "index": 0,
+             "content_block": ["type": "tool_use", "id": "toolu_array", "name": "echo", "input": [:]]],
+            ["type": "content_block_delta", "index": 0, "delta": ["type": "input_json_delta", "partial_json": "[1, 2]"]],
+            ["type": "content_block_stop", "index": 0],
+        ])
+        XCTAssertEqual(run.descriptions, ["toolUseStarted(toolu_array|echo)", "toolUseReady(toolu_array|echo|invalid|[1, 2])"])
+        XCTAssertEqual(run.accumulator.result().content.first?["input"], [:])
+    }
+
+    func testToolUseWithoutIDOrNameIsNotAnnounced() throws {
+        let run = try replay(events: [
+            ["type": "content_block_start", "index": 0,
+             "content_block": ["type": "tool_use", "id": "", "name": "echo", "input": [:]]],
+            ["type": "content_block_stop", "index": 0],
+            ["type": "content_block_start", "index": 1,
+             "content_block": ["type": "tool_use", "id": "toolu_1", "name": "", "input": [:]]],
+            ["type": "content_block_stop", "index": 1],
+        ])
+        XCTAssertEqual(run.descriptions, [])
+        XCTAssertEqual(run.accumulator.result().content.count, 2)
+    }
+
+    func testMixedServerAndClientToolsInOneResponse() throws {
+        let run = try replay(events: [
+            ["type": "message_start", "message": ["model": "claude-opus-5"]],
+            ["type": "content_block_start", "index": 0,
+             "content_block": ["type": "server_tool_use", "id": "srvtoolu_1", "name": "web_search", "input": [:]]],
+            ["type": "content_block_delta", "index": 0,
+             "delta": ["type": "input_json_delta", "partial_json": #"{"query": "dentist hours"}"#]],
+            ["type": "content_block_stop", "index": 0],
+            ["type": "content_block_start", "index": 1,
+             "content_block": ["type": "web_search_tool_result", "tool_use_id": "srvtoolu_1", "content": []]],
+            ["type": "content_block_stop", "index": 1],
+            ["type": "content_block_start", "index": 2,
+             "content_block": ["type": "tool_use", "id": "toolu_cal", "name": "calendar_create_event", "input": [:]]],
+            ["type": "content_block_delta", "index": 2,
+             "delta": ["type": "input_json_delta", "partial_json": #"{"title": "Dentist"}"#]],
+            ["type": "content_block_stop", "index": 2],
+            ["type": "message_stop"],
+        ])
+        XCTAssertEqual(run.descriptions, [
+            "messageStart(claude-opus-5)",
+            "toolActivity(srvtoolu_1|webSearch|Searching \u{201C}dentist hours\u{201D}|running)",
+            "toolActivity(srvtoolu_1|webSearch|Searching \u{201C}dentist hours\u{201D}|done)",
+            "toolUseStarted(toolu_cal|calendar_create_event)",
+            #"toolUseReady(toolu_cal|calendar_create_event|{"title":"Dentist"}|{"title": "Dentist"})"#,
+        ])
+        XCTAssertEqual(run.accumulator.result().content.map { $0.typeName ?? "?" },
+                       ["server_tool_use", "web_search_tool_result", "tool_use"])
+        XCTAssertEqual(run.accumulator.result().content[2]["input"], ["title": "Dentist"])
+    }
+
+    func testUsageEventsFollowMessageStartAndEachMessageDelta() throws {
+        let run = try replay(APIStreamFixtures.webSearchTranscript)
+        XCTAssertEqual(run.usageEvents.count, 2)
+        XCTAssertEqual(run.usageEvents.first?["input_tokens"], 2143)
+        XCTAssertEqual(run.usageEvents.first?["output_tokens"], 4)
+        // Cumulative: the delta's counts merged over message_start's.
+        XCTAssertEqual(run.usageEvents.last?["input_tokens"], 9872)
+        XCTAssertEqual(run.usageEvents.last?["output_tokens"], 412)
+        XCTAssertEqual(run.usageEvents.last?["service_tier"], "standard")
+        XCTAssertEqual(run.usageEvents.last, run.accumulator.result().usage)
+
+        guard case .usage = run.events[1], case .messageStart = run.events[0] else {
+            return XCTFail("usage follows messageStart")
+        }
+    }
+
+    func testMessageDeltaWithoutUsageEmitsNothing() throws {
+        let run = try replay(events: [
+            ["type": "message_start", "message": ["model": "claude-opus-5"]],
+            ["type": "message_delta", "delta": ["stop_reason": "end_turn"]],
+            ["type": "message_stop"],
+        ])
+        XCTAssertTrue(run.usageEvents.isEmpty)
+        XCTAssertEqual(run.events.count, 1)
     }
 }

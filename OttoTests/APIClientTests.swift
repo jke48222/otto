@@ -313,11 +313,11 @@ final class APIClientTests: XCTestCase {
 
         XCTAssertNil(error)
         XCTAssertEqual(events.map(eventLabel), [
-            "messageStart", "thinkingStarted", "thinkingDelta", "thinkingDelta",
+            "messageStart", "usage", "thinkingStarted", "thinkingDelta", "thinkingDelta",
             "toolActivity(running)", "toolActivity(done)", "sources(2)",
             "textDelta(Swift 6.2 focuses on )", "textDelta(approachable concurrency.)", "sources(1)",
             "textDelta( Code now runs on the main actor by default in app targets.)",
-            "completed(end_turn)",
+            "usage", "completed(end_turn)",
         ])
         guard case .completed(let result) = events.last else { return XCTFail("missing .completed") }
         XCTAssertEqual(result.content.count, 5)
@@ -414,7 +414,7 @@ final class APIClientTests: XCTestCase {
         """
         StubURLProtocol.prepare([.init(body: sse(truncated)), .init(body: sse(APIStreamFixtures.webSearchTranscript))])
         let (events, error) = await collect(makeClient().stream(makeRequest(model: .opus5)))
-        XCTAssertEqual(events.map(eventLabel), ["messageStart", "textDelta(Partial)"])
+        XCTAssertEqual(events.map(eventLabel), ["messageStart", "usage", "textDelta(Partial)"])
         XCTAssertEqual(error as? LLMError, .network("The connection closed before the reply finished."))
         XCTAssertEqual(StubURLProtocol.requests.count, 1)
     }
@@ -555,5 +555,108 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(chunks.joined(), text)
         XCTAssertEqual(chunks.first, "Hello  ")
         XCTAssertGreaterThan(chunks.count, 5)
+    }
+
+    // MARK: Client tools and server-tool limits
+
+    private let echoDefinition: JSONValue = [
+        "name": "echo", "description": "Echo.", "eager_input_streaming": true, "strict": true,
+        "input_schema": ["type": "object", "properties": [:], "required": [], "additionalProperties": false],
+    ]
+    private let shortcutDefinition: JSONValue = [
+        "name": "run_shortcut", "description": "Run a shortcut.", "eager_input_streaming": true,
+        "input_schema": ["type": "object", "properties": [:]],
+    ]
+
+    func testClientToolsFollowServerTools() {
+        var request = makeRequest(model: .opus5)
+        request.clientTools = [echoDefinition, shortcutDefinition]
+        let tools = AnthropicClient.makeRequestBody(request)["tools"]?.arrayValue ?? []
+        XCTAssertEqual(tools.map { $0["name"]?.stringValue ?? "?" }, ["web_search", "web_fetch", "echo", "run_shortcut"])
+        XCTAssertEqual(tools[2], echoDefinition)
+        XCTAssertEqual(tools[3], shortcutDefinition)
+    }
+
+    func testToolsKeyIsPresentWhenOnlyClientToolsExist() {
+        for model in ModelOption.allCases {
+            var request = makeRequest(model: model, webAccess: false)
+            request.clientTools = [echoDefinition]
+            XCTAssertEqual(AnthropicClient.makeRequestBody(request)["tools"], [echoDefinition], model.rawValue)
+        }
+    }
+
+    func testToolChoiceIsSentOnlyWithTools() {
+        var withoutTools = makeRequest(model: .sonnet5, webAccess: false)
+        withoutTools.toolChoice = ["type": "none"]
+        let bare = AnthropicClient.makeRequestBody(withoutTools)
+        XCTAssertNil(bare["tools"])
+        XCTAssertNil(bare["tool_choice"])
+
+        var withClientTools = withoutTools
+        withClientTools.clientTools = [echoDefinition]
+        XCTAssertEqual(AnthropicClient.makeRequestBody(withClientTools)["tool_choice"], ["type": "none"])
+
+        var withServerTools = makeRequest(model: .sonnet5)
+        withServerTools.toolChoice = ["type": "none"]
+        XCTAssertEqual(AnthropicClient.makeRequestBody(withServerTools)["tool_choice"], ["type": "none"])
+
+        let noChoice = makeRequest(model: .sonnet5)
+        XCTAssertNil(AnthropicClient.makeRequestBody(noChoice)["tool_choice"])
+    }
+
+    func testServerToolLimitsSetMaxUsesAndOmitSpentTools() {
+        var request = makeRequest(model: .opus5)
+        request.serverToolLimits = ServerToolLimits(webSearch: 3, webFetch: 1)
+        XCTAssertEqual(AnthropicClient.makeRequestBody(request)["tools"], [
+            ["type": "web_search_20260209", "name": "web_search", "max_uses": 3],
+            ["type": "web_fetch_20260209", "name": "web_fetch", "max_uses": 1],
+        ])
+
+        request.serverToolLimits = ServerToolLimits(webSearch: 0, webFetch: 2)
+        XCTAssertEqual(AnthropicClient.makeRequestBody(request)["tools"], [
+            ["type": "web_fetch_20260209", "name": "web_fetch", "max_uses": 2],
+        ])
+
+        request.serverToolLimits = ServerToolLimits(webSearch: 2, webFetch: 0)
+        XCTAssertEqual(AnthropicClient.makeRequestBody(request)["tools"], [
+            ["type": "web_search_20260209", "name": "web_search", "max_uses": 2],
+        ])
+
+        request.serverToolLimits = .none
+        XCTAssertNil(AnthropicClient.makeRequestBody(request)["tools"])
+        request.clientTools = [echoDefinition]
+        request.toolChoice = ["type": "none"]
+        let body = AnthropicClient.makeRequestBody(request)
+        XCTAssertEqual(body["tools"], [echoDefinition], "a paused web leaves only the client tools")
+        XCTAssertEqual(body["tool_choice"], ["type": "none"])
+    }
+
+    func testHaikuHasNoFetchWhateverItsLimit() {
+        var request = makeRequest(model: .haiku45)
+        request.serverToolLimits = ServerToolLimits(webSearch: 4, webFetch: 5)
+        XCTAssertEqual(AnthropicClient.makeRequestBody(request)["tools"], [
+            ["type": "web_search_20250305", "name": "web_search", "max_uses": 4],
+        ])
+    }
+
+    func testServerToolLimitsAreIgnoredWithoutWebAccess() {
+        var request = makeRequest(model: .opus5, webAccess: false)
+        request.serverToolLimits = ServerToolLimits(webSearch: 5, webFetch: 5)
+        XCTAssertNil(AnthropicClient.makeRequestBody(request)["tools"])
+    }
+
+    func testMockClientReportsUsageBeforeCompleting() async {
+        let (events, error) = await collect(MockLLMClient(latencyScale: 0).stream(makeRequest(model: .opus5)))
+        XCTAssertNil(error)
+        XCTAssertEqual(events.suffix(2).map(eventLabel), ["usage", "completed(end_turn)"])
+        guard case .usage(let usage) = events[events.count - 2], case .completed(let result) = events.last else {
+            return XCTFail("expected usage then completed")
+        }
+        XCTAssertEqual(usage, result.usage)
+        XCTAssertNotNil(usage["input_tokens"]?.intValue)
+        XCTAssertNotNil(usage["output_tokens"]?.intValue)
+        XCTAssertEqual(usage["cache_read_input_tokens"], 0)
+        XCTAssertEqual(usage["cache_creation_input_tokens"], 0)
+        XCTAssertEqual(usage["server_tool_use"]?["web_search_requests"], 1)
     }
 }

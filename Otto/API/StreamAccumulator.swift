@@ -3,7 +3,9 @@
 //  Otto
 //
 //  Folds Messages API streaming events into complete content blocks (so they can be sent back to the
-//  API verbatim on later turns) and translates them into the UI-facing `StreamEvent`s.
+//  API verbatim on later turns) and translates them into the UI-facing `StreamEvent`s: text, thinking,
+//  server-tool activity and sources, client `tool_use` calls (with their raw streamed input) and the
+//  cumulative usage of the response.
 //
 //  Blocks are keyed by the event `index`. Growing fields (text, thinking, citations, partial tool
 //  input JSON) live in side buffers while a block is open so appends stay amortized O(1); they are
@@ -59,8 +61,7 @@ struct StreamAccumulator {
         case "content_block_stop":
             return handleBlockStop(event)
         case "message_delta":
-            handleMessageDelta(event)
-            return []
+            return handleMessageDelta(event)
         case "message_stop":
             isComplete = true
             return []
@@ -80,15 +81,20 @@ struct StreamAccumulator {
 
     private mutating func handleMessageStart(_ event: JSONValue) -> [StreamEvent] {
         let message = event["message"]
-        if let usage = message?["usage"] {
-            self.usage = Self.merge(self.usage, with: usage)
+        var events: [StreamEvent] = []
+        if let model = message?["model"]?.stringValue, !model.isEmpty {
+            self.model = model
+            events.append(.messageStart(model: model))
         }
-        guard let model = message?["model"]?.stringValue, !model.isEmpty else { return [] }
-        self.model = model
-        return [.messageStart(model: model)]
+        if let usage = message?["usage"], let merged = Self.merge(self.usage, with: usage) {
+            self.usage = merged
+            events.append(.usage(merged))
+        }
+        return events
     }
 
-    private mutating func handleMessageDelta(_ event: JSONValue) {
+    /// Records the stop reason and details; reports the cumulative usage when the event carries some.
+    private mutating func handleMessageDelta(_ event: JSONValue) -> [StreamEvent] {
         if let delta = event["delta"] {
             if let reason = delta["stop_reason"]?.stringValue {
                 stopReason = reason
@@ -98,9 +104,9 @@ struct StreamAccumulator {
                 stopDetails = details == .null ? Optional.none : Optional.some(details)
             }
         }
-        if let usage = event["usage"] {
-            self.usage = Self.merge(self.usage, with: usage)
-        }
+        guard let usage = event["usage"], let merged = Self.merge(self.usage, with: usage) else { return [] }
+        self.usage = merged
+        return [.usage(merged)]
     }
 
     // MARK: - Content block events
@@ -129,6 +135,12 @@ struct StreamAccumulator {
         case "server_tool_use":
             // Announced on content_block_stop, once the streamed input JSON is complete.
             return []
+
+        case "tool_use":
+            // A client tool call: the loop shows a row while its input streams. Never a server activity.
+            guard let id = block["id"]?.stringValue, !id.isEmpty,
+                  let name = block["name"]?.stringValue, !name.isEmpty else { return [] }
+            return [.toolUseStarted(id: id, name: name)]
 
         case "web_search_tool_result":
             return webSearchResultEvents(block)
@@ -201,13 +213,33 @@ struct StreamAccumulator {
 
     private mutating func handleBlockStop(_ event: JSONValue) -> [StreamEvent] {
         guard let index = event["index"]?.intValue, let block = materializedBlock(at: index) else { return [] }
+        // Read before the buffers are cleared: eager input streaming can end on cut-off or invalid JSON,
+        // and the loop echoes the raw text back to Claude when it does.
+        let rawInput = partialJSON[index] ?? ""
+        let startInput = blocks[index]?["input"]
         blocks[index] = block
         clearBuffers(at: index)
 
-        guard block.typeName == "server_tool_use", let id = block["id"]?.stringValue else { return [] }
-        let activity = Self.makeActivity(id: id, name: block["name"]?.stringValue, input: block["input"])
-        activities[id] = activity
-        return [.toolActivity(activity)]
+        switch block.typeName {
+        case "server_tool_use":
+            guard let id = block["id"]?.stringValue else { return [] }
+            let activity = Self.makeActivity(id: id, name: block["name"]?.stringValue, input: block["input"])
+            activities[id] = activity
+            return [.toolActivity(activity)]
+        case "tool_use":
+            guard let id = block["id"]?.stringValue, !id.isEmpty,
+                  let name = block["name"]?.stringValue, !name.isEmpty else { return [] }
+            let input: JSONValue?
+            if rawInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                // Nothing streamed: the start input is the whole input (normally `{}`).
+                if case .object? = startInput { input = startInput } else { input = nil }
+            } else {
+                input = Self.parseToolInput(rawInput)
+            }
+            return [.toolUseReady(id: id, name: name, input: input, rawInput: rawInput)]
+        default:
+            return []
+        }
     }
 
     // MARK: - Server tool results
