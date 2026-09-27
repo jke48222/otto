@@ -47,13 +47,18 @@ enum Theme {
     static let codeFill = rgb(0x0E0E0F)
 
     // Text
+    // Every text color passes WCAG AA (4.5:1) on the panel, the code well and the lightest flat
+    // surface, clayRaised (scripts: contrast_check.py --tokens Otto/UI/Theme.swift --matrix).
+    // Tertiary text carries model names, code languages and the Copy row, so it is readable text,
+    // not decoration. Measured on panel / clayRaised: primary 17.3 / 14.4, secondary 8.06 / 6.72,
+    // muted 6.29 / 5.24, tertiary 5.66 / 4.72. The steps keep primary > secondary > muted > tertiary.
     static let textPrimary = rgb(0xEDEDED)
-    static let textSecondary = rgb(0x9A9A9F)
-    static let textTertiary = rgb(0x6B6B70)
+    static let textSecondary = rgb(0xA3A3A8)
+    static let textTertiary = rgb(0x87878C)
     /// Assistant reply body text: a touch softer than `textPrimary`.
     static let textBody = rgb(0xE2E2E4)
     /// Tool activity and thought-process rows.
-    static let textMuted = rgb(0x7A7A7F)
+    static let textMuted = rgb(0x8F8F94)
     /// Chip labels: a softer white than body text, so chips stay quieter than the composer.
     static let chipLabel = Color.white.opacity(0.82)
     /// Source pill labels: secondary to the reply body they cite.
