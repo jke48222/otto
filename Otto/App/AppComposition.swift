@@ -1,0 +1,738 @@
+//
+//  AppComposition.swift
+//  Otto
+//
+//  Builds Otto's whole object graph (SPEC-v2 §2.2) and owns it: one PermissionsCenter shared by every
+//  consumer, the tool catalog and executor, the chat session, history, glance, media, calendar, shelf,
+//  context and voice subsystems, the notch view model, its windows, the status item, the global shortcut
+//  with its tap/hold routing, the Services provider and the notch-neighbor monitor. Three recipes:
+//  `live()` for the app, `selfTest(directory:)` for --selftest, and `inert()` for tests, which touches
+//  neither the system nor the user's data.
+//
+
+import AppKit
+import Carbon.HIToolbox
+import Foundation
+import Observation
+import os
+
+@MainActor
+final class AppComposition {
+    enum Kind: Equatable, Sendable {
+        /// The app (with `--demo`: MockLLMClient, demo action services, demo media, in-memory side stores).
+        case live
+        /// `--selftest`: the live stack on MockLLMClient, demo services, a mutable permission probe, temp stores.
+        case selfTest
+        /// Tests: in-memory stores, nothing started, no windows, no hot key, no notifications, no Services.
+        case inert
+    }
+
+    /// Where the graph keeps its files; nil = in memory.
+    struct Storage: Equatable, Sendable {
+        /// The folder that holds Conversations.noindex and Attachments.noindex.
+        var historyRoot: URL?
+        var shelfDirectory: URL?
+        var ledgerFile: URL?
+        var actionLogDirectory: URL?
+
+        static let inMemory = Storage(historyRoot: nil, shelfDirectory: nil, ledgerFile: nil, actionLogDirectory: nil)
+    }
+
+    // MARK: Hot key routing (§6.5)
+
+    /// What the global shortcut sees when it is tapped.
+    struct HotKeyState: Equatable, Sendable {
+        var isSpeaking: Bool
+        /// A toggle-mode voice session is starting or listening.
+        var isListeningInToggleMode: Bool
+        var isPinned: Bool
+        var isOpen: Bool
+        var isEngaged: Bool
+    }
+
+    /// What one tap of the global shortcut does, first match wins.
+    enum HotKeyTapAction: Equatable, Sendable {
+        /// Speaking → stop the speech only.
+        case stopSpeaking
+        /// Listening in toggle mode → finish and send.
+        case finishVoiceAndSend
+        /// Pinned and engaged → hand the keyboard back without closing.
+        case disengage
+        /// Pinned and not engaged → take the keyboard.
+        case focus
+        /// Open and engaged → close (a user close).
+        case close
+        /// Otherwise → open with focus.
+        case open
+    }
+
+    /// What the global shortcut drives: the notch view model in the app, a fake in tests.
+    @MainActor protocol HotKeyTarget: AnyObject {
+        var hotKeyState: HotKeyState { get }
+        func open(reason: NotchViewModel.OpenReason, focus: Bool)
+        func close(_ reason: CloseReason)
+        func disengage()
+        func stopSpeaking()
+        func beginVoice(_ mode: VoiceMode)
+        func finishVoice(send: Bool)
+    }
+
+    // MARK: Graph
+
+    let kind: Kind
+    let storage: Storage
+    let settings: AppSettings
+    /// The one permissions center: every consumer gets this instance (there is no `PermissionsCenter.shared`).
+    let permissions: PermissionsCenter
+    /// Self-test only: the probe behind `permissions`, so a step can change a status while a flow runs. Every
+    /// status starts `.granted`; a step that needs a refusal sets it first.
+    let permissionProbe: MutablePermissionProbe?
+    let approvals: ApprovalStore
+    let actionLog: ActionLog
+    let actionServices: ActionServices
+    let tools: ToolRegistry
+    let executor: ToolExecutor
+    let chat: ChatSession
+    let ledger: UsageLedger
+    let history: HistoryController
+    let recents: RecentsState
+    /// nil in the self-test and inert graphs.
+    let notifications: NotificationPresenter?
+    /// nil in the self-test and inert graphs.
+    let attention: AttentionMonitor?
+    let glance: GlanceController
+    let nowPlaying: NowPlayingMonitor
+    let calendar: CalendarGlance
+    let shelf: ShelfController
+    let suggestions: ContextSuggestions
+    let inserter: InsertCoordinator
+    let voice: VoiceController
+    let viewModel: NotchViewModel
+    let settingsWindowController: SettingsWindowController
+    /// nil in the inert graph (no windows).
+    let notchWindowController: NotchWindowController?
+    /// Live only.
+    let neighbors: NotchNeighborMonitor?
+    let hotKey: HotKeyManager
+    let shortcutRouter: GlobalShortcutRouter
+    /// Created by `start()` in the live app.
+    private(set) var statusItemController: StatusItemController?
+    /// Live only; installed as `NSApp.servicesProvider` by `start()`.
+    let servicesProvider: ServicesProvider?
+
+    private(set) var isStarted = false
+    private(set) var isTerminated = false
+
+    /// URLs the self-test and inert graphs were asked to open (System Settings deep links, Dictation settings,
+    /// Settings links), in order. Always empty in the live app, which opens them.
+    var openedExternalURLs: [URL] { externalURLs.urls }
+
+    /// The transcript the self-test's scripted speech engine produces.
+    static let selfTestVoiceTranscript = "What's the weather in Lisbon"
+
+    private let hotKeyTarget: HotKeyTarget
+    private let externalURLs: ExternalURLRecorder
+    /// The throwaway UserDefaults suite of a self-test or inert graph, removed by `terminate()`.
+    private let throwawaySuiteName: String?
+    private var cancellations: [() -> Void] = []
+    /// The last hot-key error this composition put in `settings.lastSettingsError`, so it clears only its own.
+    private var hotKeyErrorMessage: String?
+
+    private static let logger = Logger(subsystem: "com.jalenedusei.otto", category: "App")
+
+    // MARK: - Recipes
+
+    /// The app. `LaunchOptions.demo` swaps in MockLLMClient, `ActionServices.demo` and `DemoMediaScripting`, and
+    /// keeps the Shelf, the usage ledger and the activity log in memory (History uses the separate Demo folder).
+    /// Nothing is registered or started until `start()`.
+    static func live() -> AppComposition {
+        let settings = AppSettings.shared
+        let isDemo = LaunchOptions.demo
+        return AppComposition(
+            kind: .live,
+            settings: settings,
+            defaults: .standard,
+            throwawaySuiteName: nil,
+            probe: SystemPermissionProbe(),
+            permissionProbe: nil,
+            storage: liveStorage(isDemo: isDemo),
+            isDemo: isDemo,
+            makeClient: {
+                if LaunchOptions.demo { return MockLLMClient() }
+                guard let apiKey = settings.resolvedAPIKey else { throw LLMError.missingAPIKey }
+                return AnthropicClient(apiKey: apiKey)
+            }
+        )
+    }
+
+    /// `--selftest`: the live stack on `MockLLMClient(latencyScale: 0.2)`, demo action and media services, a
+    /// `MutablePermissionProbe` (every status `.granted` until a step changes it), History under
+    /// `<directory>/History`, everything else in memory, preferences in a throwaway suite, and nothing opened
+    /// outside Otto (see `openedExternalURLs`). No status item, hot key, notifications or Services.
+    static func selfTest(directory: URL) -> AppComposition {
+        let (defaults, suiteName) = makeThrowawayDefaults()
+        let settings = AppSettings(defaults: defaults, usesKeychain: false)
+        prepareIsolatedSettings(settings)
+        // The self-test checks History on its own files; the first-run card would cover its dock checks.
+        settings.history.noticeAcknowledged = true
+        let probe = MutablePermissionProbe([:], default: .granted)
+        var storage = Storage.inMemory
+        storage.historyRoot = directory.appendingPathComponent("History", isDirectory: true)
+        return AppComposition(
+            kind: .selfTest,
+            settings: settings,
+            defaults: defaults,
+            throwawaySuiteName: suiteName,
+            probe: probe,
+            permissionProbe: probe,
+            storage: storage,
+            isDemo: true,
+            makeClient: { MockLLMClient(latencyScale: 0.2) }
+        )
+    }
+
+    /// Tests: the whole graph with in-memory stores and throwaway preferences. Builds no windows, registers no
+    /// hot key, installs no Services provider, never creates a notification center, writes no file outside the
+    /// temporary directory, and never starts a monitor (`start()` does nothing for it).
+    static func inert(settings: AppSettings? = nil) -> AppComposition {
+        let resolved: AppSettings
+        let defaults: UserDefaults
+        let suiteName: String?
+        if let settings {
+            resolved = settings
+            (defaults, suiteName) = makeThrowawayDefaults()
+        } else {
+            let (throwaway, name) = makeThrowawayDefaults()
+            resolved = AppSettings(defaults: throwaway, usesKeychain: false)
+            prepareIsolatedSettings(resolved)
+            defaults = throwaway
+            suiteName = name
+        }
+        return AppComposition(
+            kind: .inert,
+            settings: resolved,
+            defaults: defaults,
+            throwawaySuiteName: suiteName,
+            probe: StaticPermissionProbe([:], default: .notDetermined),
+            permissionProbe: nil,
+            storage: .inMemory,
+            isDemo: true,
+            makeClient: { MockLLMClient(latencyScale: 0) }
+        )
+    }
+
+    private init(kind: Kind, settings: AppSettings, defaults: UserDefaults, throwawaySuiteName: String?,
+                 probe: PermissionProbe, permissionProbe: MutablePermissionProbe?, storage: Storage, isDemo: Bool,
+                 makeClient: @escaping @MainActor () throws -> LLMClient) {
+        self.kind = kind
+        self.storage = storage
+        self.settings = settings
+        self.permissionProbe = permissionProbe
+        self.throwawaySuiteName = throwawaySuiteName
+        let isLive = kind == .live
+        let externalURLs = ExternalURLRecorder()
+        self.externalURLs = externalURLs
+
+        // Permissions, approvals and the activity log.
+        let openURL: @MainActor (URL) -> Void
+        let relauncher: AppRelaunching
+        if isLive {
+            openURL = { url in NSWorkspace.shared.open(url) }
+            relauncher = AppRelauncher()
+        } else {
+            openURL = { url in externalURLs.record(url) }
+            relauncher = DetachedRelauncher()
+        }
+        let permissions = PermissionsCenter(probe: probe, defaults: defaults, openURL: openURL, relauncher: relauncher)
+        self.permissions = permissions
+        let approvals = ApprovalStore(defaults: defaults)
+        self.approvals = approvals
+        let actionLog = ActionLog(directory: storage.actionLogDirectory,
+                                  maxAge: Self.actionLogMaxAge(for: settings.history.retention))
+        self.actionLog = actionLog
+
+        // Tools: the eight action tools on live or demo services, plus media control on the Now Playing monitor.
+        let mediaScripting: MediaScripting = isDemo ? DemoMediaScripting() : LiveMediaScripting()
+        let nowPlaying = NowPlayingMonitor(settings: settings, scripting: mediaScripting)
+        self.nowPlaying = nowPlaying
+        let actionServices = isDemo ? ActionServices.demo : ActionServices.live(processRunner: ProcessRunner())
+        self.actionServices = actionServices
+        let tools = ToolCatalog.makeRegistry(settings: settings, services: actionServices,
+                                             extraTools: [MediaControlTool(monitor: nowPlaying)])
+        self.tools = tools
+        let executor = ToolExecutor(permissions: permissions, approvals: approvals, log: actionLog,
+                                    logFullScripts: { [settings] in settings.actions.logFullScripts })
+        self.executor = executor
+
+        // The conversation, its usage and its history.
+        let chat = ChatSession(settings: settings, makeClient: makeClient, tools: tools, executor: executor,
+                               permissions: permissions, isDemo: isDemo)
+        self.chat = chat
+        let ledger = UsageLedger(fileURL: storage.ledgerFile)
+        self.ledger = ledger
+        chat.usageRecorder = ledger
+        let conversationStore = ConversationStore(location: storage.historyRoot.map { .directory($0) } ?? .inMemory)
+        let history = HistoryController(settings: settings, chat: chat, store: conversationStore)
+        self.history = history
+        let recents = RecentsState(history: history)
+        self.recents = recents
+
+        // Glance, media and calendar.
+        let notifications = isLive ? NotificationPresenter() : nil
+        self.notifications = notifications
+        let attention = isLive ? AttentionMonitor() : nil
+        self.attention = attention
+        let glance = kind == .inert
+            ? GlanceController.inert(settings: settings, chat: chat)
+            : GlanceController(settings: settings, chat: chat, notifications: notifications, attention: attention)
+        self.glance = glance
+        let calendarSource: CalendarEventSource = isLive ? EventKitCalendarSource() : InertCalendarSource()
+        let calendar = CalendarGlance(settings: settings, store: calendarSource)
+        self.calendar = calendar
+
+        // Shelf, context in and out.
+        let shelf = ShelfController(store: ShelfStore(directory: storage.shelfDirectory), settings: settings)
+        self.shelf = shelf
+        let suggestions = isLive
+            ? ContextSuggestions(settings: settings, permissions: permissions)
+            : ContextSuggestions(settings: settings, permissions: permissions,
+                                 reader: InertSelectionReader(), capture: InertWindowCapture())
+        self.suggestions = suggestions
+        let insertEnvironment = LiveInsertEnvironment(permissions: permissions)
+        let answerInserter = isLive
+            ? AnswerInserter(environment: insertEnvironment)
+            // A private pasteboard and a key sender that never posts: nothing reaches the user's clipboard or apps.
+            : AnswerInserter(pasteboard: NSPasteboard.withUniqueName(), keys: DetachedKeySender(),
+                             environment: insertEnvironment)
+        let inserter = InsertCoordinator(inserter: answerInserter, settings: settings)
+        self.inserter = inserter
+
+        // Voice.
+        let voice: VoiceController
+        switch kind {
+        case .live:
+            voice = VoiceController(settings: settings)
+        case .selfTest:
+            voice = VoiceController(settings: settings,
+                                    makeEngine: { ScriptedSpeechEngine(script: Self.selfTestVoiceScript) },
+                                    speaker: ReplySpeaker(settings: settings, volume: 0),
+                                    interruptions: InertVoiceInterruptions(),
+                                    holdProbe: { _ in nil })
+        case .inert:
+            voice = VoiceController(settings: settings,
+                                    makeEngine: { ScriptedSpeechEngine(script: []) },
+                                    interruptions: InertVoiceInterruptions(),
+                                    holdProbe: { _ in nil })
+        }
+        self.voice = voice
+
+        // The notch.
+        let services = NotchServices(permissions: permissions, approvals: approvals, voice: voice, history: history,
+                                     recents: recents, glance: glance, ledger: ledger, nowPlaying: nowPlaying,
+                                     calendar: calendar, shelf: shelf, suggestions: suggestions, inserter: inserter,
+                                     notifications: notifications)
+        let viewModel = NotchViewModel(settings: settings, chat: chat, services: services)
+        self.viewModel = viewModel
+        if !isLive {
+            viewModel.openExternalURL = { externalURLs.record($0) }
+        }
+
+        // Coexistence with other notch apps (live only: the card must not appear in tests or the self-test).
+        let neighbors = isLive
+            ? NotchNeighborMonitor(onChange: { [weak viewModel] running in
+                viewModel?.presentNeighborCardIfNeeded(running)
+            })
+            : nil
+        self.neighbors = neighbors
+
+        // Settings.
+        let settingsServices = SettingsServices(
+            permissions: permissions,
+            approvals: approvals,
+            actionLog: actionLog,
+            ledger: ledger,
+            history: history,
+            shelf: shelf,
+            calendar: calendar,
+            nowPlaying: nowPlaying,
+            neighbors: neighbors,
+            speaker: voice.speaker,
+            processRunner: isLive ? ProcessRunner() : nil
+        )
+        let settingsWindowController = SettingsWindowController(settings: settings, services: settingsServices)
+        if !isLive {
+            settingsWindowController.externalOpener = { externalURLs.record($0) }
+        }
+        self.settingsWindowController = settingsWindowController
+
+        self.notchWindowController = kind == .inert ? nil : NotchWindowController(viewModel: viewModel, settings: settings)
+        self.servicesProvider = isLive ? ServicesProvider(handler: viewModel) : nil
+
+        // The global shortcut: Carbon only in the live app; the other graphs never register anything.
+        let hotKeyTarget = ViewModelHotKeyTarget(viewModel: viewModel)
+        self.hotKeyTarget = hotKeyTarget
+        let router = Self.makeShortcutRouter(target: hotKeyTarget)
+        self.shortcutRouter = router
+        self.hotKey = HotKeyManager(
+            combo: settings.shortcuts.hotKey,
+            onPress: { [weak router] in router?.pressed() },
+            onRelease: { [weak router] in router?.released() },
+            registrar: isLive ? CarbonHotKeyRegistrar() : DetachedHotKeyRegistrar()
+        )
+
+        wireGraph()
+    }
+
+    /// Hooks every graph gets (none of them touches the system).
+    private func wireGraph() {
+        let settings = settings
+        let router = shortcutRouter
+        router.holdEnabled = Self.holdEnabled(settings)
+        let holdLoop = ObservationLoop(read: { Self.holdEnabled(settings) }) { [weak router] enabled in
+            router?.holdEnabled = enabled
+        }
+        cancellations.append { holdLoop.cancel() }
+
+        let actionLog = actionLog
+        let retentionLoop = ObservationLoop(read: { settings.history.retention }) { retention in
+            Task { await actionLog.setMaxAge(Self.actionLogMaxAge(for: retention)) }
+        }
+        cancellations.append { retentionLoop.cancel() }
+
+        Self.wireDataRemoval(history: history, notifications: notifications, actionLog: actionLog)
+
+        guard kind != .inert else { return }
+        let settingsWindowController = settingsWindowController
+        viewModel.onOpenSettingsTab = { [weak settingsWindowController] tab, anchor in
+            settingsWindowController?.show(tab: tab, anchor: anchor)
+        }
+        viewModel.onOpenSettings = { [weak settingsWindowController] in
+            settingsWindowController?.show()
+        }
+    }
+
+    // MARK: - Lifecycle
+
+    /// Shows the notch and starts what the graph runs. Live: the status item, the global shortcut (unless
+    /// `registeringHotKey` is false — a second `--demo` instance), the Services provider, notifications and the
+    /// attention monitor (through the glance controller), Now Playing, the calendar chip, History, the Shelf and
+    /// the activity log's launch prune. Self-test: the window, the glance phases and History on its temp folder.
+    /// Inert graphs never start. Idempotent.
+    func start(registeringHotKey: Bool = true) {
+        guard kind != .inert, !isStarted, !isTerminated else { return }
+        isStarted = true
+        notchWindowController?.showWindow()
+        glance.start()
+        let history = history
+        Task { await history.start() }
+        guard kind == .live else { return }
+
+        statusItemController = StatusItemController(viewModel: viewModel, settings: settings)
+        if registeringHotKey {
+            installHotKeyRegistration()
+        }
+        if let servicesProvider {
+            NSApp.servicesProvider = servicesProvider
+            NSUpdateDynamicServices()
+        }
+        nowPlaying.start()
+        calendar.start()
+        let store = shelf.store
+        Task { await store.load() }
+        let actionLog = actionLog
+        Task { await actionLog.prune(now: Date()) }
+        Self.logger.info("Otto started (demo: \(LaunchOptions.demo, privacy: .public))")
+    }
+
+    /// applicationWillTerminate: stops listening and speaking, cancels the reply (and its tool calls), flushes
+    /// History, the Shelf and the usage ledger, stops the monitors and unregisters the global shortcut. A
+    /// self-test or inert graph also removes its throwaway preferences. Idempotent.
+    func terminate() {
+        guard !isTerminated else { return }
+        isTerminated = true
+        cancellations.forEach { $0() }
+        cancellations.removeAll()
+        settings.shortcuts.registrar = nil
+        hotKey.unregister()
+        voice.cancel()
+        voice.stopSpeaking()
+        chat.cancel()
+        history.flush()
+        shelf.store.flush()
+        ledger.flush()
+        nowPlaying.stop()
+        calendar.stop()
+        if let throwawaySuiteName {
+            UserDefaults.standard.removePersistentDomain(forName: throwawaySuiteName)
+        }
+    }
+
+    /// One tap of the global shortcut (§6.5).
+    func handleHotKeyTap() {
+        Self.performTap(on: hotKeyTarget)
+    }
+
+    // MARK: - Hot key (§6.5)
+
+    /// Pure: the §6.5 tap table.
+    static func tapAction(for state: HotKeyState) -> HotKeyTapAction {
+        if state.isSpeaking { return .stopSpeaking }
+        if state.isListeningInToggleMode { return .finishVoiceAndSend }
+        if state.isPinned { return state.isEngaged ? .disengage : .focus }
+        if state.isOpen && state.isEngaged { return .close }
+        return .open
+    }
+
+    static func performTap(on target: HotKeyTarget) {
+        switch tapAction(for: target.hotKeyState) {
+        case .stopSpeaking: target.stopSpeaking()
+        case .finishVoiceAndSend: target.finishVoice(send: true)
+        case .disengage: target.disengage()
+        case .focus, .open: target.open(reason: .hotkey, focus: true)
+        case .close: target.close(.user)
+        }
+    }
+
+    /// A tap runs the table above; a hold (≥ 300 ms, only while `holdEnabled`) talks: it starts listening in hold
+    /// mode and its release finishes and sends. With hold disabled every press is a tap at once.
+    static func makeShortcutRouter(target: HotKeyTarget) -> GlobalShortcutRouter {
+        GlobalShortcutRouter(
+            onTap: { [weak target] in
+                guard let target else { return }
+                performTap(on: target)
+            },
+            onHoldBegan: { [weak target] in target?.beginVoice(.hold(.shortcut)) },
+            onHoldEnded: { [weak target] in target?.finishVoice(send: true) }
+        )
+    }
+
+    /// Holding the shortcut talks only while voice is on and "hold to talk" is chosen; otherwise a hold is a tap.
+    static func holdEnabled(_ settings: AppSettings) -> Bool {
+        settings.voice.enabled && settings.voice.holdShortcutToTalk
+    }
+
+    static func hotKeyInUseMessage(_ combo: HotKeyCombo) -> String {
+        "\(combo.displayString) is already used by another app. Quit that app or change its shortcut, or pick a different one in Settings → General."
+    }
+
+    static func hotKeyFailedMessage(_ combo: HotKeyCombo) -> String {
+        "Couldn't register the \(combo.displayString) shortcut."
+    }
+
+    /// Registers per `hotKeyEnabled`, unregisters while the recorder records, and lets Settings swap the combo.
+    private func installHotKeyRegistration() {
+        let settings = settings
+        let hotKey = hotKey
+        settings.shortcuts.registrar = { [weak self] combo in
+            switch hotKey.update(to: combo) {
+            case .success:
+                settings.shortcuts.status = .registered
+                self?.clearHotKeyError()
+                return .applied
+            case .failure(.alreadyInUse):
+                return .rejected(HotKeyProblem.inUse(combo.displayString).errorDescription ?? Self.hotKeyInUseMessage(combo))
+            case .failure(.failed(let status)):
+                return .rejected(HotKeyProblem.failed(status).errorDescription ?? Self.hotKeyFailedMessage(combo))
+            }
+        }
+        applyHotKeyRegistration()
+        let enabledLoop = ObservationLoop(read: { settings.hotKeyEnabled }) { [weak self] _ in
+            self?.applyHotKeyRegistration()
+        }
+        let recordingLoop = ObservationLoop(read: { settings.shortcuts.isRecording }) { [weak self] _ in
+            self?.applyHotKeyRegistration()
+        }
+        cancellations.append { enabledLoop.cancel() }
+        cancellations.append { recordingLoop.cancel() }
+    }
+
+    private func applyHotKeyRegistration() {
+        guard !isTerminated else { return }
+        if settings.shortcuts.isRecording {
+            // Pressing the current combo while recording must record it, not toggle the notch.
+            hotKey.unregister()
+            return
+        }
+        guard settings.hotKeyEnabled else {
+            hotKey.unregister()
+            settings.shortcuts.status = .disabled
+            clearHotKeyError()
+            return
+        }
+        let combo = settings.shortcuts.hotKey
+        let outcome: Result<Void, HotKeyManager.RegistrationError>
+        if hotKey.combo != combo {
+            // Set without the registrar (it keeps them equal): swap to the stored combo.
+            outcome = hotKey.update(to: combo)
+        } else if hotKey.register() {
+            outcome = .success(())
+        } else {
+            outcome = .failure(hotKey.lastRegistrationError ?? .failed(OSStatus(eventInternalErr)))
+        }
+        let message: String
+        switch outcome {
+        case .success:
+            settings.shortcuts.status = .registered
+            clearHotKeyError()
+            return
+        case .failure(.alreadyInUse):
+            settings.shortcuts.status = .inUse
+            message = Self.hotKeyInUseMessage(combo)
+        case .failure(.failed(let status)):
+            settings.shortcuts.status = .failed(status)
+            message = Self.hotKeyFailedMessage(combo)
+        }
+        hotKeyErrorMessage = message
+        settings.lastSettingsError = message
+    }
+
+    /// Clears a stale registration error once the shortcut works or is no longer wanted.
+    private func clearHotKeyError() {
+        guard let hotKeyErrorMessage else { return }
+        if settings.lastSettingsError == hotKeyErrorMessage {
+            settings.lastSettingsError = nil
+        }
+        self.hotKeyErrorMessage = nil
+    }
+
+    // MARK: - History removals (§6.12)
+
+    /// Every removal clears Otto's delivered and pending notifications (they may name a deleted conversation);
+    /// Delete All History and turning History off also clear the actions activity log.
+    static func wireDataRemoval(history: HistoryController, notifications: NotificationPresenter?,
+                                actionLog: ActionLog?) {
+        history.onDataRemoved = { [weak notifications] removal in
+            notifications?.clearDelivered()
+            guard removal == .all, let actionLog else { return }
+            Task {
+                do {
+                    try await actionLog.clear()
+                    logger.info("Cleared the actions activity log with History")
+                } catch {
+                    logger.error("Couldn't clear the actions activity log: \(String(describing: error), privacy: .private)")
+                }
+            }
+        }
+    }
+
+    /// The activity log keeps entries as long as History keeps conversations; "Forever" caps it at 90 days.
+    static func actionLogMaxAge(for retention: HistoryRetention) -> TimeInterval {
+        retention.interval ?? 90 * 86_400
+    }
+
+    // MARK: - Recipe helpers
+
+    /// Otto's data folders, or memory for any that can't be used safely. `--demo` keeps the Shelf, the ledger and
+    /// the activity log in memory; History uses the Demo root.
+    private static func liveStorage(isDemo: Bool) -> Storage {
+        var storage = Storage.inMemory
+        do {
+            storage.historyRoot = try AppSupport.rootURL()
+        } catch {
+            logger.fault("History stays in memory: \(String(describing: error), privacy: .private)")
+        }
+        guard !isDemo else { return storage }
+        do {
+            storage.shelfDirectory = try AppSupport.directory(.shelf)
+        } catch {
+            logger.fault("The Shelf stays in memory: \(String(describing: error), privacy: .private)")
+        }
+        storage.ledgerFile = UsageLedger.defaultFileURL()
+        do {
+            storage.actionLogDirectory = try AppSupport.directory(.logs)
+        } catch {
+            logger.fault("The activity log stays in memory: \(String(describing: error), privacy: .private)")
+        }
+        return storage
+    }
+
+    /// A UserDefaults suite of its own. UserDefaults refuses only the app's own domain and the global domain as a
+    /// suite name, so a fresh UUID-based name always works.
+    private static func makeThrowawayDefaults() -> (UserDefaults, String) {
+        let suiteName = "com.jalenedusei.otto.composition.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            preconditionFailure("UserDefaults refused the suite \(suiteName)")
+        }
+        defaults.removePersistentDomain(forName: suiteName)
+        return (defaults, suiteName)
+    }
+
+    /// No browser-tab lookups (and so no Automation prompt) in graphs that must not touch other apps.
+    private static func prepareIsolatedSettings(_ settings: AppSettings) {
+        settings.suggestBrowserTab = false
+        settings.autoAttachBrowserTab = false
+    }
+
+    private static let selfTestVoiceScript: [(delay: Duration, text: String, level: Float)] = [
+        (.milliseconds(150), "What's the", 0.35),
+        (.milliseconds(150), "What's the weather", 0.6),
+        (.milliseconds(150), selfTestVoiceTranscript, 0.45),
+    ]
+}
+
+// MARK: - Private helpers
+
+/// The notch view model as the global shortcut's target.
+@MainActor private final class ViewModelHotKeyTarget: AppComposition.HotKeyTarget {
+    private weak var viewModel: NotchViewModel?
+
+    init(viewModel: NotchViewModel) {
+        self.viewModel = viewModel
+    }
+
+    var hotKeyState: AppComposition.HotKeyState {
+        guard let viewModel else {
+            return AppComposition.HotKeyState(isSpeaking: false, isListeningInToggleMode: false, isPinned: false,
+                                              isOpen: false, isEngaged: false)
+        }
+        let voice = viewModel.voice
+        var isToggleSession = false
+        if case .toggle? = voice.mode { isToggleSession = true }
+        let isListening = voice.phase == .preparing || voice.phase == .listening
+        return AppComposition.HotKeyState(isSpeaking: voice.isSpeaking,
+                                          isListeningInToggleMode: isToggleSession && isListening,
+                                          isPinned: viewModel.isPinned,
+                                          isOpen: viewModel.isOpen,
+                                          isEngaged: viewModel.isEngaged)
+    }
+
+    func open(reason: NotchViewModel.OpenReason, focus: Bool) { viewModel?.open(reason: reason, focus: focus) }
+    func close(_ reason: CloseReason) { viewModel?.close(reason) }
+    func disengage() { viewModel?.disengage() }
+    func stopSpeaking() { viewModel?.stopSpeaking() }
+    func beginVoice(_ mode: VoiceMode) { viewModel?.beginVoice(mode) }
+    func finishVoice(send: Bool) { viewModel?.finishVoice(send: send) }
+}
+
+/// Records the URLs a self-test or inert graph was asked to open instead of opening them.
+@MainActor private final class ExternalURLRecorder {
+    private(set) var urls: [URL] = []
+
+    func record(_ url: URL) {
+        urls.append(url)
+    }
+}
+
+/// The hot-key registrar of graphs that must never own a system-wide shortcut: registration always "succeeds"
+/// and nothing reaches Carbon, so presses arrive only through `HotKeyManager.handle(_:)`.
+@MainActor private final class DetachedHotKeyRegistrar: HotKeyRegistering {
+    func register(_ combo: HotKeyCombo, handler: @escaping @MainActor (HotKeyEventKind) -> Void) -> OSStatus {
+        noErr
+    }
+
+    func unregister() {}
+}
+
+/// "Quit & Reopen Otto" in a self-test or inert graph: nothing to relaunch.
+private struct DetachedRelauncher: AppRelaunching {
+    func relaunch() {}
+}
+
+/// A key sender that never posts an event (self-test and inert graphs paste nowhere).
+private final class DetachedKeySender: KeySending {
+    var isSecureInputEnabled: Bool { false }
+
+    func areModifiersDown() -> Bool { false }
+
+    func postPaste() throws {}
+}
