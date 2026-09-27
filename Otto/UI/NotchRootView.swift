@@ -364,50 +364,6 @@ private struct ConversationSection: View {
     }
 }
 
-private struct TransientErrorLine: View {
-    let message: String
-
-    var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Image(systemName: "exclamationmark.circle.fill")
-                .font(.system(size: 11, weight: .semibold))
-            Text(message)
-                .font(Theme.font(12))
-                .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .foregroundStyle(Theme.error)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 8)
-        .accessibilityElement(children: .combine)
-    }
-}
-
-private struct DropTargetOverlay: View {
-    var body: some View {
-        let shape = RoundedRectangle(cornerRadius: 22, style: .continuous)
-        shape
-            .fill(Theme.panel.opacity(0.88))
-            .overlay {
-                shape.strokeBorder(
-                    Theme.sendFill.opacity(0.75),
-                    style: StrokeStyle(lineWidth: 1.5, dash: [7, 5])
-                )
-            }
-            .overlay {
-                HStack(spacing: 8) {
-                    Image(systemName: "arrow.down.doc")
-                        .font(.system(size: 14, weight: .medium))
-                    Text("Drop to attach")
-                        .font(Theme.font(14, .medium))
-                }
-                .foregroundStyle(Theme.sendFill)
-            }
-            .allowsHitTesting(false)
-            .accessibilityLabel("Drop to attach")
-    }
-}
-
 // MARK: - Transitions
 
 /// Open content arrives from the notch: fades in while un-blurring and settling down from the top.
