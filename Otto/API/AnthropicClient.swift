@@ -2,7 +2,8 @@
 //  AnthropicClient.swift
 //  Otto
 //
-//  Streams Claude Messages API responses over raw HTTPS + server-sent events.
+//  Streams Claude Messages API responses over raw HTTPS + server-sent events. Requests carry the web
+//  tools (with per-request `max_uses`) followed by Otto's client tools.
 //
 
 import Foundation
@@ -80,16 +81,30 @@ final class AnthropicClient: LLMClient, @unchecked Sendable {
         if model.supportsServerFallbacks {
             body["fallbacks"] = "default"
         }
-        if request.webAccess {
-            var tools: [JSONValue] = [
-                ["type": .string(model.webSearchToolType), "name": "web_search", "max_uses": 5],
-            ]
-            if let fetchType = model.webFetchToolType {
-                tools.append(["type": .string(fetchType), "name": "web_fetch", "max_uses": 5])
-            }
+        // Server tools first (web search, then fetch), then the client tools, already sorted by name, so
+        // the tool list is byte-stable for a given model and settings.
+        var tools: [JSONValue] = request.webAccess ? serverTools(for: model, limits: request.serverToolLimits) : []
+        tools += request.clientTools
+        if !tools.isEmpty {
             body["tools"] = .array(tools)
+            if let toolChoice = request.toolChoice {
+                body["tool_choice"] = toolChoice
+            }
         }
         return .object(body)
+    }
+
+    /// The web tools with this request's `max_uses`; a tool whose limit is 0 is left out.
+    private static func serverTools(for model: ModelOption, limits: ServerToolLimits) -> [JSONValue] {
+        var tools: [JSONValue] = []
+        if limits.webSearch > 0 {
+            tools.append(["type": .string(model.webSearchToolType), "name": "web_search",
+                          "max_uses": .int(Int64(limits.webSearch))])
+        }
+        if let fetchType = model.webFetchToolType, limits.webFetch > 0 {
+            tools.append(["type": .string(fetchType), "name": "web_fetch", "max_uses": .int(Int64(limits.webFetch))])
+        }
+        return tools
     }
 
     /// Headers for a request (unit tested). Includes anthropic-beta only when needed.
