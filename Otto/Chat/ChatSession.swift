@@ -3,7 +3,8 @@
 //  Otto
 //
 //  Owns the conversation: builds Messages API history, streams replies into the in-flight assistant
-//  message, and handles pause_turn continuations, refusals, cancellation and retries.
+//  message, and handles pause_turn continuations, refusals, cancellation and retries. It also reports
+//  the transcript to History, the reply phase to the closed notch and token usage to the ledger.
 //
 
 import Foundation
@@ -49,6 +50,38 @@ import os
     /// Not called by `reset()`, which discards the conversation instead of finishing a reply.
     @ObservationIgnored var onReplyFinished: (() -> Void)?
 
+    // MARK: Conversation identity & transcript
+
+    /// Identity of the current conversation: a new UUID after `reset()`, the restored id after `load(_:)`.
+    private(set) var conversationID: UUID
+    @ObservationIgnored private(set) var conversationCreatedAt: Date
+    /// Restored attachments whose payload is gone. Changes only on `load(_:)` and `reset()`.
+    private(set) var unavailableAttachmentIDs: Set<UUID>
+    /// Single observer (HistoryController). Called synchronously on the main actor.
+    @ObservationIgnored var onTranscriptChanged: ((TranscriptChange) -> Void)?
+
+    /// Assistant turns of a restored conversation whose server-tool payload is gone, so they can only be
+    /// sent back as text.
+    @ObservationIgnored private var textOnlyContextIDs: Set<UUID> = []
+    /// Ids of the messages that came from `load(_:)`.
+    @ObservationIgnored private var restoredMessageIDs: Set<UUID> = []
+    /// Whether requests send the restored messages as text only (after the API rejected them as they were).
+    @ObservationIgnored private var compactsRestoredContext = false
+
+    // MARK: Glance
+
+    /// What the in-flight reply is doing (`ReplyPhase.derive`). Assigned only when it changes, and never
+    /// per streamed delta once text is showing.
+    private(set) var phase: ReplyPhase = .idle
+    /// The assistant message of the turn that finished last; set before `onReplyFinished` runs.
+    private(set) var lastFinishedAssistantID: UUID?
+
+    // MARK: Usage
+
+    /// Receives one record per Messages API response (a partial one when a turn ends without
+    /// `.completed` after usage arrived) and one `finishAnswer` per settled turn.
+    @ObservationIgnored weak var usageRecorder: UsageRecording?
+
     /// Trimmed text of the most recent completed assistant reply that has visible text.
     var lastAssistantText: String? {
         for message in messages.reversed() where message.role == .assistant && message.state == .complete {
@@ -78,12 +111,17 @@ import os
     /// The latest cumulative `usage` of the response being streamed (`StreamEvent.usage`), kept for
     /// partial-usage accounting when a response ends without `.completed`.
     @ObservationIgnored private var inFlightUsage: JSONValue?
+    /// The model the running turn requested (`MessagesRequest.model`), for usage records.
+    @ObservationIgnored private var inFlightRequestedModel: String?
 
     private static let logger = Logger(subsystem: "com.jalenedusei.otto", category: "Chat")
 
     init(settings: AppSettings, makeClient: @escaping @MainActor () throws -> LLMClient) {
         self.settings = settings
         self.makeClient = makeClient
+        conversationID = UUID()
+        conversationCreatedAt = Date()
+        unavailableAttachmentIDs = []
     }
 
     // MARK: - Public API
@@ -97,6 +135,7 @@ import os
         content.append(Self.textBlock(trimmed.isEmpty ? Self.attachmentsOnlyPrompt : trimmed))
         messages.append(ChatMessage(role: .user, text: trimmed, attachments: attachments, apiContent: content))
         beginAssistantTurn(at: messages.endIndex)
+        onTranscriptChanged?(.userMessageAdded)
     }
 
     /// Stops the in-flight reply. The message keeps whatever streamed so far and becomes `.cancelled`.
@@ -114,6 +153,7 @@ import os
         }
         isStreaming = false
         updateSummary(recomputeCopyable: true)
+        refreshPhase()
     }
 
     /// Re-runs a failed, cancelled or refused assistant turn in place.
@@ -139,8 +179,12 @@ import os
         beginAssistantTurn(at: index)
     }
 
-    /// Cancels any reply and clears the conversation.
+    /// Cancels any reply and clears the conversation, which starts a new one with a new id. History hears
+    /// `.willReset` first (while the old transcript is still here) unless there was nothing to save.
     func reset() {
+        flushPendingDeltas()
+        if !messages.isEmpty { onTranscriptChanged?(.willReset) }
+        if let id = activeAssistantID { settleUsage(for: id) }
         streamTask?.cancel()
         streamTask = nil
         activeAssistantID = nil
@@ -148,6 +192,50 @@ import os
         messages.removeAll()
         isStreaming = false
         updateSummary(recomputeCopyable: true)
+        conversationID = UUID()
+        conversationCreatedAt = Date()
+        if !unavailableAttachmentIDs.isEmpty { unavailableAttachmentIDs = [] }
+        textOnlyContextIDs = []
+        restoredMessageIDs = []
+        compactsRestoredContext = false
+        refreshPhase()
+    }
+
+    /// Flushes pending deltas and returns the transcript (cheap: the arrays are copy-on-write).
+    func transcriptSnapshot() -> TranscriptSnapshot {
+        flushPendingDeltas()
+        return TranscriptSnapshot(
+            conversationID: conversationID,
+            createdAt: conversationCreatedAt,
+            messages: messages,
+            unavailableAttachmentIDs: unavailableAttachmentIDs
+        )
+    }
+
+    /// Replaces the conversation with a restored one. A running reply is cancelled first, which reports
+    /// `.turnFinished` for the old conversation before `.loaded` reports the new one.
+    func load(_ conversation: LoadedConversation) {
+        if activeAssistantID != nil { cancel() }
+        streamTask?.cancel()
+        streamTask = nil
+        activeAssistantID = nil
+        discardPendingDeltas()
+        inFlightUsage = nil
+        inFlightRequestedModel = nil
+        if conversationID != conversation.id { conversationID = conversation.id }
+        conversationCreatedAt = conversation.createdAt
+        messages = conversation.messages
+        if unavailableAttachmentIDs != conversation.unavailableAttachmentIDs {
+            unavailableAttachmentIDs = conversation.unavailableAttachmentIDs
+        }
+        textOnlyContextIDs = conversation.textOnlyContextMessageIDs
+        restoredMessageIDs = Set(conversation.messages.map(\.id))
+        compactsRestoredContext = false
+        isStreaming = false
+        updateSummary(recomputeCopyable: true)
+        refreshPhase()
+        Self.logger.info("Loaded conversation \(conversation.id.uuidString, privacy: .public) with \(conversation.messages.count, privacy: .public) messages")
+        onTranscriptChanged?(.loaded)
     }
 
     /// Snapshots/tests only: replaces the conversation without starting any work.
@@ -156,9 +244,27 @@ import os
         streamTask = nil
         activeAssistantID = nil
         discardPendingDeltas()
+        inFlightUsage = nil
+        inFlightRequestedModel = nil
         self.messages = messages
         self.isStreaming = isStreaming
         updateSummary(recomputeCopyable: true)
+        refreshPhase()
+    }
+
+    /// Re-derives `phase` from the in-flight assistant message (the last streaming assistant message of a
+    /// seeded conversation when no turn runs), assigning only when it changed.
+    private func refreshPhase() {
+        let inFlight: ChatMessage?
+        if let id = activeAssistantID {
+            inFlight = messages.last(where: { $0.id == id })
+        } else if isStreaming {
+            inFlight = messages.last(where: { $0.role == .assistant && $0.state == .streaming })
+        } else {
+            inFlight = nil
+        }
+        let derived = ReplyPhase.derive(from: inFlight)
+        if phase != derived { phase = derived }
     }
 
     /// Updates `messageCount`, `lastMessageState` and (when asked) `hasCopyableReply`, assigning only
@@ -231,6 +337,9 @@ import os
             webAccess: settings.webAccess,
             system: SystemPrompt.make(settings: settings)
         )
+        inFlightUsage = nil
+        inFlightRequestedModel = config.model.rawValue
+        refreshPhase()
         let assistantID = assistant.id
         streamTask = Task { [weak self] in
             await self?.runTurn(assistantID: assistantID, config: config)
@@ -254,6 +363,7 @@ import os
                 try Task.checkCancellation()
                 let resuming = continuations > 0
                 flushPendingDeltas()
+                inFlightUsage = nil
                 let fullHistory = Self.requestHistory(
                     for: messages,
                     inFlight: assistantID,
@@ -282,6 +392,8 @@ import os
                     webAccess: config.webAccess
                 )
                 let result = try await consume(client.stream(request), into: assistantID)
+                guard isActive(assistantID) else { return }
+                recordCompletedUsage(result, requestedModel: config.model.rawValue, assistantID: assistantID)
 
                 if result.stopReason == "pause_turn", continuations < Self.maxPauseContinuations {
                     continuations += 1
@@ -390,6 +502,48 @@ import os
         }
 
         messages[index] = message
+        refreshPhase()
+    }
+
+    // MARK: - Usage
+
+    /// Records one finished Messages API response: its own usage, else the latest `.usage` it streamed.
+    /// A response that reported no usage at all is not recorded.
+    private func recordCompletedUsage(_ result: StreamResult, requestedModel: String, assistantID: UUID) {
+        let usage = result.usage ?? inFlightUsage
+        inFlightUsage = nil
+        guard let usage, let usageRecorder else { return }
+        usageRecorder.record(
+            usage: usage,
+            requestedModel: requestedModel,
+            servedModel: result.model,
+            stopReason: result.stopReason,
+            isPartial: false,
+            messageID: assistantID,
+            at: Date()
+        )
+    }
+
+    /// Closes the usage books of a turn that is ending: a response cut off after it reported usage is
+    /// recorded as partial, then the answer is finished.
+    private func settleUsage(for assistantID: UUID) {
+        let usage = inFlightUsage
+        let requestedModel = inFlightRequestedModel
+        inFlightUsage = nil
+        inFlightRequestedModel = nil
+        guard let usageRecorder else { return }
+        if let usage, let requestedModel {
+            usageRecorder.record(
+                usage: usage,
+                requestedModel: requestedModel,
+                servedModel: messages.last(where: { $0.id == assistantID })?.model,
+                stopReason: nil,
+                isPartial: true,
+                messageID: assistantID,
+                at: Date()
+            )
+        }
+        usageRecorder.finishAnswer(messageID: assistantID)
     }
 
     // MARK: - Delta coalescing
@@ -434,6 +588,9 @@ import os
         lastDeltaFlush = ContinuousClock.now
         guard let index = messages.lastIndex(where: { $0.id == assistantID }) else { return }
         var message = messages[index]
+        // Only the first text of a message (or text after a thinking block) can move the phase; later
+        // deltas leave it alone so a long reply doesn't re-derive it per flush.
+        let movesPhase = !pending.text.isEmpty && (message.text.isEmpty || message.isThinking)
         if !pending.thinking.isEmpty {
             message.thinking += pending.thinking
         }
@@ -442,6 +599,7 @@ import os
             message.text += pending.text
         }
         messages[index] = message
+        if movesPhase { refreshPhase() }
     }
 
     /// Drops queued deltas (the conversation was replaced or a new turn starts).
@@ -515,6 +673,10 @@ import os
 
         isStreaming = false
         updateSummary(recomputeCopyable: true)
+        settleUsage(for: assistantID)
+        lastFinishedAssistantID = assistantID
+        refreshPhase()
+        onTranscriptChanged?(.turnFinished)
         onReplyFinished?()
     }
 

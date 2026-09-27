@@ -2,7 +2,8 @@
 //  ChatSessionTests.swift
 //  Otto
 //
-//  ChatSession history/streaming behaviour, plus the SystemPrompt and AppSettings state it reads.
+//  ChatSession history/streaming behaviour and its transcript, phase and usage reporting, plus the
+//  SystemPrompt and AppSettings state it reads.
 //
 
 import XCTest
@@ -84,6 +85,60 @@ private func webAttachment(_ url: String, title: String = "Page") -> Attachment 
         payload: .webPage(title: title, url: pageURL),
         byteCount: 0
     )
+}
+
+/// A completed response that reports `usage`.
+private func completed(_ content: [JSONValue], stopReason: String?, usage: JSONValue?) -> StreamEvent {
+    .completed(StreamResult(content: content, stopReason: stopReason, stopDetails: nil, model: "claude-opus-5", usage: usage))
+}
+
+private func usage(output: Int64) -> JSONValue {
+    ["input_tokens": 1_200, "output_tokens": .int(output)]
+}
+
+/// What ChatSession reported to its observers, in order.
+private enum SessionEvent: Equatable {
+    case transcript(TranscriptChange)
+    case replyFinished
+}
+
+/// Set from observation callbacks (which may not mutate captured locals).
+private final class FlagBox {
+    var isSet = false
+}
+
+/// An LLMClient whose single open response is fed one event at a time by the test. The session asks for
+/// the next event only after it has applied the previous one, so `isAwaitingEvent` tells the test that
+/// everything pushed so far has landed.
+private final class SteppedLLMClient: LLMClient, @unchecked Sendable {
+    private let lock = NSLock()
+    private var queue: [StreamEvent] = []
+    private var pulls = 0
+    private var delivered = 0
+
+    /// The session is waiting inside the stream and nothing it hasn't taken is queued.
+    var isAwaitingEvent: Bool {
+        lock.withLock { queue.isEmpty && pulls > delivered }
+    }
+
+    func push(_ event: StreamEvent) {
+        lock.withLock { queue.append(event) }
+    }
+
+    func stream(_ request: MessagesRequest) -> AsyncThrowingStream<StreamEvent, Error> {
+        AsyncThrowingStream(unfolding: { [self] in
+            lock.withLock { pulls += 1 }
+            while true {
+                let next: StreamEvent? = lock.withLock {
+                    guard !queue.isEmpty else { return nil }
+                    delivered += 1
+                    return queue.removeFirst()
+                }
+                if let next { return next }
+                try await Task.sleep(nanoseconds: 1_000_000)
+            }
+        })
+    }
 }
 
 @MainActor
@@ -882,5 +937,434 @@ final class ChatSessionTests: XCTestCase {
         }
         XCTAssertTrue(description.hasPrefix(AttachmentBudget.requestTooLargeDescription))
         XCTAssertTrue(description.hasSuffix(ChatSession.excludedFromContextNote))
+    }
+
+    // MARK: Transcript, phase and usage
+
+    private func restoredConversation() -> (LoadedConversation, user: ChatMessage, assistant: ChatMessage) {
+        let user = ChatMessage(role: .user, text: "Old question", apiContent: [textBlock("Old question")])
+        let assistant = ChatMessage(role: .assistant, text: "Old answer", apiContent: [textBlock("Old answer")],
+                                    model: "claude-opus-5")
+        let conversation = LoadedConversation(
+            id: UUID(),
+            title: "Old question",
+            createdAt: Date(timeIntervalSince1970: 1_800_000_000),
+            updatedAt: Date(timeIntervalSince1970: 1_800_000_600),
+            messages: [user, assistant],
+            unavailableAttachmentIDs: [UUID()],
+            textOnlyContextMessageIDs: [assistant.id],
+            readingPosition: nil
+        )
+        return (conversation, user, assistant)
+    }
+
+    /// Sends `text` on a stepped client and waits until the reply's stream is open.
+    private func startSteppedTurn(_ chat: ChatSession, _ client: SteppedLLMClient, text: String = "Go") async {
+        chat.send(text: text, attachments: [])
+        await waitUntil { client.isAwaitingEvent }
+    }
+
+    private func deliver(_ event: StreamEvent, to client: SteppedLLMClient) async {
+        client.push(event)
+        await waitUntil { client.isAwaitingEvent }
+    }
+
+    func testTranscriptEmissionsFollowTheTurnAndPrecedeReplyFinished() async {
+        let client = ScriptedLLMClient([reply("Hi there."), reply("Again.")])
+        let (chat, _) = makeSession(client)
+        var events: [SessionEvent] = []
+        chat.onTranscriptChanged = { change in
+            events.append(.transcript(change))
+            switch change {
+            case .userMessageAdded:
+                XCTAssertEqual(chat.messages.last(where: { $0.role == .user })?.text, events.count == 1 ? "Hello" : "More")
+            case .turnFinished:
+                XCTAssertFalse(chat.isStreaming)
+                XCTAssertEqual(chat.phase, .idle)
+                XCTAssertEqual(chat.lastFinishedAssistantID, chat.messages.last?.id)
+                XCTAssertEqual(chat.transcriptSnapshot().messages.last?.state, .complete)
+            case .messagesRemoved, .willReset, .loaded:
+                XCTFail("Unexpected \(change)")
+            }
+        }
+        chat.onReplyFinished = { events.append(.replyFinished) }
+        let conversationID = chat.conversationID
+
+        chat.send(text: "Hello", attachments: [])
+        XCTAssertEqual(events, [.transcript(.userMessageAdded)])
+        await waitForReply(chat)
+        chat.send(text: "More", attachments: [])
+        await waitForReply(chat)
+
+        XCTAssertEqual(events, [
+            .transcript(.userMessageAdded), .transcript(.turnFinished), .replyFinished,
+            .transcript(.userMessageAdded), .transcript(.turnFinished), .replyFinished,
+        ])
+        XCTAssertEqual(chat.conversationID, conversationID)
+        XCTAssertEqual(chat.transcriptSnapshot().conversationID, conversationID)
+    }
+
+    func testCancelAndRetryReportTheTurnFinishingButNoNewUserMessage() async {
+        // The first turn is stopped before its task asks for a response, so the only one is the retry's.
+        let client = ScriptedLLMClient([reply("Second try.")])
+        let (chat, _) = makeSession(client)
+        var events: [SessionEvent] = []
+        chat.onTranscriptChanged = { events.append(.transcript($0)) }
+        chat.onReplyFinished = { events.append(.replyFinished) }
+
+        chat.send(text: "Question", attachments: [])
+        chat.cancel()
+        chat.retry(messageID: chat.messages[1].id)
+        await waitForReply(chat)
+
+        XCTAssertEqual(events, [
+            .transcript(.userMessageAdded), .transcript(.turnFinished), .replyFinished,
+            .transcript(.turnFinished), .replyFinished,
+        ])
+        XCTAssertEqual(chat.messages.map(\.text), ["Question", "Second try."])
+        XCTAssertEqual(client.requests.count, 1)
+    }
+
+    func testResetReportsWillResetOnlyWhenNonEmptyAndStartsANewConversation() async {
+        let client = ScriptedLLMClient([.stall([.messageStart(model: "claude-opus-5"), .textDelta("Streaming")])])
+        let (chat, _) = makeSession(client)
+        var events: [SessionEvent] = []
+        var snapshotAtWillReset: TranscriptSnapshot?
+        chat.onTranscriptChanged = { change in
+            events.append(.transcript(change))
+            if change == .willReset { snapshotAtWillReset = chat.transcriptSnapshot() }
+        }
+        chat.onReplyFinished = { events.append(.replyFinished) }
+
+        let firstID = chat.conversationID
+        let firstCreatedAt = chat.conversationCreatedAt
+        chat.reset()
+        XCTAssertTrue(events.isEmpty)
+        XCTAssertNotEqual(chat.conversationID, firstID)
+        XCTAssertGreaterThanOrEqual(chat.conversationCreatedAt, firstCreatedAt)
+
+        let secondID = chat.conversationID
+        chat.send(text: "Old chat", attachments: [])
+        await waitUntil { chat.messages.last?.text == "Streaming" }
+        chat.reset()
+
+        XCTAssertEqual(events, [.transcript(.userMessageAdded), .transcript(.willReset)])
+        XCTAssertEqual(snapshotAtWillReset?.conversationID, secondID)
+        XCTAssertEqual(snapshotAtWillReset?.messages.map(\.text), ["Old chat", "Streaming"])
+        XCTAssertNotEqual(chat.conversationID, secondID)
+        XCTAssertTrue(chat.messages.isEmpty)
+        XCTAssertEqual(chat.phase, .idle)
+        XCTAssertNil(chat.lastFinishedAssistantID)
+    }
+
+    func testLoadReplacesTheConversationAndReportsLoaded() async {
+        let client = ScriptedLLMClient([reply("Next.")])
+        let (chat, _) = makeSession(client)
+        let (conversation, user, assistant) = restoredConversation()
+        var events: [SessionEvent] = []
+        chat.onTranscriptChanged = { events.append(.transcript($0)) }
+
+        chat.load(conversation)
+
+        XCTAssertEqual(events, [.transcript(.loaded)])
+        XCTAssertEqual(chat.conversationID, conversation.id)
+        XCTAssertEqual(chat.conversationCreatedAt, conversation.createdAt)
+        XCTAssertEqual(chat.messages, [user, assistant])
+        XCTAssertEqual(chat.unavailableAttachmentIDs, conversation.unavailableAttachmentIDs)
+        XCTAssertEqual(chat.messageCount, 2)
+        XCTAssertEqual(chat.lastMessageState, .complete)
+        XCTAssertTrue(chat.hasCopyableReply)
+        XCTAssertEqual(chat.lastAssistantText, "Old answer")
+        XCTAssertFalse(chat.isStreaming)
+        XCTAssertEqual(chat.phase, .idle)
+        let snapshot = chat.transcriptSnapshot()
+        XCTAssertEqual(snapshot.conversationID, conversation.id)
+        XCTAssertEqual(snapshot.createdAt, conversation.createdAt)
+        XCTAssertEqual(snapshot.messages, [user, assistant])
+        XCTAssertEqual(snapshot.unavailableAttachmentIDs, conversation.unavailableAttachmentIDs)
+
+        // Continuing the restored conversation sends it as context and keeps its identity.
+        chat.send(text: "Go on", attachments: [])
+        await waitForReply(chat)
+        XCTAssertEqual(client.requests[0].messages, [
+            entry("user", [textBlock("Old question")]),
+            entry("assistant", [textBlock("Old answer")]),
+            entry("user", [textBlock("Go on")]),
+        ])
+        XCTAssertEqual(chat.conversationID, conversation.id)
+
+        chat.reset()
+        XCTAssertTrue(chat.unavailableAttachmentIDs.isEmpty)
+        XCTAssertNotEqual(chat.conversationID, conversation.id)
+    }
+
+    func testLoadCancelsARunningReplyAndReportsItFinishedFirst() async {
+        let client = ScriptedLLMClient([.stall([.messageStart(model: "claude-opus-5"), .textDelta("Half an ans")])])
+        let (chat, _) = makeSession(client)
+        let (conversation, user, assistant) = restoredConversation()
+        var events: [SessionEvent] = []
+        var snapshotAtTurnFinished: TranscriptSnapshot?
+        chat.onTranscriptChanged = { change in
+            events.append(.transcript(change))
+            if change == .turnFinished { snapshotAtTurnFinished = chat.transcriptSnapshot() }
+        }
+        chat.onReplyFinished = { events.append(.replyFinished) }
+
+        chat.send(text: "Current question", attachments: [])
+        let currentID = chat.conversationID
+        await waitUntil { chat.messages.last?.text == "Half an ans" }
+        chat.load(conversation)
+
+        XCTAssertEqual(events, [
+            .transcript(.userMessageAdded), .transcript(.turnFinished), .replyFinished, .transcript(.loaded),
+        ])
+        XCTAssertEqual(snapshotAtTurnFinished?.conversationID, currentID)
+        XCTAssertEqual(snapshotAtTurnFinished?.messages.last?.state, .cancelled)
+        XCTAssertEqual(snapshotAtTurnFinished?.messages.last?.text, "Half an ans")
+        XCTAssertEqual(chat.messages, [user, assistant])
+        XCTAssertEqual(chat.conversationID, conversation.id)
+        XCTAssertFalse(chat.isStreaming)
+        XCTAssertEqual(chat.phase, .idle)
+        await waitUntil { client.cancellations == 1 }
+    }
+
+    func testSnapshotFlushesPendingDeltas() async {
+        let client = SteppedLLMClient()
+        let chat = ChatSession(settings: makeSettings(), makeClient: { client })
+        await startSteppedTurn(chat, client)
+        await deliver(.messageStart(model: "claude-opus-5"), to: client)
+        await deliver(.textDelta("Hello"), to: client)
+        XCTAssertEqual(chat.messages.last?.text, "Hello")
+
+        // Text right after a flush waits for the next one (deltaFlushInterval); the snapshot must not.
+        await deliver(.textDelta(" world"), to: client)
+        let snapshot = chat.transcriptSnapshot()
+
+        XCTAssertEqual(snapshot.messages.last?.text, "Hello world")
+        XCTAssertEqual(chat.messages.last?.text, "Hello world")
+        XCTAssertEqual(snapshot.conversationID, chat.conversationID)
+        chat.cancel()
+    }
+
+    func testPhaseFollowsTheReplyAndIgnoresLaterDeltas() async {
+        let client = SteppedLLMClient()
+        let chat = ChatSession(settings: makeSettings(), makeClient: { client })
+        let searching = ToolActivity(id: "srvtoolu_1", kind: .webSearch, label: "Searching “swift”", isDone: false)
+        XCTAssertEqual(chat.phase, .idle)
+
+        chat.send(text: "Go", attachments: [])
+        XCTAssertEqual(chat.phase, .connecting)
+        await waitUntil { client.isAwaitingEvent }
+
+        await deliver(.messageStart(model: "claude-opus-5"), to: client)
+        XCTAssertEqual(chat.phase, .thinking)
+        await deliver(.thinkingStarted, to: client)
+        XCTAssertEqual(chat.phase, .thinking)
+        await deliver(.toolActivity(searching), to: client)
+        XCTAssertEqual(chat.phase, .searching(label: "Searching “swift”"))
+        var finished = searching
+        finished.isDone = true
+        await deliver(.toolActivity(finished), to: client)
+        XCTAssertEqual(chat.phase, .thinking)
+        await deliver(.textDelta("The answer"), to: client)
+        XCTAssertEqual(chat.phase, .writing)
+
+        let phaseChanged = FlagBox()
+        withObservationTracking {
+            _ = chat.phase
+        } onChange: {
+            phaseChanged.isSet = true
+        }
+        for word in [" is", " forty", " two", "."] {
+            await deliver(.textDelta(word), to: client)
+        }
+        await deliver(.sources([SourceLink(title: "Swift", url: URL(fileURLWithPath: "/swift"))]), to: client)
+        XCTAssertEqual(chat.phase, .writing)
+        XCTAssertFalse(phaseChanged.isSet)
+
+        client.push(completed([textBlock("The answer is forty two.")]))
+        await waitForReply(chat)
+        XCTAssertEqual(chat.phase, .idle)
+        XCTAssertTrue(phaseChanged.isSet)
+    }
+
+    func testPhaseOfASeededConversation() {
+        let (chat, _) = makeSession(ScriptedLLMClient([]))
+        chat.debugSeed(messages: [
+            ChatMessage(role: .user, text: "Hi"),
+            ChatMessage(role: .assistant, text: "Wri", state: .streaming, model: "claude-opus-5"),
+        ], isStreaming: true)
+        XCTAssertEqual(chat.phase, .writing)
+
+        chat.cancel()
+        XCTAssertEqual(chat.phase, .idle)
+    }
+
+    func testLastFinishedAssistantIDNamesARetriedOlderTurn() async {
+        let client = ScriptedLLMClient([reply("Better answer.")])
+        let (chat, _) = makeSession(client)
+        let failed = ChatMessage(role: .assistant, state: .failed("Overloaded"), includeInContext: false)
+        chat.debugSeed(messages: [
+            ChatMessage(role: .user, text: "Q1", apiContent: [textBlock("Q1")]),
+            failed,
+            ChatMessage(role: .user, text: "Q2", apiContent: [textBlock("Q2")]),
+            ChatMessage(role: .assistant, text: "A2", apiContent: [textBlock("A2")]),
+        ], isStreaming: false)
+        var idAtReplyFinished: UUID?
+        chat.onReplyFinished = { idAtReplyFinished = chat.lastFinishedAssistantID }
+
+        chat.retry(messageID: failed.id)
+        await waitForReply(chat)
+
+        XCTAssertEqual(chat.lastFinishedAssistantID, chat.messages[1].id)
+        XCTAssertEqual(idAtReplyFinished, chat.messages[1].id)
+        XCTAssertNotEqual(chat.lastFinishedAssistantID, chat.messages.last?.id)
+    }
+
+    func testUsageIsRecordedOncePerCompletedRequest() async {
+        let first = usage(output: 40)
+        let streamed = usage(output: 5)
+        let client = ScriptedLLMClient([
+            .events([
+                .messageStart(model: "claude-opus-5"),
+                .textDelta("Looking"),
+                .usage(usage(output: 1)),
+                completed([textBlock("Looking")], stopReason: "pause_turn", usage: first),
+            ]),
+            .events([
+                .messageStart(model: "claude-opus-5"),
+                .usage(streamed),
+                completed([textBlock(" it up.")], stopReason: "end_turn", usage: nil),
+            ]),
+        ])
+        let (chat, settings) = makeSession(client)
+        let recorder = FakeUsageRecorder()
+        chat.usageRecorder = recorder
+        var finishedAnswersAtReplyFinished: [UUID] = []
+        chat.onReplyFinished = { finishedAnswersAtReplyFinished = recorder.finishedAnswers }
+
+        chat.send(text: "Search", attachments: [])
+        let assistantID = chat.messages[1].id
+        await waitForReply(chat)
+
+        XCTAssertEqual(client.requests.count, 2)
+        XCTAssertEqual(recorder.records.map(\.usage), [first, streamed])
+        XCTAssertEqual(recorder.records.map(\.stopReason), ["pause_turn", "end_turn"])
+        XCTAssertEqual(recorder.records.map(\.isPartial), [false, false])
+        XCTAssertEqual(recorder.records.map(\.messageID), [assistantID, assistantID])
+        XCTAssertEqual(recorder.records.map(\.requestedModel), [settings.model.rawValue, settings.model.rawValue])
+        XCTAssertEqual(recorder.records.map(\.servedModel), ["claude-opus-5", "claude-opus-5"])
+        XCTAssertEqual(recorder.finishedAnswers, [assistantID])
+        XCTAssertEqual(finishedAnswersAtReplyFinished, [assistantID])
+    }
+
+    func testNothingIsRecordedForAResponseWithoutUsage() async {
+        let client = ScriptedLLMClient([reply("Hi.")])
+        let (chat, _) = makeSession(client)
+        let recorder = FakeUsageRecorder()
+        chat.usageRecorder = recorder
+
+        chat.send(text: "Hello", attachments: [])
+        await waitForReply(chat)
+
+        XCTAssertTrue(recorder.records.isEmpty)
+        XCTAssertEqual(recorder.finishedAnswers, [chat.messages[1].id])
+    }
+
+    func testCancelAfterUsageRecordsAPartialRequest() async {
+        let spent = usage(output: 12)
+        let client = ScriptedLLMClient([
+            .stall([.messageStart(model: "claude-opus-5"), .usage(spent), .textDelta("Part")]),
+        ])
+        let (chat, settings) = makeSession(client)
+        let recorder = FakeUsageRecorder()
+        chat.usageRecorder = recorder
+
+        chat.send(text: "Long question", attachments: [])
+        let assistantID = chat.messages[1].id
+        await waitUntil { chat.messages.last?.text == "Part" }
+        chat.cancel()
+
+        XCTAssertEqual(recorder.records, [FakeUsageRecorder.Record(
+            usage: spent, requestedModel: settings.model.rawValue, servedModel: "claude-opus-5", stopReason: nil,
+            isPartial: true, messageID: assistantID, date: recorder.records.first?.date ?? Date()
+        )])
+        XCTAssertEqual(recorder.finishedAnswers, [assistantID])
+        await waitUntil { client.cancellations == 1 }
+        XCTAssertEqual(recorder.records.count, 1)
+    }
+
+    func testFailureAfterUsageRecordsAPartialRequest() async {
+        let spent = usage(output: 3)
+        let client = ScriptedLLMClient([
+            .failure(LLMError.overloaded, after: [.messageStart(model: "claude-opus-5"), .usage(spent)]),
+        ])
+        let (chat, _) = makeSession(client)
+        let recorder = FakeUsageRecorder()
+        chat.usageRecorder = recorder
+
+        chat.send(text: "Question", attachments: [])
+        await waitForReply(chat)
+
+        XCTAssertEqual(recorder.records.map(\.usage), [spent])
+        XCTAssertEqual(recorder.records.map(\.isPartial), [true])
+        XCTAssertEqual(recorder.finishedAnswers, [chat.messages[1].id])
+    }
+}
+
+// MARK: - SystemPrompt & AppSettings
+
+@MainActor
+final class SystemPromptAndSettingsTests: XCTestCase {
+    func testSystemPromptIncludesDateAndCustomInstructions() {
+        var components = DateComponents()
+        components.year = 2026
+        components.month = 9
+        components.day = 26
+        components.hour = 12
+        let utc = TimeZone(identifier: "UTC") ?? .current
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = utc
+        guard let date = calendar.date(from: components) else { return XCTFail("Invalid date") }
+
+        let plain = SystemPrompt.make(customInstructions: "  ", now: date, timeZone: utc)
+        XCTAssertTrue(plain.hasPrefix("You are Otto, a friendly, sharp assistant"))
+        XCTAssertTrue(plain.contains("Today's date is Saturday, September 26, 2026."))
+        XCTAssertFalse(plain.contains("<user_instructions>"))
+
+        let custom = SystemPrompt.make(customInstructions: "Answer in French.", now: date, timeZone: utc)
+        XCTAssertTrue(custom.hasSuffix("\n\n<user_instructions>\nAnswer in French.\n</user_instructions>"))
+    }
+
+    func testSettingsDefaultsAndPersistence() {
+        let suiteName = "otto.tests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        addTeardownBlock {
+            UserDefaults.standard.removePersistentDomain(forName: suiteName)
+        }
+
+        let settings = AppSettings(defaults: defaults)
+        XCTAssertEqual(settings.model, .opus5)
+        XCTAssertEqual(settings.effort, .medium)
+        XCTAssertTrue(settings.webAccess)
+        XCTAssertTrue(settings.suggestBrowserTab)
+        XCTAssertFalse(settings.autoAttachBrowserTab)
+        XCTAssertTrue(settings.hotKeyEnabled)
+        XCTAssertTrue(settings.showMenuBarIcon)
+        XCTAssertEqual(settings.customInstructions, "")
+
+        settings.model = .haiku45
+        settings.effort = .high
+        settings.webAccess = false
+        settings.autoAttachBrowserTab = true
+        settings.customInstructions = "Be brief."
+        XCTAssertEqual(defaults.string(forKey: "otto.model"), ModelOption.haiku45.rawValue)
+
+        let reloaded = AppSettings(defaults: defaults)
+        XCTAssertEqual(reloaded.model, .haiku45)
+        XCTAssertEqual(reloaded.effort, .high)
+        XCTAssertFalse(reloaded.webAccess)
+        XCTAssertTrue(reloaded.autoAttachBrowserTab)
+        XCTAssertEqual(reloaded.customInstructions, "Be brief.")
     }
 }
