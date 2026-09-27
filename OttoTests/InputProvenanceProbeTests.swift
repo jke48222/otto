@@ -29,6 +29,9 @@ final class InputProvenanceProbeTests: XCTestCase {
         let view = ProvenanceProbeView(frame: NSRect(x: 0, y: 0, width: 460, height: 200))
         let window = NSWindow(contentRect: view.frame, styleMask: [.titled], backing: .buffered, defer: false)
         window.title = "Otto input provenance probe"
+        // A programmatic NSWindow releases itself on close by default; the deferred close() below
+        // would then over-release it, which XCTest's memory checker reports as a crash.
+        window.isReleasedWhenClosed = false
         window.contentView = view
         window.center()
         window.makeKeyAndOrderFront(nil)
