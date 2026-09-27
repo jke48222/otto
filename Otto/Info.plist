@@ -25,8 +25,81 @@
 	<key>LSUIElement</key>
 	<true/>
 	<key>NSAppleEventsUsageDescription</key>
-	<string>Otto reads the title and address of your current browser tab so you can ask about the page you're looking at.</string>
+	<string>Otto reads the title and address of your current browser tab so you can ask about it. When you turn them on, it also controls Music or Spotify and runs the Shortcuts and scripts you approve.</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Otto reads your calendars to show your next meeting in the notch and, with Actions on, to answer questions about your schedule and add events you approve.</string>
+	<key>NSCalendarsUsageDescription</key>
+	<string>Otto reads your calendars to show your next meeting in the notch and, with Actions on, to answer questions about your schedule and add events you approve.</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>© 2026 Jalen Edusei. Released under the MIT License.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Otto listens only while you hold your shortcut or the mic button, so you can ask out loud.</string>
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>With Actions on, Otto reads your reminders when you ask about them and adds reminders you approve.</string>
+	<key>NSRemindersUsageDescription</key>
+	<string>With Actions on, Otto reads your reminders when you ask about them and adds reminders you approve.</string>
+	<key>NSServices</key>
+	<array>
+		<dict>
+			<key>NSMenuItem</key>
+			<dict>
+				<key>default</key>
+				<string>Ask Otto</string>
+			</dict>
+			<key>NSMessage</key>
+			<string>askOtto</string>
+			<key>NSPortName</key>
+			<string>Otto</string>
+			<key>NSRequiredContext</key>
+			<dict/>
+			<key>NSSendTypes</key>
+			<array>
+				<string>public.utf8-plain-text</string>
+				<string>public.rtf</string>
+			</array>
+		</dict>
+		<dict>
+			<key>NSMenuItem</key>
+			<dict>
+				<key>default</key>
+				<string>Ask Otto About Files</string>
+			</dict>
+			<key>NSMessage</key>
+			<string>askOttoAboutFiles</string>
+			<key>NSPortName</key>
+			<string>Otto</string>
+			<key>NSRequiredContext</key>
+			<dict/>
+			<key>NSSendFileTypes</key>
+			<array>
+				<string>public.text</string>
+				<string>public.image</string>
+				<string>com.adobe.pdf</string>
+				<string>org.openxmlformats.wordprocessingml.document</string>
+				<string>com.microsoft.word.doc</string>
+				<string>org.oasis-open.opendocument.text</string>
+				<string>com.apple.webarchive</string>
+			</array>
+		</dict>
+		<dict>
+			<key>NSMenuItem</key>
+			<dict>
+				<key>default</key>
+				<string>Add to Otto Shelf</string>
+			</dict>
+			<key>NSMessage</key>
+			<string>addToShelf</string>
+			<key>NSPortName</key>
+			<string>Otto</string>
+			<key>NSRequiredContext</key>
+			<dict/>
+			<key>NSSendFileTypes</key>
+			<array>
+				<string>public.item</string>
+			</array>
+		</dict>
+	</array>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Otto turns what you say into text on your Mac, then sends that text to Claude.</string>
 </dict>
 </plist>

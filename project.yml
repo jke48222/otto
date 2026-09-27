@@ -34,12 +34,36 @@ targets:
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         LSUIElement: true
         LSApplicationCategoryType: public.app-category.productivity
-        NSAppleEventsUsageDescription: "Otto reads the title and address of your current browser tab so you can ask about the page you're looking at."
+        NSAppleEventsUsageDescription: "Otto reads the title and address of your current browser tab so you can ask about it. When you turn them on, it also controls Music or Spotify and runs the Shortcuts and scripts you approve."
+        NSMicrophoneUsageDescription: "Otto listens only while you hold your shortcut or the mic button, so you can ask out loud."
+        NSSpeechRecognitionUsageDescription: "Otto turns what you say into text on your Mac, then sends that text to Claude."
+        NSCalendarsFullAccessUsageDescription: "Otto reads your calendars to show your next meeting in the notch and, with Actions on, to answer questions about your schedule and add events you approve."
+        NSCalendarsUsageDescription: "Otto reads your calendars to show your next meeting in the notch and, with Actions on, to answer questions about your schedule and add events you approve."
+        NSRemindersFullAccessUsageDescription: "With Actions on, Otto reads your reminders when you ask about them and adds reminders you approve."
+        NSRemindersUsageDescription: "With Actions on, Otto reads your reminders when you ask about them and adds reminders you approve."
+        NSServices:
+          - NSMenuItem: { default: "Ask Otto" }
+            NSMessage: askOtto
+            NSPortName: Otto
+            NSSendTypes: [public.utf8-plain-text, public.rtf]
+            NSRequiredContext: {}
+          - NSMenuItem: { default: "Ask Otto About Files" }
+            NSMessage: askOttoAboutFiles
+            NSPortName: Otto
+            NSSendFileTypes: [public.text, public.image, com.adobe.pdf, org.openxmlformats.wordprocessingml.document, com.microsoft.word.doc, org.oasis-open.opendocument.text, com.apple.webarchive]
+            NSRequiredContext: {}
+          - NSMenuItem: { default: "Add to Otto Shelf" }
+            NSMessage: addToShelf
+            NSPortName: Otto
+            NSSendFileTypes: [public.item]
+            NSRequiredContext: {}
         NSHumanReadableCopyright: "© 2026 Jalen Edusei. Released under the MIT License."
     entitlements:
       path: Otto/Otto.entitlements
       properties:
         com.apple.security.automation.apple-events: true
+        com.apple.security.device.audio-input: true
+        com.apple.security.personal-information.calendars: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.jalenedusei.otto
