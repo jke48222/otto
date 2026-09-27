@@ -2,29 +2,26 @@
 //  AppDelegate.swift
 //  Otto
 //
-//  Builds the object graph (settings → chat session → notch view model → windows, status item,
-//  hot key) and owns it for the lifetime of the app.
+//  The app's entry point. Picks the launch mode (tests, snapshots, promo, self-test or the app), makes sure
+//  only one Otto owns the global shortcut and the data folder, then builds the object graph with
+//  `AppComposition.live()` and owns it for the lifetime of the app.
 //
 
 import AppKit
-import Observation
 import os
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private static let onboardingDefaultsKey = "otto.didShowOnboarding"
-    private static let hotKeyInUseMessage = "⌥Space is already used by another app. Quit or change the shortcut in that app, then turn Otto's shortcut off and on again."
-    private static let hotKeyFailedMessage = "Couldn't register the ⌥Space shortcut."
-    private let logger = Logger(subsystem: "com.jalenedusei.otto", category: "App")
+    /// SPEC-v2 §3.5: the launch guard looks for other processes with Otto's bundle identifier.
+    private static let fallbackBundleIdentifier = "com.jalenedusei.otto"
+    /// How long a second Otto waits for the first one to quit (a relaunch after "Quit & Reopen").
+    private static let launchGuardTimeout: Duration = .seconds(3)
+    private static let launchGuardPollInterval: Duration = .milliseconds(100)
+    private static let logger = Logger(subsystem: "com.jalenedusei.otto", category: "App")
 
-    private var settings: AppSettings?
-    private var chat: ChatSession?
-    private var viewModel: NotchViewModel?
-    private var notchWindowController: NotchWindowController?
-    private var statusItemController: StatusItemController?
-    private var settingsWindowController: SettingsWindowController?
-    private var hotKeyManager: HotKeyManager?
-    private var hotKeyObservation: ObservationLoop<Bool>?
+    /// The live object graph; nil until the launch guard has finished (and in every non-app mode).
+    private var composition: AppComposition?
 
     // MARK: - NSApplicationDelegate
 
@@ -67,47 +64,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         true
     }
 
-    /// Launching Otto again (Finder, Spotlight, `open`) while it runs opens the notch.
+    /// Launching Otto again (Finder, Spotlight, `open`, a second copy's launch guard) while it runs opens the notch.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        viewModel?.open(reason: .programmatic, focus: true)
+        composition?.viewModel.open(reason: .programmatic, focus: true)
         return false
     }
 
+    /// Stops listening and speaking, cancels the reply, flushes History, the Shelf and the usage ledger, stops the
+    /// monitors and unregisters the global shortcut.
     func applicationWillTerminate(_ notification: Notification) {
-        hotKeyObservation?.cancel()
-        hotKeyManager?.unregister()
-        chat?.cancel()
+        composition?.terminate()
     }
 
     // MARK: - Startup
 
+    /// Live and `--demo` only. Nothing registers the global shortcut or opens a store until the launch guard is done.
     private func startApp() {
-        let settings = AppSettings.shared
-        let chat = ChatSession(settings: settings, makeClient: {
-            if LaunchOptions.demo { return MockLLMClient() }
-            guard let apiKey = settings.resolvedAPIKey else { throw LLMError.missingAPIKey }
-            return AnthropicClient(apiKey: apiKey)
-        })
-        let viewModel = NotchViewModel(settings: settings, chat: chat)
-        let settingsWindowController = SettingsWindowController(settings: settings)
-        let notchWindowController = NotchWindowController(viewModel: viewModel, settings: settings)
-
-        // The window controller wires the presentation/key/capture hooks; Settings lives here.
-        viewModel.onOpenSettings = { [weak settingsWindowController] in
-            settingsWindowController?.show()
+        Task { @MainActor [weak self] in
+            let other = await Self.waitForOtherInstanceToQuit()
+            guard let self else { return }
+            guard let other else {
+                self.compose(registeringHotKey: true)
+                return
+            }
+            if LaunchOptions.demo {
+                // The demo keeps its own stores; only the global shortcut belongs to the other Otto.
+                Self.logger.notice("Another Otto is running; the demo starts without the global shortcut")
+                self.compose(registeringHotKey: false)
+            } else {
+                Self.handOff(to: other)
+            }
         }
+    }
 
-        self.settings = settings
-        self.chat = chat
-        self.viewModel = viewModel
-        self.settingsWindowController = settingsWindowController
-        self.notchWindowController = notchWindowController
-
-        notchWindowController.showWindow()
-        statusItemController = StatusItemController(viewModel: viewModel, settings: settings)
-        configureHotKey(settings: settings)
+    private func compose(registeringHotKey: Bool) {
+        let composition = AppComposition.live()
+        self.composition = composition
+        composition.start(registeringHotKey: registeringHotKey)
 
         if LaunchOptions.startOpen {
+            let viewModel = composition.viewModel
             Task { @MainActor [weak viewModel] in
                 // Let the panel finish its first layout pass so the open animation starts from the notch.
                 try? await Task.sleep(for: .milliseconds(350))
@@ -115,65 +111,63 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        showOnboardingIfNeeded(settings: settings)
-        logger.info("Otto started (demo: \(LaunchOptions.demo, privacy: .public))")
+        showOnboardingIfNeeded(composition)
     }
 
-    private func configureHotKey(settings: AppSettings) {
-        let manager = HotKeyManager { [weak self] in
-            self?.handleHotKey()
+    /// Another Otto kept running past the guard: it opens its notch (a reopen, without activating it) and this copy
+    /// quits, so exactly one Otto owns the shortcut and the data folder.
+    private static func handOff(to other: NSRunningApplication) {
+        logger.notice("Another Otto is running (pid \(other.processIdentifier, privacy: .public)); handing over to it")
+        guard let bundleURL = other.bundleURL else {
+            NSApp.terminate(nil)
+            return
         }
-        hotKeyManager = manager
-        applyHotKeyRegistration(enabled: settings.hotKeyEnabled)
-        hotKeyObservation = ObservationLoop(read: { settings.hotKeyEnabled }) { [weak self] enabled in
-            self?.applyHotKeyRegistration(enabled: enabled)
-        }
-    }
-
-    private func applyHotKeyRegistration(enabled: Bool) {
-        guard let hotKeyManager else { return }
-        if enabled {
-            guard hotKeyManager.register() else {
-                // Exclusive registration makes conflicts with other exclusive owners detectable
-                // (see HotKeyManager.register()).
-                settings?.lastSettingsError = hotKeyManager.lastRegistrationError == .alreadyInUse
-                    ? Self.hotKeyInUseMessage
-                    : Self.hotKeyFailedMessage
-                return
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = false
+        NSWorkspace.shared.openApplication(at: bundleURL, configuration: configuration) { _, error in
+            let message = error?.localizedDescription
+            Task { @MainActor in
+                if let message {
+                    logger.error("Couldn't reopen the running Otto: \(message, privacy: .public)")
+                }
+                NSApp.terminate(nil)
             }
-        } else {
-            hotKeyManager.unregister()
-        }
-        // Clear a stale registration error once the shortcut works (or is no longer wanted).
-        if let error = settings?.lastSettingsError, error == Self.hotKeyInUseMessage || error == Self.hotKeyFailedMessage {
-            settings?.lastSettingsError = nil
         }
     }
 
-    /// ⌥Space: open the notch with keyboard focus; if it is already open and focused, close it.
-    /// An open-but-unfocused notch (e.g. opened by hover) takes focus instead of closing.
-    private func handleHotKey() {
-        guard let viewModel else { return }
-        if viewModel.isOpen && viewModel.isEngaged {
-            viewModel.close()
-        } else {
-            viewModel.open(reason: .hotkey, focus: true)
+    /// Polls every 100 ms for up to 3 s while another process with Otto's bundle identifier runs. Returns it when it
+    /// is still running at the end, nil as soon as there is none.
+    private static func waitForOtherInstanceToQuit() async -> NSRunningApplication? {
+        let clock = ContinuousClock()
+        let deadline = clock.now + launchGuardTimeout
+        while let other = otherInstance() {
+            guard clock.now < deadline else { return other }
+            try? await Task.sleep(for: launchGuardPollInterval)
         }
+        return nil
     }
 
-    private func showOnboardingIfNeeded(settings: AppSettings) {
-        guard !LaunchOptions.demo, !settings.hasAPIKey else { return }
+    private static func otherInstance() -> NSRunningApplication? {
+        let bundleIdentifier = Bundle.main.bundleIdentifier ?? fallbackBundleIdentifier
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+        return NSRunningApplication.runningApplications(withBundleIdentifier: bundleIdentifier)
+            .first { $0.processIdentifier != ownPID && !$0.isTerminated }
+    }
+
+    /// First launch without an API key: Settings opens on Models, where the key goes.
+    private func showOnboardingIfNeeded(_ composition: AppComposition) {
+        guard !LaunchOptions.demo, !composition.settings.hasAPIKey else { return }
         let defaults = UserDefaults.standard
         guard !defaults.bool(forKey: Self.onboardingDefaultsKey) else { return }
         defaults.set(true, forKey: Self.onboardingDefaultsKey)
-        settingsWindowController?.show()
+        composition.settingsWindowController.show(tab: .models)
     }
 
     // MARK: - Snapshots
 
     #if DEBUG || OTTO_TOOLS
     private func renderSnapshots(to directory: URL) {
-        logger.info("Rendering snapshots to \(directory.path, privacy: .public)")
+        Self.logger.info("Rendering snapshots to \(directory.path, privacy: .public)")
         // Watchdog on a background queue: if rendering wedges the main thread, still exit non-zero.
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 180) {
             FileHandle.standardError.write(Data("Snapshot rendering timed out.\n".utf8))
@@ -232,11 +226,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return item
     }
 
+    /// ⌘, while Settings or another Otto window is key (the notch maps its own ⌘,). Nothing to open before the graph
+    /// exists.
     @objc private func openSettingsFromMenu(_ sender: Any?) {
-        if let viewModel {
-            viewModel.openSettings()
-        } else {
-            settingsWindowController?.show()
-        }
+        composition?.viewModel.openSettings()
     }
 }
