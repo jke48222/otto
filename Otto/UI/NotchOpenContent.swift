@@ -352,23 +352,9 @@ private struct ConversationSection: View {
     var body: some View {
         if !viewModel.chat.messages.isEmpty {
             let height = maxHeight + headerGap
-            ConversationView(viewModel: viewModel, maxHeight: height, topInset: headerGap)
-                .modifier(FillsHeight(height: fillsHeight ? height : nil))
+            ConversationView(viewModel: viewModel, maxHeight: height, topInset: headerGap, fillsHeight: fillsHeight)
                 .padding(.top, -headerGap)
                 .transition(.opacity)
-        }
-    }
-}
-
-/// Tall mode: the transcript's frame takes the whole budget even when its messages are shorter.
-private struct FillsHeight: ViewModifier {
-    let height: CGFloat?
-
-    func body(content: Content) -> some View {
-        if let height {
-            content.frame(minHeight: height, maxHeight: height, alignment: .top)
-        } else {
-            content
         }
     }
 }
