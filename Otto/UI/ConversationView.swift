@@ -66,6 +66,9 @@ struct ConversationView: View {
         ScrollViewReader { proxy in
             CappedHeightLayout(maxHeight: maxHeight) {
                 transcript
+                    .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) { _ in
+                        viewportMoved(proxy)
+                    }
             }
             .mask { fadeMask }
             .onAppear {
@@ -130,6 +133,15 @@ struct ConversationView: View {
         withAnimation(Theme.Motion.content) {
             proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
         }
+    }
+
+    /// The viewport moved or scaled in the window, as it does all through the panel's open
+    /// transition. AppKit nudges the scroll offset on every frame of that, and the nudges add up to a
+    /// few points short of the bottom: enough to leave the last row under the bottom fade. So while
+    /// pinned, go back to the bottom each time; a user scroll never moves the viewport itself.
+    private func viewportMoved(_ proxy: ScrollViewProxy) {
+        guard isPinnedToBottom, Date() >= programmaticScrollEnd else { return }
+        proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
     }
 
     /// The content moved inside the scroll view. When neither the content nor the viewport changed

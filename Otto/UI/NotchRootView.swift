@@ -411,7 +411,8 @@ private struct DropTargetOverlay: View {
 // MARK: - Transitions
 
 /// Open content arrives from the notch: fades in while un-blurring and settling down from the top.
-private struct NotchRevealModifier: ViewModifier {
+/// Internal so the transcript's scroll tests can put it through the same frames.
+struct NotchRevealModifier: ViewModifier {
     var progress: Double
 
     func body(content: Content) -> some View {
