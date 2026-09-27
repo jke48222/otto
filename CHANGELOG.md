@@ -7,8 +7,93 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-Planned as 1.0.0: the first tagged source release, and the build the signed app will ship from. Otto's
-source code is MIT licensed; the signed, notarized app will be a one-time purchase.
+Planned as 1.1.0: the first tagged source release, and the build the signed app will ship from. It
+includes everything in the 1.0.0 notes below, which were prepared but never tagged. Otto's source code is
+MIT licensed; the signed, notarized app will be a one-time purchase.
+
+### Added
+
+- **Actions.** With **Settings → Actions** on, Claude can read and add calendar events and reminders, list
+  and run your Shortcuts, play, pause and skip in Music and Spotify, and open web links. AppleScript is a
+  separate opt-in. Every change shows a card with exactly what will run (the full script, the event, the
+  link) and runs only after you press <kbd>⌘</kbd><kbd>↩</kbd> on this Mac's keyboard or click, once the
+  card has been on screen long enough to read. Reads ask once. Added events and reminders have Undo for 10
+  minutes. "Always allow" is offered for a named shortcut only. A **How Otto asks** setting chooses between
+  **Safer** (the default) and **Fewer prompts**.
+- **Activity log** of every action Otto ran, blocked or skipped, with titles and hosts but no inputs or
+  outputs, in **Settings → Actions → Activity Log…**.
+- **Permissions in one place.** Otto explains each macOS permission in the notch before macOS asks, folds
+  the notch out of the way while a macOS dialog or System Settings is open, and comes back when you're done.
+  **Settings → Privacy** lists every permission with its status.
+- **Ask about your selection** through **Services → Ask Otto**, or an optional chip that offers the text
+  you've selected when you open the notch. **Ask Otto About Files** and **Add to Otto Shelf** are in the
+  Services menu too.
+- **Paste the answer back.** <kbd>⌘</kbd><kbd>↩</kbd> pastes the last answer into the app you came from, or
+  replaces the text you asked about; <kbd>⌥</kbd><kbd>⌘</kbd><kbd>↩</kbd> pastes plain text. Otto asks
+  before a multi-line paste into a terminal and puts your clipboard back afterwards.
+- **Window chip.** Otto offers a picture of the window you were working in; nothing is captured until you
+  click it.
+- **File Shelf.** Drop files on the left half of the notch to keep them, then drag them out, share them,
+  Quick Look them or ask about them. <kbd>⌘</kbd><kbd>D</kbd>.
+- **History.** Conversations are saved on your Mac (30 days by default), with Recents
+  (<kbd>⌘</kbd><kbd>Y</kbd>), search, delete with undo, a Continue chip after an idle fresh start, and your
+  reading position kept when you come back.
+- **Voice.** Hold your shortcut or the mic button to talk, or click to start and stop. Speech is turned into
+  text on your Mac; replies can be read aloud.
+- **Glanceable closed notch.** Ears show whether Otto is thinking, searching or writing, waiting for your OK,
+  or waiting on System Settings, and a finished reply drops a one-line preview under the camera.
+  Notifications for replies and approvals are optional.
+- **Now Playing** strip and closed-notch artwork for Music and Spotify, with play, pause and skip.
+- **Next-meeting chip** with the time until it starts and <kbd>⌥</kbd><kbd>⌘</kbd><kbd>J</kbd> to join.
+- **Cost and usage.** Each reply's estimated cost on hover, and totals by day, month and model in
+  **Settings → Models**.
+- **Keyboard essentials.** <kbd>⌘</kbd><kbd>.</kbd> stops, <kbd>⌘</kbd><kbd>R</kbd> regenerates (with
+  versions to flip between), <kbd>↑</kbd> edits and resends your last message,
+  <kbd>⌘</kbd><kbd>⇧</kbd><kbd>C</kbd> copies the last reply, <kbd>⌘</kbd><kbd>1</kbd> to
+  <kbd>⌘</kbd><kbd>3</kbd> switch models, and <kbd>⌘</kbd><kbd>/</kbd> lists every shortcut.
+- **Type after hovering.** Rest the pointer on the open notch and type; move away and the keyboard goes back
+  to your app.
+- **Pin open** (<kbd>⌘</kbd><kbd>P</kbd>) and **tall reading mode**
+  (<kbd>⌘</kbd><kbd>⇧</kbd><kbd>↑</kbd>).
+- **Custom global shortcut**, a switch to turn off hover-to-open, and a one-time note when another notch
+  app is running.
+
+### Changed
+
+- **Settings** is a tabbed window (General, Notch, Models, Context, Actions, Voice, Privacy) that opens on
+  the Space you're on, over full-screen apps, without switching Spaces.
+- The header shows a model menu, and the ⋮ menu adds Recent Conversations, Shelf, Regenerate, Pin Open, Tall
+  Reading Mode, Keyboard Shortcuts and a usage summary for today and this month. The menu bar icon adds
+  **Recent Conversations…** and **Shelf…**.
+- Accessibility is still never needed to open Otto or chat. It's asked for only when you first paste an
+  answer into another app or turn on **Offer selected text**.
+- Only one copy of Otto runs at a time. A second copy hands over to the one already running.
+
+### Security
+
+- Approval cards accept only hardware input pressed after the card armed, counted from when the card was
+  actually on screen. Input posted by other apps, auto-repeat and a key held down from an earlier action are
+  ignored.
+- AppleScript is read with a real lexer. Scripts that ask for administrator privileges, build code at run
+  time, use raw Apple event codes or AppleScriptObjC, ask for hidden text, run browser JavaScript or hide
+  content with invisible characters or long lines are blocked. The card lists the access a script inherits
+  from Otto.
+- Links open only over http and https in your default browser, and never to local network addresses,
+  however the address is written.
+- Web search and page reading are capped at 10 each per reply, and pause for the rest of a reply once the
+  chat holds both private data and fresh web content.
+- Otto's data folder refuses symlinks and folders it doesn't own, is readable only by you, keeps Spotlight
+  out with `.noindex` folder names, and is excluded from Time Machine. Files are written with mode 0600.
+- Notifications on the lock screen say only "Tap to open Otto." A password copied from a password manager is
+  cleared after a paste instead of being put back. Browser tab titles can no longer close the block that
+  wraps them in the prompt.
+
+### Release gate
+
+Results of the [v1.1 release gate](docs/RELEASING.md#v11-release-gate) are recorded here before `v1.1.0` is
+tagged: one line per check, pass or fail, with the macOS version and build number it ran on.
+
+## 1.0.0 (prepared, never tagged)
 
 ### Added
 

@@ -248,3 +248,132 @@ The developer tools in `Otto/Debug/` (`SelfTest`, `SnapshotRenderer` and the pro
 Release build made with `SWIFT_ACTIVE_COMPILATION_CONDITIONS=OTTO_TOOLS`; never ship that build.
 `--demo` stays in Release builds on purpose, because the README offers it as a way to try Otto without
 an API key.
+
+## v1.1 release gate
+
+Some of Otto 1.1 can only be checked by a person on a real Mac: macOS permission dialogs, System Settings,
+real keyboards and trackpads, AirPods, and other people's apps. Run every check below before you tag
+`v1.1.0`, on the build you're about to ship, and record each result in `CHANGELOG.md` under **Release
+gate**.
+
+**Before you start**
+
+- Use a signed build with real permission grants: the Release build from `scripts/release.sh`, or a Debug
+  build signed with your own identity through `Config/Local.xcconfig`. Ad hoc builds lose Accessibility and
+  Screen Recording on every rebuild, so their results don't count.
+- Use a MacBook with a notch, and have an Anthropic API key with credit.
+- Start from a clean slate: quit Otto, run `tccutil reset All com.jalenedusei.otto`, and check that
+  `pgrep -x Otto` prints nothing.
+- Note the macOS version and build number for the results: `sw_vers -productVersion` and
+  `sw_vers -buildVersion`.
+
+Mark each line **pass** or **fail** and write the macOS build number next to it. A check that fails blocks
+the release until it's fixed and run again.
+
+### Provenance
+
+This was first run at gate H1 after the engines were built. Run it again on the release build.
+
+| Check | Pass / fail | macOS build |
+| --- | --- | --- |
+| `TEST_RUNNER_OTTO_PROVENANCE_PROBE=1 xcodebuild -project Otto.xcodeproj -scheme Otto -configuration Debug -derivedDataPath build test -only-testing:OttoTests/InputProvenanceProbeTests`: a trackpad click and a <kbd>⌘</kbd><kbd>↩</kbd> on the keyboard both log `eventSourceUnixProcessID=0` and `isHardware=true`, and the <kbd>⌘</kbd><kbd>↩</kbd> posted by System Events logs a non-zero pid and `isHardware=false`. | | |
+| With an approval card up, `osascript -e 'tell application "System Events" to keystroke return using command down'` does **not** approve it. | | |
+| Holding <kbd>⌘</kbd><kbd>↩</kbd> down while a card appears does **not** approve it. | | |
+
+### System UI is never covered
+
+With the notch open at its full height, and again in tall reading mode (<kbd>⌘</kbd><kbd>⇧</kbd><kbd>↑</kbd>):
+
+| Check | Pass / fail | macOS build |
+| --- | --- | --- |
+| The Calendars, Microphone, Speech Recognition and Automation permission alerts are fully visible and clickable. | | |
+| System Settings → Privacy & Security → Accessibility, and → Screen & System Audio Recording, are fully visible and clickable. | | |
+| A `display dialog` from an approved AppleScript, and a Shortcuts "Ask for Input" from an approved shortcut, are fully visible and clickable. | | |
+| While Otto waits, the closed notch reads "Waiting for System Settings…", and the notch comes back on its own after you grant access. | | |
+| After you click **Open** on a permission row in Otto's Settings, the Settings window drops below System Settings. | | |
+
+### Hover, focus and pinning
+
+| Check | Pass / fail | macOS build |
+| --- | --- | --- |
+| Hover the notch, rest on the open panel, type: the text lands in Otto. Move away: the text caret is back in your editor. | | |
+| Type in an editor with the pointer parked on the notch: every keystroke stays in the editor. | | |
+| With a password field focused, resting on the notch doesn't take the keyboard. | | |
+| Pin Otto (<kbd>⌘</kbd><kbd>P</kbd>), park the pointer on it, press <kbd>⌘</kbd><kbd>↩</kbd> in Mail: the first press only hands the keyboard back, the second sends the mail, and nothing in Otto is approved. | | |
+
+### Settings, shortcut and other notch apps
+
+| Check | Pass / fail | macOS build |
+| --- | --- | --- |
+| In full-screen Safari, <kbd>⌘</kbd><kbd>,</kbd> in Otto opens Settings over Safari without switching Spaces. | | |
+| With Settings left open on Desktop 1, **Settings…** from Desktop 2 moves it to Desktop 2. | | |
+| A custom shortcut, <kbd>⌃</kbd><kbd>⌥</kbd><kbd>O</kbd>, opens and closes Otto from any app. | | |
+| Recording <kbd>⌘</kbd><kbd>Space</kbd> shows "macOS already uses this shortcut…" (or "reserved by macOS"); recording <kbd>⌘</kbd><kbd>N</kbd> shows "⌘N is one of Otto's own shortcuts in the notch…". The old shortcut keeps working. | | |
+| With NotchNook running, the next open of Otto shows the other-notch-app card. | | |
+| `osascript -e 'id of app "NotchNook"'` and `osascript -e 'id of app "1Password"'` print the bundle ids Otto expects. | | |
+
+### Voice
+
+| Check | Pass / fail | macOS build |
+| --- | --- | --- |
+| In Xcode, hold the shortcut: the listening pill shows. Release: the reply streams, and Xcode keeps the keyboard. | | |
+| A reply being read aloud stops on any click. | | |
+| With AirPods as the input, listening continues past the switch to the hands-free profile. | | |
+| With Dictation turned off in System Settings → Keyboard, the mic shows the Dictation card. | | |
+| Locking the screen mid-sentence stops listening, and nothing is sent. | | |
+
+### Selection, Services and paste
+
+| Check | Pass / fail | macOS build |
+| --- | --- | --- |
+| Select text in Notes → **Services → Ask Otto** → **Replace selection** (<kbd>⌘</kbd><kbd>↩</kbd>) replaces it in Notes. | | |
+| Pasting a multi-line answer into Terminal asks first. | | |
+| An answer containing `ESC[201~` pastes as plain text, with the escape stripped. | | |
+| With the Dvorak layout active, the paste lands correctly. | | |
+| The clipboard you had before the paste is put back. | | |
+| A password copied from 1Password is cleared after the paste, not put back. | | |
+| With **Offer selected text** on, a focused password field in Chrome offers no selection chip. | | |
+
+### Window chip
+
+| Check | Pass / fail | macOS build |
+| --- | --- | --- |
+| On Xcode, the first click on the window chip shows the Screen Recording card. After **Quit & Reopen Otto**, exactly one Otto process runs (`pgrep -x Otto`) and the global shortcut still works. | | |
+| No window chip is offered for 1Password or Keychain Access. | | |
+
+### Shelf, Recents and Spotlight
+
+| Check | Pass / fail | macOS build |
+| --- | --- | --- |
+| Drop 3 files on the left half of the notch, drag two out to Finder: the originals are untouched. | | |
+| **Share → AirDrop** from the Shelf sends a file. | | |
+| <kbd>⌘</kbd><kbd>Y</kbd> opens Recents; search finds a conversation; delete it and <kbd>⌘</kbd><kbd>Z</kbd> brings it back. | | |
+| After a relaunch, the last conversation is restored. | | |
+| After 15 minutes idle, Otto opens on a fresh chat with a Continue chip that brings the old one back. | | |
+| Send a message with a unique made-up word, wait 2 minutes, then `mdfind -onlyin ~/Library/Application\ Support/Otto <word>` prints nothing. | | |
+
+### Actions
+
+| Check | Pass / fail | macOS build |
+| --- | --- | --- |
+| Asking about your calendar shows Otto's read card, then the macOS Calendars prompt. | | |
+| Creating an event, then Undo, removes it. Undo also works after you move the event to another calendar in Calendar. | | |
+| A shortcut marked **Always allow** runs without a card next time, and asks again once the chat has read a web page. | | |
+| The AppleScript card arms after 1 s (2 s right after a web search) and lists "Runs with Otto's access to …". | | |
+| A script with `administrator privileges` or `run script` is blocked. | | |
+| Now Playing controls on Spotify: the first press explains, then macOS asks. | | |
+| The calendar chip joins a Zoom link. | | |
+| With a real API key, one request per tool group succeeds (Calendar, Reminders, Shortcuts, Music & media, Links, AppleScript). | | |
+| On this signed build, creating a reminder works (the calendars entitlement covers Reminders). | | |
+
+### Notifications
+
+| Check | Pass / fail | macOS build |
+| --- | --- | --- |
+| With **Notify me** set to "When Otto's out of sight" and the screen locked, a finished reply's notification says only "Tap to open Otto." | | |
+
+### Paid and Setapp builds
+
+| Check | Pass / fail | macOS build |
+| --- | --- | --- |
+| The checks that come with the paid build (licensing, trial, updates) pass on the signed paid build, and the Setapp build's checks pass before its first upload. | | |
