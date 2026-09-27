@@ -145,6 +145,12 @@ private func describe(_ event: StreamEvent) -> String {
         return "fallback(\(from ?? "nil")->\(to ?? "nil"))"
     case .completed(let result):
         return "completed(\(result.stopReason ?? "nil"))"
+    case .toolUseStarted(let id, let name):
+        return "toolUseStarted(\(id)|\(name))"
+    case .toolUseReady(let id, let name, let input, let rawInput):
+        return "toolUseReady(\(id)|\(name)|\(input.map { $0.encodedString() } ?? "invalid")|\(rawInput))"
+    case .usage(let usage):
+        return "usage(\(usage.encodedString()))"
     }
 }
 

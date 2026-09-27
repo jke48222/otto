@@ -111,6 +111,10 @@ private func eventLabel(_ event: StreamEvent) -> String {
     case .sources(let links): return "sources(\(links.count))"
     case .fallback: return "fallback"
     case .completed(let result): return "completed(\(result.stopReason ?? "nil"))"
+    case .toolUseStarted(let id, let name): return "toolUseStarted(\(id)|\(name))"
+    case .toolUseReady(let id, let name, let input, _):
+        return "toolUseReady(\(id)|\(name)|\(input.map { $0.encodedString() } ?? "invalid"))"
+    case .usage: return "usage"
     }
 }
 

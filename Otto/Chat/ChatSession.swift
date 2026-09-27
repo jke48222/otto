@@ -75,6 +75,9 @@ import os
     @ObservationIgnored private var pendingDeltas = PendingDeltas()
     @ObservationIgnored private var lastDeltaFlush: ContinuousClock.Instant?
     @ObservationIgnored private var deltaFlushTask: Task<Void, Never>?
+    /// The latest cumulative `usage` of the response being streamed (`StreamEvent.usage`), kept for
+    /// partial-usage accounting when a response ends without `.completed`.
+    @ObservationIgnored private var inFlightUsage: JSONValue?
 
     private static let logger = Logger(subsystem: "com.jalenedusei.otto", category: "Chat")
 
@@ -356,6 +359,34 @@ import os
         case .completed(let result):
             message.apiContent.append(contentsOf: result.content)
             if message.model == nil { message.model = result.model }
+        case .toolUseStarted(let id, let name):
+            guard !message.toolCalls.contains(where: { $0.id == id }) else { return }
+            message.toolCalls.append(ToolCall(
+                id: id,
+                name: name,
+                presentation: .generic(toolName: name),
+                status: .preparing
+            ))
+        case .toolUseReady(let id, let name, let input, let rawInput):
+            let invalidInput = input == nil ? String(rawInput.prefix(ToolLimits.maxInvalidInputEcho)) : nil
+            if let existing = message.toolCalls.firstIndex(where: { $0.id == id }) {
+                message.toolCalls[existing].input = input
+                message.toolCalls[existing].invalidInput = invalidInput
+                message.toolCalls[existing].status = .queued
+            } else {
+                message.toolCalls.append(ToolCall(
+                    id: id,
+                    name: name,
+                    input: input,
+                    invalidInput: invalidInput,
+                    presentation: .generic(toolName: name),
+                    status: .queued
+                ))
+            }
+        case .usage(let usage):
+            // Usage never changes the message; it is only remembered for accounting.
+            inFlightUsage = usage
+            return
         }
 
         messages[index] = message

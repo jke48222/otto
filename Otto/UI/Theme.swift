@@ -130,6 +130,20 @@ enum Theme {
     }
 }
 
+extension Theme {
+    /// Warm amber: the approval glyph, the caution banner, "needs your OK".
+    static let attention = rgb(0xEBC07A)
+    /// The listening dot only.
+    static let recording = rgb(0xFF6B5E)
+    /// Neutral notice line.
+    static let notice = textSecondary
+}
+
+extension Theme.Motion {
+    /// Prompts entering and leaving the dock.
+    static let dock = Animation.spring(response: 0.38, dampingFraction: 0.84)
+}
+
 // MARK: - Grain
 
 /// Fine monochrome grain for the panel itself (the base the clay forms sit on). The 256×256
