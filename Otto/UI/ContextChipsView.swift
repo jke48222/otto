@@ -2,8 +2,9 @@
 //  ContextChipsView.swift
 //  Otto
 //
-//  The context chips above the composer, seated on one clay tray that hugs them: attachments,
-//  the ghost chip for the current browser tab, and shimmering placeholders while files load.
+//  The context chips above the composer, seated on one clay tray that hugs them, in the order of §6.8: the
+//  ghost chip offering the selected text, the attachments, the ghost chips offering the browser tab and the
+//  window the user came from, and shimmering placeholders while files load.
 //
 
 import AppKit
@@ -94,6 +95,10 @@ struct FlowLayout: Layout {
 
 struct ContextChipsView: View {
     let viewModel: NotchViewModel
+
+    init(viewModel: NotchViewModel) {
+        self.viewModel = viewModel
+    }
 
     /// Chip height and wrapping limits (two rows, then the row scrolls).
     static let chipHeight: CGFloat = 28
@@ -186,6 +191,14 @@ struct ContextChipsView: View {
                 guard new != nil else { return }
                 reveal(.suggestion, with: proxy)
             }
+            .onChange(of: viewModel.suggestions.selection?.id) { _, new in
+                guard new != nil else { return }
+                reveal(.selection, with: proxy)
+            }
+            .onChange(of: viewModel.suggestions.window?.id) { _, new in
+                guard new != nil else { return }
+                reveal(.window, with: proxy)
+            }
         }
         // Seat the chips on one sculpted clay shelf rather than making each chip its own slab. The
         // row keeps the full width (so the chips wrap against it); only the tray hugs them.
@@ -212,6 +225,11 @@ struct ContextChipsView: View {
     private var chips: some View {
         let newestID = viewModel.attachments.last?.id
         return FlowLayout(spacing: Self.spacing, lineSpacing: Self.rowSpacing) {
+            if let selection = viewModel.suggestions.selection {
+                selectionChip(selection)
+                    .id(ChipAnchor.selection)
+                    .transition(.opacity)
+            }
             ForEach(viewModel.attachments) { attachment in
                 AttachmentChip(
                     attachment: attachment,
@@ -222,12 +240,27 @@ struct ContextChipsView: View {
                 .transition(.scale(scale: 0.85).combined(with: .opacity))
             }
             if let suggestion = viewModel.suggestedTab {
-                SuggestedTabChip(
-                    attachment: suggestion,
+                GhostChip(
+                    icon: .attachment(suggestion),
+                    label: suggestion.displayName,
+                    help: "Attach the page you're viewing so Otto can read it",
+                    acceptLabel: "Attach current tab: \(GhostChip.displayLabel(suggestion.displayName))",
                     onAccept: { viewModel.acceptSuggestedTab() },
                     onDismiss: { viewModel.dismissSuggestedTab() }
                 )
                 .id(ChipAnchor.suggestion)
+                .transition(.opacity)
+            }
+            if let window = viewModel.suggestions.window {
+                GhostChip(
+                    icon: .app(window.app),
+                    label: window.label,
+                    help: "Attach a picture of \(window.app.name)'s front window",
+                    acceptLabel: "Attach a picture of \(window.app.name)'s front window",
+                    onAccept: { viewModel.acceptSuggestedWindow() },
+                    onDismiss: { viewModel.dismissSuggestedWindow() }
+                )
+                .id(ChipAnchor.window)
                 .transition(.opacity)
             }
             ForEach(0..<max(0, viewModel.pendingAttachmentLoads), id: \.self) { index in
@@ -247,12 +280,42 @@ struct ContextChipsView: View {
             }
         })
     }
+
+    /// The offer of the text selected in the app the notch opened from: the app's icon with a quote badge,
+    /// "Selection · 42 words", and the start of the text as its tooltip.
+    private func selectionChip(_ selection: SelectionSuggestion) -> some View {
+        let icon: GhostChip.Icon = selection.snapshot.app.map { .app($0, badgeSymbol: Self.selectionBadgeSymbol) }
+            ?? .symbol("text.quote")
+        let source = selection.snapshot.app.map { " from \($0.name)" } ?? ""
+        return GhostChip(
+            icon: icon,
+            label: selection.label,
+            help: Self.selectionHelp(selection.snapshot.text),
+            acceptLabel: "Attach selection\(source): \(GhostChip.displayLabel(selection.label))",
+            onAccept: { viewModel.acceptSuggestedSelection() },
+            onDismiss: { viewModel.dismissSuggestedSelection() }
+        )
+    }
+
+    /// The badge on a selection's app icon (ghost and attached chips alike).
+    static let selectionBadgeSymbol = "quote.opening"
+    /// How much of the selection the tooltip previews.
+    static let selectionPreviewLength = 200
+
+    /// The first 200 characters of the selection, cleaned for display, then what a click does.
+    static func selectionHelp(_ text: String) -> String {
+        let preview = DisplayText.sanitized(text, maxLength: selectionPreviewLength)
+        let hint = "Click to attach · Nothing is sent until you press Send"
+        return preview.isEmpty ? hint : preview + "\n\n" + hint
+    }
 }
 
 /// Scroll targets inside the chip row.
 private enum ChipAnchor: Hashable {
+    case selection
     case attachment(UUID)
     case suggestion
+    case window
     case pending(Int)
 }
 
@@ -269,12 +332,45 @@ private extension Text {
     }
 }
 
-/// Leading glyph for an attachment: app icon for web pages, a thumbnail for images, else a badge.
+/// Leading glyph for an attachment: app icon for web pages, the source app's icon with a quote badge for a
+/// selection, a thumbnail for images, else a type badge.
 struct AttachmentIcon: View {
     let attachment: Attachment
     var size: CGFloat = 16
 
+    /// Diameter of the quote badge on a selection's app icon.
+    private static let selectionBadgeSize: CGFloat = 8
+
+    /// Text from a selection (the chip or Services) whose app's icon can be shown.
+    private var selectionAppIcon: NSImage? {
+        guard attachment.kind == .text, attachment.sourceURL?.scheme == SelectionSnapshot.sourceScheme,
+              let bundleID = attachment.appBundleID else { return nil }
+        return AppIconCache.icon(forBundleID: bundleID)
+    }
+
     var body: some View {
+        if let appIcon = selectionAppIcon {
+            Image(nsImage: appIcon)
+                .resizable()
+                .interpolation(.high)
+                .frame(width: size, height: size)
+                .overlay(alignment: .bottomTrailing) {
+                    Image(systemName: ContextChipsView.selectionBadgeSymbol)
+                        .font(.system(size: Self.selectionBadgeSize * 0.56, weight: .bold))
+                        .foregroundStyle(Theme.badgeText)
+                        .frame(width: Self.selectionBadgeSize, height: Self.selectionBadgeSize)
+                        .background(Circle().fill(Theme.badgeFill))
+                        .offset(x: 2, y: 2)
+                        .accessibilityHidden(true)
+                }
+                .accessibilityHidden(true)
+        } else {
+            kindIcon
+        }
+    }
+
+    @ViewBuilder
+    private var kindIcon: some View {
         switch attachment.kind {
         case .webPage:
             if let bundleID = attachment.appBundleID, let icon = AppIconCache.icon(forBundleID: bundleID) {
@@ -421,57 +517,6 @@ private struct AttachmentChip: View {
             let size = ByteCountFormatter.string(fromByteCount: Int64(attachment.byteCount), countStyle: .file)
             return "\(attachment.displayName) — \(size)"
         }
-    }
-}
-
-/// Ghost chip offering the page the user is looking at. Click to attach, ✕ to dismiss.
-private struct SuggestedTabChip: View {
-    let attachment: Attachment
-    let onAccept: () -> Void
-    let onDismiss: () -> Void
-
-    @State private var isHovering = false
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Button(action: onAccept) {
-                HStack(spacing: ContextChipsView.iconGap) {
-                    Image(systemName: "plus")
-                        .font(.system(size: 10.5, weight: .bold))
-                        .foregroundStyle(Theme.textSecondary)
-                    AttachmentIcon(attachment: attachment, size: ContextChipsView.iconSize)
-                    Text(attachment.displayName)
-                        .chipLabelStyle()
-                        .frame(maxWidth: ContextChipsView.labelMaxWidth, alignment: .leading)
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(PressableButtonStyle(pressedScale: 0.97))
-            .accessibilityLabel("Attach current tab: \(attachment.displayName)")
-
-            ChipRemoveButton(label: "Dismiss suggestion: \(attachment.displayName)", action: onDismiss)
-                .opacity(isHovering ? 1 : 0.7)
-                .padding(.leading, -2)
-        }
-        .padding(.leading, ContextChipsView.chipPadding)
-        .padding(.trailing, 4)
-        .frame(height: ContextChipsView.chipHeight)
-        .background {
-            Capsule()
-                .fill(Color.white.opacity(isHovering ? 0.05 : 0.02))
-        }
-        .overlay {
-            Capsule()
-                .strokeBorder(
-                    Theme.textSecondary,
-                    style: StrokeStyle(lineWidth: 1, dash: [3.5, 3])
-                )
-        }
-        .opacity(isHovering ? 0.8 : 0.55)
-        .onHover { hovering in
-            withAnimation(.easeOut(duration: 0.14)) { isHovering = hovering }
-        }
-        .help("Attach the page you're viewing so Otto can read it")
     }
 }
 

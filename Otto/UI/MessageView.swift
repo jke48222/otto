@@ -2,8 +2,9 @@
 //  MessageView.swift
 //  Otto
 //
-//  One conversation turn. User turns are right-aligned soft bubbles; assistant turns are
-//  unboxed text with thinking, tool activity, sources and a hover footer.
+//  One conversation turn. User turns are right-aligned soft bubbles; assistant turns are unboxed text with
+//  thinking, Otto's notes and server activity, the reply interleaved with its action rows (MessageSegments),
+//  sources and a hover footer: paste back into the app, versions, copy, regenerate and what the answer cost.
 //
 
 import AppKit
@@ -16,18 +17,36 @@ struct MessageView: View, Equatable {
     var isLast: Bool = false
     /// Width available to the conversation column (used for the 78 % bubble cap).
     var availableWidth: CGFloat = NotchMetrics.openWidth - NotchMetrics.openTopRadius * 2 - 32
+    /// User turns: attachments History no longer keeps a copy of (history.md §2.5). Empty for other turns.
+    var unavailableAttachmentIDs: Set<UUID> = []
+    /// The last reply of a regenerated turn: where it sits among the kept replies. nil for every other turn.
+    var versionInfo: VersionPager.Position? = nil
+    /// Complete replies with text: the app the answer can go back into, while that app still runs.
+    var insertTarget: InsertTarget? = nil
 
     static func == (lhs: MessageView, rhs: MessageView) -> Bool {
         lhs.message == rhs.message && lhs.viewModel === rhs.viewModel && lhs.isLast == rhs.isLast
-            && lhs.availableWidth == rhs.availableWidth
+            && lhs.availableWidth == rhs.availableWidth && lhs.unavailableAttachmentIDs == rhs.unavailableAttachmentIDs
+            && lhs.versionInfo == rhs.versionInfo && lhs.insertTarget == rhs.insertTarget
     }
 
     var body: some View {
         switch message.role {
         case .user:
-            UserMessageView(message: message, maxBubbleWidth: availableWidth * 0.78)
+            UserMessageView(
+                message: message,
+                maxBubbleWidth: availableWidth * 0.78,
+                unavailableAttachmentIDs: unavailableAttachmentIDs,
+                onAttachAgain: { url in viewModel.addFiles([url]) }
+            )
         case .assistant:
-            AssistantMessageView(message: message, viewModel: viewModel, isLast: isLast)
+            AssistantMessageView(
+                message: message,
+                viewModel: viewModel,
+                isLast: isLast,
+                versionInfo: versionInfo,
+                insertTarget: insertTarget
+            )
         }
     }
 }
@@ -37,13 +56,19 @@ struct MessageView: View, Equatable {
 private struct UserMessageView: View {
     let message: ChatMessage
     let maxBubbleWidth: CGFloat
+    let unavailableAttachmentIDs: Set<UUID>
+    let onAttachAgain: (URL) -> Void
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 6) {
             if !message.attachments.isEmpty {
                 FlowLayout(spacing: 6, alignment: .trailing) {
                     ForEach(message.attachments) { attachment in
-                        MiniAttachmentChip(attachment: attachment)
+                        MiniAttachmentChip(
+                            attachment: attachment,
+                            isUnavailable: unavailableAttachmentIDs.contains(attachment.id),
+                            onAttachAgain: onAttachAgain
+                        )
                     }
                 }
                 .frame(maxWidth: maxBubbleWidth, alignment: .trailing)
@@ -82,10 +107,21 @@ private struct UserMessageView: View {
     }
 }
 
+/// An attachment under a user bubble. One whose payload History dropped (history.md §2.5) is drawn dashed and
+/// dimmed with a clock glyph; its menu offers "Attach Again" while the original file is still readable.
 private struct MiniAttachmentChip: View {
     let attachment: Attachment
+    let isUnavailable: Bool
+    let onAttachAgain: (URL) -> Void
+
+    static let unavailableHelp =
+        "Otto no longer keeps a copy of this file, so it won't be sent again. Claude still knows it was shared."
+    static let attachAgainTitle = "Attach Again"
+
+    private static let cornerRadius: CGFloat = 8
 
     var body: some View {
+        let shape = RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
         HStack(spacing: 5) {
             AttachmentIcon(attachment: attachment, size: 14)
             Text(attachment.displayName)
@@ -94,18 +130,41 @@ private struct MiniAttachmentChip: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .frame(maxWidth: 150, alignment: .leading)
+            if isUnavailable {
+                Image(systemName: "clock.arrow.circlepath")
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(Theme.textTertiary)
+                    .accessibilityHidden(true)
+            }
         }
+        .opacity(isUnavailable ? 0.6 : 1)
         .padding(.horizontal, 7)
         .frame(height: 22)
         .background {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.white.opacity(0.045))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .strokeBorder(Theme.hairline, lineWidth: 1)
-                }
+            if isUnavailable {
+                shape.strokeBorder(Theme.sendFill.opacity(0.35), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+            } else {
+                shape
+                    .fill(Color.white.opacity(0.045))
+                    .overlay { shape.strokeBorder(Theme.hairline, lineWidth: 1) }
+            }
         }
-        .help(attachment.displayName)
+        .contentShape(shape)
+        .help(isUnavailable ? Self.unavailableHelp : attachment.displayName)
+        .contextMenu {
+            if isUnavailable, let url = reattachableURL {
+                Button(Self.attachAgainTitle) { onAttachAgain(url) }
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(isUnavailable ? "\(attachment.displayName), no longer stored" : attachment.displayName)
+    }
+
+    /// The original file, when it still exists (read when the menu is built, never while scrolling).
+    private var reattachableURL: URL? {
+        guard let url = attachment.sourceURL, url.isFileURL,
+              FileManager.default.isReadableFile(atPath: url.path(percentEncoded: false)) else { return nil }
+        return url
     }
 }
 
@@ -115,6 +174,8 @@ private struct AssistantMessageView: View {
     let message: ChatMessage
     let viewModel: NotchViewModel
     let isLast: Bool
+    let versionInfo: VersionPager.Position?
+    let insertTarget: InsertTarget?
 
     @State private var isHovering = false
     @State private var showsThinking = false
@@ -125,8 +186,8 @@ private struct AssistantMessageView: View {
 
     private var hasRunningActivity: Bool { message.activities.contains { !$0.isDone } }
 
-    /// The turn was stopped or failed, so its tool calls may not have finished: they are shown with
-    /// a neutral mark instead of a checkmark.
+    /// The turn was stopped or failed, so its server tool calls may not have finished: they are shown with a
+    /// neutral mark instead of a checkmark.
     private var wasInterrupted: Bool {
         switch message.state {
         case .cancelled, .failed: return true
@@ -135,20 +196,31 @@ private struct AssistantMessageView: View {
     }
 
     var body: some View {
+        let segments = MessageSegments(message: message)
         VStack(alignment: .leading, spacing: 8) {
             thinkingSection
-            if !message.activities.isEmpty {
+            if !segments.activities.isEmpty {
                 VStack(alignment: .leading, spacing: 5) {
-                    ForEach(message.activities) { activity in
-                        ActivityRow(activity: activity, wasInterrupted: wasInterrupted)
+                    ForEach(segments.activities) { row in
+                        switch row {
+                        case .server(let activity):
+                            ActivityRow(activity: activity, wasInterrupted: wasInterrupted)
+                        case .note(let activity):
+                            NoteRow(activity: activity)
+                        }
                     }
                 }
             }
-            content
+            replyBody(segments)
             if !message.sources.isEmpty {
                 SourcePills(sources: message.sources)
             }
+            statusLine
+            if !segments.keptCalls.isEmpty {
+                keptCalls(segments.keptCalls)
+            }
             footer
+            confirmRow
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
@@ -211,30 +283,90 @@ private struct AssistantMessageView: View {
 
     // MARK: Body
 
+    /// The reply text cut at each tool round, with that round's rows in between (§5.8).
+    private func replyBody(_ segments: MessageSegments) -> some View {
+        ForEach(Array(segments.items.enumerated()), id: \.offset) { _, item in
+            switch item {
+            case .text(let text):
+                MarkdownText(text)
+            case .tail(let text):
+                tail(text, caretAllowed: !segments.hasUnsettledCall)
+            case .calls(let calls):
+                toolRows(calls)
+            }
+        }
+    }
+
+    /// The text after the last round. While streaming it carries the caret, but only once no call is still in
+    /// flight; with no text yet the caret shows alone, unless thinking or a web search already says Otto is busy.
     @ViewBuilder
-    private var content: some View {
+    private func tail(_ text: String, caretAllowed: Bool) -> some View {
+        if isStreaming {
+            if !text.isEmpty || (caretAllowed && !message.isThinking && !hasRunningActivity) {
+                MarkdownText(text, isStreaming: caretAllowed)
+            }
+        } else if !text.isEmpty {
+            MarkdownText(text)
+        }
+    }
+
+    private func toolRows(_ calls: [ToolCall]) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(calls) { call in
+                ToolCallCard(
+                    call: call,
+                    onUndo: { viewModel.undoToolCall(call.id, in: message.id) },
+                    onStop: { viewModel.stopToolCall(call.id) },
+                    onStopAllowing: { stopAllowing(call) },
+                    onRecovery: recover
+                )
+                .equatable()
+            }
+        }
+    }
+
+    /// The refused turn's caption and the calls that ran before Otto stopped.
+    private func keptCalls(_ calls: [ToolCall]) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(MessageSegments.keptCallsCaption)
+                .font(Theme.font(11.5, .medium))
+                .foregroundStyle(Theme.textTertiary)
+                .accessibilityAddTraits(.isHeader)
+            toolRows(calls)
+        }
+    }
+
+    @ViewBuilder
+    private var statusLine: some View {
         switch message.state {
         case .refused(let copy):
-            VStack(alignment: .leading, spacing: 6) {
-                if !message.text.isEmpty { MarkdownText(message.text) }
-                StatusLine(symbol: "hand.raised", text: copy, color: Theme.textSecondary)
-            }
+            StatusLine(symbol: "hand.raised", text: copy, color: Theme.textSecondary)
         case .failed(let copy):
-            VStack(alignment: .leading, spacing: 6) {
-                if !message.text.isEmpty { MarkdownText(message.text) }
-                StatusLine(symbol: "exclamationmark.triangle.fill", text: copy, color: Theme.error)
-            }
+            StatusLine(symbol: "exclamationmark.triangle.fill", text: copy, color: Theme.error)
         case .cancelled:
-            VStack(alignment: .leading, spacing: 6) {
-                if !message.text.isEmpty { MarkdownText(message.text) }
-                StatusLine(symbol: "stop.circle", text: "Stopped", color: Theme.textTertiary)
-            }
-        case .streaming:
-            if !message.text.isEmpty || (!message.isThinking && !hasRunningActivity) {
-                MarkdownText(message.text, isStreaming: true)
-            }
-        case .complete:
-            MarkdownText(message.text)
+            StatusLine(symbol: "stop.circle", text: "Stopped", color: Theme.textTertiary)
+        case .streaming, .complete:
+            EmptyView()
+        }
+    }
+
+    // MARK: Row actions
+
+    /// [Stop allowing] names the remembered approval by its label; the store holds the full scope.
+    private func stopAllowing(_ call: ToolCall) {
+        guard let label = ToolCallCard.rememberedLabel(call),
+              let remembered = viewModel.approvals.remembered.first(where: {
+                  $0.scope.toolName == call.name && $0.scope.label == label
+              }) else { return }
+        viewModel.stopAllowing(remembered.scope)
+    }
+
+    private func recover(_ recovery: ToolRecovery) {
+        switch recovery {
+        case .openSystemSettings(let permission):
+            viewModel.openSystemSettingsFromNotch(for: permission)
+        case .openActionsSettings:
+            viewModel.openActionsSettings()
         }
     }
 
@@ -252,38 +384,112 @@ private struct AssistantMessageView: View {
         return copy == LLMError.missingAPIKey.errorDescription || copy == LLMError.invalidAPIKey.errorDescription
     }
 
+    private var isComplete: Bool { message.state == .complete }
+
+    /// The paste control's target, for a complete reply with text.
+    private var pasteTarget: InsertTarget? {
+        guard isComplete, !message.text.isEmpty else { return nil }
+        return insertTarget
+    }
+
+    private var isInserting: Bool {
+        viewModel.inserter.activity == .inserting(messageID: message.id)
+    }
+
+    /// Controls that stay visible on the last reply and appear on hover on older ones.
+    private var revealsHoverControls: Bool { isHovering || isLast }
+
+    /// While a reply streams only the version pager shows (disabled), so the turn's versions stay in view.
     @ViewBuilder
     private var footer: some View {
-        if !isStreaming {
+        if !isStreaming || versionInfo != nil {
             HStack(spacing: 4) {
-                if needsSettings {
-                    FooterButton(title: "Open Settings", symbol: "gearshape", isProminent: true) {
-                        viewModel.openSettings()
+                if !isStreaming {
+                    if needsSettings {
+                        FooterButton(title: "Open Settings", symbol: "gearshape", isProminent: true) {
+                            viewModel.openSettings()
+                        }
+                    }
+                    if canRetry {
+                        FooterButton(title: "Retry", symbol: "arrow.clockwise", isProminent: !needsSettings) {
+                            viewModel.chat.retry(messageID: message.id)
+                        }
+                        .disabled(viewModel.chat.isStreaming)
+                    }
+                    if let target = pasteTarget {
+                        InsertAnswerControl(
+                            app: target.app,
+                            primaryMode: target.selection != nil ? .replaceSelection : .paste,
+                            isInserting: isInserting,
+                            showsShortcut: isLast,
+                            onInsert: { mode in viewModel.insertAnswer(messageID: message.id, mode: mode) },
+                            onCopy: copyText
+                        )
+                        .opacity(revealsHoverControls || isInserting ? 1 : 0)
                     }
                 }
-                if canRetry {
-                    FooterButton(title: "Retry", symbol: "arrow.clockwise", isProminent: !needsSettings) {
-                        viewModel.chat.retry(messageID: message.id)
+                if let versionInfo {
+                    VersionPager(position: versionInfo, isStreaming: viewModel.chat.isStreaming) { index in
+                        viewModel.chat.showReplyVersion(index)
                     }
-                    .disabled(viewModel.chat.isStreaming)
                 }
-                if !message.text.isEmpty {
-                    FooterButton(title: didCopy ? "Copied" : "Copy", symbol: didCopy ? "checkmark" : "doc.on.doc") {
-                        copyText()
+                if !isStreaming {
+                    if !message.text.isEmpty {
+                        FooterButton(title: didCopy ? "Copied" : "Copy", symbol: didCopy ? "checkmark" : "doc.on.doc") {
+                            copyText()
+                        }
+                        .opacity(revealsHoverControls || didCopy ? 1 : 0)
                     }
-                    .opacity(isHovering || isLast || didCopy ? 1 : 0)
+                    if isLast, isComplete {
+                        FooterButton(title: "Regenerate", symbol: "arrow.clockwise") {
+                            viewModel.regenerate()
+                        }
+                        .disabled(viewModel.chat.isStreaming)
+                        .opacity(revealsHoverControls ? 1 : 0)
+                        .help("Regenerate (⌘R)")
+                    }
                 }
                 Spacer(minLength: 0)
-                if let model = message.model, isHovering {
-                    Text(Self.modelLabel(model))
-                        .font(Theme.font(11))
-                        .foregroundStyle(Theme.textTertiary)
-                        .lineLimit(1)
+                if isHovering, !isStreaming {
+                    answerLabel
                         .transition(.opacity)
                 }
             }
             .frame(height: 20)
             .padding(.leading, -6)
+        }
+    }
+
+    /// Which model answered, or with "Show cost" on, the model and what the answer cost.
+    @ViewBuilder
+    private var answerLabel: some View {
+        if viewModel.settings.usage.showCost {
+            AnswerCostLabel(messageID: message.id, ledger: viewModel.ledger, fallbackModel: message.model)
+        } else if let model = message.model {
+            Text(Self.modelLabel(model))
+                .font(Theme.font(11))
+                .foregroundStyle(Theme.textTertiary)
+                .lineLimit(1)
+        }
+    }
+
+    /// The row under the footer when a paste into the app needs a yes first.
+    @ViewBuilder
+    private var confirmRow: some View {
+        if let activity = viewModel.inserter.activity, Self.confirmation(activity, isFor: message.id) {
+            InsertConfirmRow(
+                activity: activity,
+                onConfirm: { viewModel.confirmPendingInsert() },
+                onCancel: { viewModel.cancelPendingInsert() }
+            )
+            .transition(InsertConfirmRow.transition)
+        }
+    }
+
+    private static func confirmation(_ activity: InsertActivity, isFor messageID: UUID) -> Bool {
+        switch activity {
+        case .confirmMultiline(let id, _, _, _), .selectionChanged(let id, _): return id == messageID
+        case .inserting: return false
         }
     }
 
@@ -347,6 +553,27 @@ private struct ActivityRow: View {
         .accessibilityLabel(
             activity.isDone ? "\(activity.label), \(wasInterrupted ? "stopped" : "done")" : activity.label
         )
+    }
+}
+
+/// Otto's own note in a reply (the web pause): a finished activity row with `info.circle`, wrapped rather than
+/// truncated because the whole sentence is the point.
+private struct NoteRow: View {
+    let activity: ToolActivity
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 7) {
+            Image(systemName: "info.circle")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(Theme.textMuted)
+                .frame(width: 12)
+            Text(activity.label)
+                .font(Theme.font(13))
+                .foregroundStyle(Theme.textMuted)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(activity.label)
     }
 }
 
