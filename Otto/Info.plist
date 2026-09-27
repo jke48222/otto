@@ -27,6 +27,6 @@
 	<key>NSAppleEventsUsageDescription</key>
 	<string>Otto reads the title and address of your current browser tab so you can ask about the page you're looking at.</string>
 	<key>NSHumanReadableCopyright</key>
-	<string>Otto — your assistant notch.</string>
+	<string>© 2026 Jalen Edusei. Released under the MIT License.</string>
 </dict>
 </plist>

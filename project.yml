@@ -35,7 +35,7 @@ targets:
         LSUIElement: true
         LSApplicationCategoryType: public.app-category.productivity
         NSAppleEventsUsageDescription: "Otto reads the title and address of your current browser tab so you can ask about the page you're looking at."
-        NSHumanReadableCopyright: "Otto — your assistant notch."
+        NSHumanReadableCopyright: "© 2026 Jalen Edusei. Released under the MIT License."
     entitlements:
       path: Otto/Otto.entitlements
       properties:
