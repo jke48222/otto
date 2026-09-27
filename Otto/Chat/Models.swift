@@ -275,6 +275,10 @@ struct Attachment: Identifiable, Equatable, @unchecked Sendable {
     var payload: AttachmentPayload
     /// Size of the encoded payload, for limits and display.
     var byteCount: Int
+    /// False for window captures and selection/Services text: History keeps the chip (name, badge,
+    /// thumbnail) but never writes the payload, so after a relaunch the chip reads "no longer stored on
+    /// this Mac".
+    var retainsPayloadInHistory: Bool
 
     init(
         id: UUID = UUID(),
@@ -285,7 +289,8 @@ struct Attachment: Identifiable, Equatable, @unchecked Sendable {
         appBundleID: String? = nil,
         thumbnail: NSImage? = nil,
         payload: AttachmentPayload,
-        byteCount: Int
+        byteCount: Int,
+        retainsPayloadInHistory: Bool = true
     ) {
         self.id = id
         self.kind = kind
@@ -296,11 +301,13 @@ struct Attachment: Identifiable, Equatable, @unchecked Sendable {
         self.thumbnail = thumbnail
         self.payload = payload
         self.byteCount = byteCount
+        self.retainsPayloadInHistory = retainsPayloadInHistory
     }
 
     static func == (lhs: Attachment, rhs: Attachment) -> Bool {
         lhs.id == rhs.id && lhs.kind == rhs.kind && lhs.displayName == rhs.displayName
             && lhs.badge == rhs.badge && lhs.sourceURL == rhs.sourceURL && lhs.payload == rhs.payload
+            && lhs.retainsPayloadInHistory == rhs.retainsPayloadInHistory
     }
 
     /// Messages API content blocks for this attachment. Placed before the user's text block.
@@ -324,7 +331,12 @@ struct Attachment: Identifiable, Equatable, @unchecked Sendable {
                 "title": .string(displayName),
             ]]
         case .webPage(let title, let url):
-            let text = "<browser_tab>\nTitle: \(title)\nURL: \(url.absoluteString)\n</browser_tab>"
+            // A page title is written by the page's author: clean it and turn angle brackets into
+            // look-alikes, so it can never close the wrapper early and pose as the user's own words.
+            let safeTitle = DisplayText.sanitized(title, maxLength: 300)
+                .replacingOccurrences(of: "<", with: "\u{2039}")
+                .replacingOccurrences(of: ">", with: "\u{203A}")
+            let text = "<browser_tab>\nTitle: \(safeTitle)\nURL: \(url.absoluteString)\n</browser_tab>"
             return [["type": "text", "text": .string(text)]]
         }
     }
@@ -392,6 +404,10 @@ struct ChatMessage: Identifiable, Equatable, @unchecked Sendable {
     /// Whether this message is sent as history on later turns.
     var includeInContext: Bool
     let createdAt: Date
+    /// Assistant: client tool calls across all rounds, in model order.
+    var toolCalls: [ToolCall]
+    /// Assistant: the points where client tool results were (or will be) sent.
+    var toolExchanges: [ToolExchange]
 
     init(
         id: UUID = UUID(),
@@ -406,7 +422,9 @@ struct ChatMessage: Identifiable, Equatable, @unchecked Sendable {
         state: MessageState = .complete,
         model: String? = nil,
         includeInContext: Bool = true,
-        createdAt: Date = Date()
+        createdAt: Date = Date(),
+        toolCalls: [ToolCall] = [],
+        toolExchanges: [ToolExchange] = []
     ) {
         self.id = id
         self.role = role
@@ -421,7 +439,275 @@ struct ChatMessage: Identifiable, Equatable, @unchecked Sendable {
         self.model = model
         self.includeInContext = includeInContext
         self.createdAt = createdAt
+        self.toolCalls = toolCalls
+        self.toolExchanges = toolExchanges
     }
+}
+
+// MARK: - Client tool calls on assistant messages
+
+enum ToolCallStatus: Equatable, Sendable, Codable {
+    /// The tool_use block is still streaming.
+    case preparing
+    /// Input complete; waiting for its turn in the round.
+    case queued
+    /// The permission card is in the dock (a macOS permission is missing).
+    case needsPermission
+    /// The approval or consent card is in the dock.
+    case awaitingApproval
+    /// A macOS dialog Otto triggered is up; the value is the app it is about ("Finder").
+    case waitingForSystem(String)
+    case running
+    case succeeded
+    /// Short user-facing reason ("Timed out", "Shortcut not found").
+    case failed(String)
+    /// The user declined (or Decline All, decline fatigue, or the approval expired).
+    case denied
+    /// Refused by policy before asking ("it asked for administrator privileges").
+    case blocked(String)
+    /// The user stopped the reply.
+    case cancelled
+    /// Never ran: cut off, limit reached, turned off, permission not granted.
+    case skipped(String)
+    /// The created item was removed with Undo.
+    case undone
+
+    var isTerminal: Bool {
+        switch self {
+        case .preparing, .queued, .needsPermission, .awaitingApproval, .waitingForSystem, .running: return false
+        case .succeeded, .failed, .denied, .blocked, .cancelled, .skipped, .undone: return true
+        }
+    }
+}
+
+/// Exact text revealed by a row's "Show details" (script source, shortcut input, URL). Never truncated in storage.
+struct ToolDisclosure: Equatable, Sendable, Codable {
+    /// "Script", "Input", "Address".
+    var label: String
+    var text: String
+    /// "AppleScript" enables highlighting; nil is plain monospaced text.
+    var language: String?
+}
+
+/// How a call is described to the user (row and card header). Produced by the tool from a validated input.
+struct ToolCallPresentation: Equatable, Sendable, Codable {
+    /// SF Symbol, e.g. "calendar.badge.plus".
+    var symbol: String
+    /// Imperative: "Add “Dentist” to Calendar".
+    var title: String
+    /// "Adding to Calendar…".
+    var activeTitle: String
+    /// "Added “Dentist” · Tue, Sep 29, 3:00 PM".
+    var doneTitle: String
+    /// Secondary line: "Home · 3:00–4:00 PM".
+    var detail: String?
+    var disclosure: ToolDisclosure?
+
+    /// While input streams, or for unknown tools.
+    static func generic(toolName: String) -> ToolCallPresentation {
+        ToolCallPresentation(symbol: "wand.and.stars", title: "Use \(toolName)", activeTitle: "Using \(toolName)…",
+                             doneTitle: "Used \(toolName)", detail: nil, disclosure: nil)
+    }
+}
+
+/// What a tool returns to Claude as the `tool_result` content.
+struct ToolOutput: Equatable, Sendable, Codable {
+    enum Part: Equatable, Sendable, Codable {
+        case text(String)
+        /// mediaType image/png|jpeg|gif|webp; base64 ≤ AttachmentLoader.maxImageBase64Bytes.
+        case image(mediaType: String, base64: String)
+    }
+
+    var parts: [Part]
+    var isError: Bool
+
+    static let maxTextCharacters = 16_000
+    static let maxImages = 4
+    /// Characters of text in `previewText`.
+    static let previewCharacters = 600
+
+    /// A successful text result.
+    static func text(_ text: String) -> ToolOutput {
+        ToolOutput(parts: [.text(text)], isError: false)
+    }
+
+    /// An error result (`is_error: true`).
+    static func error(_ text: String) -> ToolOutput {
+        ToolOutput(parts: [.text(text)], isError: true)
+    }
+
+    /// Adjacent text parts are joined with a newline; text beyond `maxTextCharacters` in total is cut with
+    /// "\n…(truncated: N more characters)"; only the first `maxImages` images are kept; NUL and C0 controls
+    /// except \n and \t are stripped; an empty output becomes "Done." (the API rejects empty text blocks).
+    func normalized() -> ToolOutput {
+        var joined: [Part] = []
+        var imageCount = 0
+        for part in parts {
+            switch part {
+            case .text(let text):
+                let clean = Self.strippingControls(text)
+                if case .text(let previous)? = joined.last {
+                    joined[joined.count - 1] = .text(previous + "\n" + clean)
+                } else {
+                    joined.append(.text(clean))
+                }
+            case .image:
+                guard imageCount < Self.maxImages else { continue }
+                imageCount += 1
+                joined.append(part)
+            }
+        }
+
+        let totalText = joined.reduce(0) { total, part in
+            if case .text(let text) = part { return total + text.count }
+            return total
+        }
+        var result: [Part] = []
+        var budget = Self.maxTextCharacters
+        var truncationNoted = false
+        for part in joined {
+            switch part {
+            case .text(let text):
+                if text.count <= budget {
+                    budget -= text.count
+                    if !text.isEmpty { result.append(part) }
+                } else {
+                    let kept = String(text.prefix(budget))
+                    budget = 0
+                    if !truncationNoted {
+                        truncationNoted = true
+                        let dropped = totalText - Self.maxTextCharacters
+                        result.append(.text(kept + "\n…(truncated: \(dropped) more characters)"))
+                    }
+                }
+            case .image:
+                result.append(part)
+            }
+        }
+        if result.isEmpty { result = [.text("Done.")] }
+        return ToolOutput(parts: result, isError: isError)
+    }
+
+    /// {"type":"tool_result","tool_use_id":id,"content":[{"type":"text",…}|{"type":"image",…}], "is_error":true?}
+    /// (`is_error` present only when isError).
+    func toolResultBlock(toolUseID: String) -> JSONValue {
+        let content: [JSONValue] = parts.map { part in
+            switch part {
+            case .text(let text):
+                return ["type": "text", "text": .string(text)]
+            case .image(let mediaType, let base64):
+                return [
+                    "type": "image",
+                    "source": ["type": "base64", "media_type": .string(mediaType), "data": .string(base64)],
+                ]
+            }
+        }
+        var block: [String: JSONValue] = [
+            "type": "tool_result",
+            "tool_use_id": .string(toolUseID),
+            "content": .array(content),
+        ]
+        if isError { block["is_error"] = true }
+        return .object(block)
+    }
+
+    /// Image parts replaced by a text note (history persistence and the echo of older turns).
+    func strippingImages(note: String = "[Image omitted]") -> ToolOutput {
+        ToolOutput(parts: parts.map { part in
+            if case .image = part { return .text(note) }
+            return part
+        }, isError: isError)
+    }
+
+    /// First ~600 characters of text, for the row's Output box.
+    var previewText: String {
+        let text = parts.compactMap { part -> String? in
+            if case .text(let text) = part { return text }
+            return nil
+        }.joined(separator: "\n")
+        guard text.count > Self.previewCharacters else { return text }
+        return String(text.prefix(Self.previewCharacters)) + "…"
+    }
+
+    private static func strippingControls(_ text: String) -> String {
+        var scalars = String.UnicodeScalarView()
+        for scalar in text.unicodeScalars {
+            if scalar.value < 0x20, scalar != "\n", scalar != "\t" { continue }
+            scalars.append(scalar)
+        }
+        return String(scalars)
+    }
+}
+
+enum ToolRecovery: Equatable, Sendable, Codable {
+    case openSystemSettings(Permission)
+    case openActionsSettings
+}
+
+/// How a call came to run (row copy: "(always allowed)").
+enum ApprovalVia: Equatable, Sendable, Codable {
+    case notRequired, userApproved, consent, rememberedScope(label: String)
+}
+
+/// Undo for a created item (calendar event, reminder). The executor routes it back to the tool.
+struct UndoToken: Equatable, Sendable, Codable {
+    let toolName: String
+    /// Events: `EKEvent.eventIdentifier`; reminders: `calendarItemIdentifier`. Neither survives every sync (a full
+    /// sync or a calendar move can change it), so `fallback` finds the item again.
+    let itemID: String
+    let fallback: UndoFallback?
+    /// Created + 10 minutes.
+    let expires: Date
+    /// Row copy after undo: "Removed “Dentist”".
+    let doneTitle: String
+    /// "the calendar event “Dentist” on Tue, Sep 29 was removed".
+    let noteForClaude: String
+}
+
+/// How to find a created item when lookup by identifier fails: exact title and dates in the calendar or list it
+/// was created in.
+struct UndoFallback: Equatable, Sendable, Codable {
+    let title: String
+    /// Events: start; reminders: due date (nil when none).
+    let start: Date?
+    /// Events only.
+    let end: Date?
+    let calendarIdentifier: String
+}
+
+struct ToolCall: Identifiable, Equatable, Sendable, Codable {
+    /// The tool_use id.
+    let id: String
+    let name: String
+    /// nil while preparing, or when the JSON was invalid.
+    var input: JSONValue?
+    /// Raw streamed text when input == nil (≤ 2,000 characters).
+    var invalidInput: String?
+    var presentation: ToolCallPresentation
+    var status: ToolCallStatus
+    /// Exactly what is sent back as tool_result. Set for every call in a ToolExchange before the next
+    /// request is built (synthesized for denied, cancelled, skipped and blocked calls).
+    var result: ToolOutput?
+    /// "after reading example.com".
+    var provenance: String?
+    var caution: Bool = false
+    var approvedVia: ApprovalVia?
+    var recovery: ToolRecovery?
+    var undo: UndoToken?
+    /// "Converting 3 of 12…" (throttled to 4 per second).
+    var progressNote: String?
+    var startedAt: Date?
+    var finishedAt: Date?
+}
+
+/// A point in an assistant turn where client tool results were (or will be) sent.
+struct ToolExchange: Equatable, Sendable, Codable {
+    /// `apiContent.count` right after the round that requested these calls.
+    let contentEnd: Int
+    /// `text.count` (Characters) at that moment; splits the visible text for interleaving.
+    let textEnd: Int
+    /// tool_use ids of this round, in model order.
+    let callIDs: [String]
 }
 
 // MARK: - LLM client contract
@@ -434,6 +720,22 @@ struct MessagesRequest: Sendable {
     var maxTokens: Int
     var effort: EffortLevel
     var webAccess: Bool
+    /// Client tool definitions, sent after the server tools, already sorted by name. Each one is
+    /// {"name","description","input_schema","eager_input_streaming":true,"strict":true?} (ToolRegistry.definitions).
+    var clientTools: [JSONValue] = []
+    /// Sent as `tool_choice` only when non-nil AND the request defines at least one tool.
+    /// Otto only ever sends {"type":"none"} (the wrap-up request after the action limit).
+    var toolChoice: JSONValue? = nil
+    /// `max_uses` for each server tool in THIS request (only read when `webAccess`). 0 omits that tool from `tools`.
+    /// The loop derives it from the per-turn budget and the web pause.
+    var serverToolLimits = ServerToolLimits()
+}
+
+/// Per-request `max_uses` of the server tools.
+struct ServerToolLimits: Equatable, Sendable {
+    var webSearch = 5
+    var webFetch = 5
+    static let none = ServerToolLimits(webSearch: 0, webFetch: 0)
 }
 
 struct StreamResult: Sendable {
@@ -463,6 +765,15 @@ enum StreamEvent: Sendable {
     case fallback(fromModel: String?, toModel: String?)
     /// Terminal event: the complete response.
     case completed(StreamResult)
+    /// A client `tool_use` block started (input still streaming). Emitted only when id and name are non-empty.
+    case toolUseStarted(id: String, name: String)
+    /// A client `tool_use` block finished. `input` is nil when the accumulated JSON is not a JSON object
+    /// (eager input streaming can deliver cut-off or invalid JSON); `rawInput` is the accumulated text ("" when
+    /// no delta arrived). The stored content block keeps its start input `{}` when parsing fails.
+    case toolUseReady(id: String, name: String, input: JSONValue?, rawInput: String)
+    /// Cumulative usage of the current response so far (after `message_start` and each `message_delta` that
+    /// carries usage). Never mutates a message; ChatSession keeps the latest for partial-usage accounting.
+    case usage(JSONValue)
 }
 
 protocol LLMClient: Sendable {

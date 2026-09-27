@@ -3,7 +3,8 @@
 //  Otto
 //
 //  User preferences. Everything except the API key persists to UserDefaults under `otto.` keys;
-//  the API key lives in the Keychain and is cached in memory.
+//  the API key lives in the Keychain and is cached in memory. Feature preferences live in the groups
+//  under Otto/App/Settings, all created here over one PreferenceStore.
 //
 
 import Foundation
@@ -25,6 +26,7 @@ import os
         static let showMenuBarIcon = "otto.showMenuBarIcon"
         static let launchAtLogin = "otto.launchAtLogin"
         static let customInstructions = "otto.customInstructions"
+        static let actionSafetyMode = "otto.actions.safetyMode"
     }
 
     private static let logger = Logger(subsystem: "com.jalenedusei.otto", category: "Settings")
@@ -74,6 +76,22 @@ import os
         didSet { defaults.set(customInstructions, forKey: Key.customInstructions) }
     }
 
+    /// How strictly Otto asks before running actions (Settings → Actions). Default `.safer`.
+    var actionSafetyMode: ActionSafetyMode {
+        didSet { defaults.set(actionSafetyMode.rawValue, forKey: Key.actionSafetyMode) }
+    }
+
+    // Feature groups (Otto/App/Settings). Each persists its own keys.
+    let notch: NotchSettings
+    let shortcuts: ShortcutSettings
+    let voice: VoiceSettings
+    let context: ContextSettings
+    let shelf: ShelfSettings
+    let actions: ActionSettings
+    let glance: GlanceSettings
+    let usage: UsageSettings
+    let history: HistorySettings
+
     /// The user's Anthropic API key. Keychain-backed; assigning "" removes it from the Keychain.
     /// Surrounding whitespace (common when pasting) is stripped.
     var apiKey: String {
@@ -114,6 +132,18 @@ import os
         hotKeyEnabled = Self.bool(defaults, Key.hotKeyEnabled, default: true)
         showMenuBarIcon = Self.bool(defaults, Key.showMenuBarIcon, default: true)
         customInstructions = defaults.string(forKey: Key.customInstructions) ?? ""
+        actionSafetyMode = defaults.string(forKey: Key.actionSafetyMode).flatMap(ActionSafetyMode.init(rawValue:)) ?? .safer
+
+        let store = PreferenceStore(defaults: defaults)
+        notch = NotchSettings(store: store)
+        shortcuts = ShortcutSettings(store: store)
+        voice = VoiceSettings(store: store)
+        context = ContextSettings(store: store)
+        shelf = ShelfSettings(store: store)
+        actions = ActionSettings(store: store)
+        glance = GlanceSettings(store: store)
+        usage = UsageSettings(store: store)
+        history = HistorySettings(store: store)
 
         // The login item can be removed in System Settings behind our back, so the system is the
         // source of truth; the stored value is only kept in sync for completeness.
