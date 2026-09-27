@@ -1,0 +1,94 @@
+name: Bug report
+description: Something in Otto isn't working the way it should.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. A few details help us fix it fast.
+
+        **Security issue?** Please don't file it here. Report it privately as described in [SECURITY.md](https://github.com/jke48222/otto/blob/main/SECURITY.md).
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the problem. Screenshots or a short screen recording help a lot.
+      placeholder: When I drag a PDF onto the closed notch, it opens but the chip never appears.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open Otto with ⌥Space
+        2. Drag a PDF onto the notch
+        3. …
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+    validations:
+      required: true
+  - type: input
+    id: otto-version
+    attributes:
+      label: Otto version
+      description: Shown at the bottom of Otto Settings (for example "Otto 1.0.0 (1)"), or the commit you built from.
+      placeholder: Otto 1.0.0 (1)
+    validations:
+      required: true
+  - type: input
+    id: macos-version
+    attributes:
+      label: macOS version
+      placeholder: macOS 15.1
+    validations:
+      required: true
+  - type: dropdown
+    id: display
+    attributes:
+      label: Display setup
+      options:
+        - MacBook with a notch (built-in display)
+        - Mac without a notch (virtual notch)
+        - External display(s)
+        - Mixed setup (built-in + external)
+    validations:
+      required: true
+  - type: dropdown
+    id: model
+    attributes:
+      label: Model
+      options:
+        - Claude Opus 5
+        - Claude Sonnet 5
+        - Claude Haiku 4.5
+        - Demo mode
+        - Not related to a model
+  - type: dropdown
+    id: install
+    attributes:
+      label: How did you install Otto?
+      options:
+        - Downloaded the release DMG
+        - Built from source
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        Optional. In Console.app, search for `subsystem:com.jalenedusei.otto`, reproduce the problem and paste the relevant lines. Please remove anything private.
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before you submit
+      options:
+        - label: I searched existing issues and this hasn't been reported yet.
+          required: true
+        - label: I removed any API keys and personal information from this report.
+          required: true

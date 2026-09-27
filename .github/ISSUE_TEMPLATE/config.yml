@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/jke48222/otto/security/advisories/new
+    about: Please report security issues privately, not as public issues.
+  - name: Build Otto from source
+    url: https://github.com/jke48222/otto#build-from-source
+    about: Setup steps, requirements and answers to common questions are in the README.

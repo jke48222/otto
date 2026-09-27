@@ -1,0 +1,74 @@
+# Builds Otto and runs the unit tests on every push and pull request to main.
+#
+# Runner: macos-26 (Apple silicon) is the newest generally available macOS image. Xcode 27 is only a
+# public preview on its own image, so we stay on the newest *stable* Xcode that setup-xcode finds.
+# The app targets macOS 14 and uses no SDK-gated APIs, so any Xcode 16 or later builds it.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build & test
+    runs-on: macos-26
+    timeout-minutes: 30
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_INSTALL_CLEANUP: "1"
+      HOMEBREW_NO_ENV_HINTS: "1"
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+
+      - name: Select newest stable Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Otto.xcodeproj
+        run: xcodegen generate --spec project.yml
+
+      # Ad hoc signing: CI has no Apple Development identity, and none is needed to build or test.
+      - name: Build and test
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project Otto.xcodeproj \
+            -scheme Otto \
+            -configuration Debug \
+            -destination 'platform=macOS' \
+            -derivedDataPath build \
+            -resultBundlePath build/TestResults.xcresult \
+            CODE_SIGN_IDENTITY=- \
+            CODE_SIGN_STYLE=Manual \
+            DEVELOPMENT_TEAM= \
+            CODE_SIGNING_REQUIRED=NO \
+            test
+
+      - name: Upload test results
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: TestResults
+          path: build/TestResults.xcresult
+          retention-days: 7
