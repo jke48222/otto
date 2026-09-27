@@ -2,15 +2,20 @@
 //  SelfTest.swift
 //  Otto
 //
-//  `--selftest <dir>`: drives the real notch stack (AppSettings in a throwaway defaults suite,
-//  ChatSession on MockLLMClient, NotchViewModel, NotchWindowController on the real screen) through a
-//  scripted session — open, type, send, stream, close mid-reply, reopen, new chat, attach files — and
-//  exercises the pointer state machine against the live geometry. Writes `report.json` (pass/fail per
-//  step) and PNG captures of the panel's content view into <dir>, then exits: 0 when every step
-//  passed, 1 otherwise, 3 if the run wedged.
+//  `--selftest <dir>`: drives the real app stack, built by `AppComposition.selfTest(directory:)` (MockLLMClient,
+//  demo action and media services, a mutable permission probe, preferences in a throwaway suite, History under
+//  <dir>/History, everything else in memory, the notch window on the real screen), through a scripted session:
+//  the v1.0 steps (open, type, send, stream, close mid-reply, reopen, new chat, attach files, pointer machine on
+//  the live geometry), then the v1.1 steps of SPEC-v2 §10.2 (tool approvals and arming, the actions demo, the
+//  fold for System Settings, routes, soft focus, the key map, regenerate, pin, Settings on the current Space,
+//  scripted voice, Services, the Shelf, drop zones, a dry-run paste, permission cards, the closed-notch glance,
+//  History and, on a signed build, a few real system probes). Writes `report.json` (pass/fail per step) and PNG
+//  captures of the panel's content view into <dir>, then exits: 0 when every step passed, 1 otherwise, 3 if the
+//  run wedged.
 //
-//  It never moves the pointer, clicks, or touches other apps; browser-tab suggestions are turned off
-//  so no Automation prompt can appear.
+//  It never moves the pointer, clicks, posts key events outside its own panel, pastes into another app or
+//  opens System Settings (the composition records the URLs instead); browser-tab suggestions are off so no
+//  Automation prompt can appear.
 //
 
 // Debug tooling: compiled only into Debug builds, or into a Release build made with the
@@ -18,18 +23,24 @@
 #if DEBUG || OTTO_TOOLS
 
 import AppKit
+import Carbon.HIToolbox
+import EventKit
 import os
 import Quartz
+import Security
 
 @MainActor
 final class SelfTest {
     // MARK: Entry point
 
+    /// How long the whole run may take before the watchdog ends the process (SPEC-v2 §10.2, R12).
+    private static let watchdogSeconds: Double = 420
+
     static func start(reportingTo directory: URL) {
         let test = SelfTest(directory: directory)
         running = test
         // Watchdog on a background queue: a wedged main thread still ends the process.
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 180) {
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + watchdogSeconds) {
             FileHandle.standardError.write(Data("Self-test timed out.\n".utf8))
             exit(3)
         }
@@ -70,7 +81,7 @@ final class SelfTest {
 
     // MARK: Stack
 
-    private let suiteName = "otto.selftest.\(UUID().uuidString)"
+    private var composition: AppComposition?
     private var settings: AppSettings?
     private var chat: ChatSession?
     private var viewModel: NotchViewModel?
@@ -93,7 +104,8 @@ final class SelfTest {
         }
 
         await step("launch stack") { try await self.launch() }
-        if steps.last?.passed == true, let vm = viewModel, let chat, let controller {
+        if steps.last?.passed == true, let composition, let vm = viewModel, let chat, let controller {
+            // v1.0 steps (checks unchanged).
             await step("open programmatically with focus") { await self.openWithFocus(vm, controller) }
             await step("type into the composer") { await self.typeIntoComposer(vm, controller) }
             await step("send and stream a reply") { await self.sendAndStream(vm, chat, controller) }
@@ -102,16 +114,39 @@ final class SelfTest {
             await step("new chat") { await self.newChat(vm, chat) }
             await step("attach files and remove a chip") { try await self.attachFiles(vm, controller) }
             await step("send with an attachment") { await self.sendWithAttachment(vm, chat, controller) }
-            await step("pointer machine on live geometry") { self.pointerMachine(vm, controller) }
+            await step("pointer machine on live geometry") { await self.pointerMachine(vm, controller) }
             await step("live click-through matches the machine") { self.liveClickThrough(vm, controller) }
             await step("close returns focus") { await self.closeReturnsFocus(vm, controller) }
+
+            // v1.1 steps (SPEC-v2 §10.2, in order).
+            await step("tool approval", retryable: true) { await self.toolApproval(vm, chat) }
+            await step("tool deny", retryable: true) { await self.toolDeny(vm, chat) }
+            await step("stop during approval", retryable: true) { await self.stopDuringApproval(vm, chat) }
+            await step("arming follows visibility", retryable: true) { await self.armingFollowsVisibility(vm, chat) }
+            await step("actions demo", retryable: true) { await self.actionsDemo(composition, vm, chat) }
+            await step("fold", retryable: true) { await self.fold(composition, vm, controller) }
+            await step("routes & sheet", retryable: true) { await self.routesAndSheet(vm, controller) }
+            await step("soft-focus", retryable: true) { await self.softFocus(vm, chat, controller) }
+            await step("key-commands", retryable: true) { await self.keyCommands(vm, chat, controller) }
+            await step("regenerate", retryable: true) { await self.regenerate(vm, chat, controller) }
+            await step("pinned-outside-click", retryable: true) { await self.pinnedOutsideClick(vm, controller) }
+            await step("settings-space", retryable: true) { await self.settingsSpace(composition, vm) }
+            await step("voice-scripted", retryable: true) { await self.voiceScripted(composition, vm, chat, controller) }
+            await step("servicesAsk", retryable: true) { await self.servicesAsk(vm, chat, controller) }
+            await step("shelfDrop", retryable: true) { try await self.shelfDrop(vm) }
+            await step("dropZones", retryable: true) { await self.dropZones(vm) }
+            await step("insertDryRun", retryable: true) { await self.insertDryRun() }
+            await step("permissionCard", retryable: true) { await self.permissionCard(vm, controller) }
+            await step("glance", retryable: true) { await self.glance(vm, chat, controller) }
+            await step("history", retryable: true) { await self.history(composition, vm, chat) }
+            await step("real probes", retryable: true) { await self.realProbes() }
         }
 
-        cleanUp()
         let screen = controller.map { controller -> String in
             let geometry = controller.debugGeometry
             return "frame \(geometry.screenFrame), notch \(geometry.notchRect), physical \(geometry.hasPhysicalNotch)"
         } ?? "unknown"
+        cleanUp()
         let failed = steps.filter { !$0.passed }.count
         let report = Report(startedAt: startedAt, screen: screen, screenLocked: Self.isScreenLocked, passed: steps.count - failed, failed: failed, steps: steps)
         writeReport(report)
@@ -124,26 +159,23 @@ final class SelfTest {
         return failed == 0
     }
 
-    // MARK: Steps
+    // MARK: - v1.0 steps
 
     private func launch() async throws {
-        guard let defaults = UserDefaults(suiteName: suiteName) else {
-            fail("Couldn't create a UserDefaults suite")
-            return
-        }
-        let settings = AppSettings(defaults: defaults)
-        // No AppleScript lookups (and so no Automation prompt) during the run.
-        settings.suggestBrowserTab = false
-        settings.autoAttachBrowserTab = false
+        let composition = AppComposition.selfTest(directory: directory)
+        let settings = composition.settings
         settings.model = .opus5
         settings.webAccess = true
-        let chat = ChatSession(settings: settings, makeClient: { MockLLMClient(latencyScale: 0.2) })
-        let viewModel = NotchViewModel(settings: settings, chat: chat)
-        let controller = NotchWindowController(viewModel: viewModel, settings: settings)
-        controller.showWindow()
+        composition.start()
+        self.composition = composition
+        guard let controller = composition.notchWindowController else {
+            fail("the self-test graph has no notch window")
+            return
+        }
+        let viewModel = composition.viewModel
 
         self.settings = settings
-        self.chat = chat
+        self.chat = composition.chat
         self.viewModel = viewModel
         self.controller = controller
 
@@ -296,9 +328,7 @@ final class SelfTest {
     }
 
     private func attachFiles(_ vm: NotchViewModel, _ controller: NotchWindowController) async throws {
-        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("otto-selftest-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        tempFiles.append(folder)
+        let folder = try makeTempFolder()
         let textURL = folder.appendingPathComponent("notes.txt")
         try "Remember the milk.\nAnd the bread.".write(to: textURL, atomically: true, encoding: .utf8)
         let imageURL = folder.appendingPathComponent("swatch.png")
@@ -349,7 +379,15 @@ final class SelfTest {
     }
 
     /// Drives a fresh `NotchPointerMachine` with synthetic points around the live notch.
-    private func pointerMachine(_ vm: NotchViewModel, _ controller: NotchWindowController) {
+    private func pointerMachine(_ vm: NotchViewModel, _ controller: NotchWindowController) async {
+        // The open shape is measured from the UI: let a transition that is still running finish first.
+        let openSettled = await waitUntil(2) {
+            vm.renderedShapeSize.width >= NotchMetrics.openWidth - 0.5
+                && vm.renderedShapeSize.height >= NotchMetrics.openTopRadius + NotchMetrics.openBottomRadius + 1
+        }
+        if !openSettled {
+            note("the open shape hadn't settled (\(vm.renderedShapeSize)); measuring it as it is")
+        }
         let geometry = controller.debugGeometry
         let closedSize = geometry.closedSize
         let openSize = CGSize(width: NotchMetrics.openWidth, height: min(vm.renderedShapeSize.height, NotchMetrics.maxOpenHeight))
@@ -477,17 +515,1044 @@ final class SelfTest {
         capture("13-closed-again")
     }
 
+    // MARK: - v1.1: tool loop and approvals (§10.2 steps 1–5)
+
+    /// "run my shortcut": the card waits its arming delay from the moment it was seen; an early ⌘↩ does nothing.
+    private func toolApproval(_ vm: NotchViewModel, _ chat: ChatSession) async {
+        await startFreshChat(vm, chat)
+        vm.composerText = Self.shortcutPrompt
+        vm.send()
+        guard let shown = await waitForVisibleApproval(vm, chat) else { return }
+        let (approval, visibility) = shown
+        check(approval.toolName == "run_shortcut", "the card is for run_shortcut (\(approval.toolName))")
+        let armedAt = visibility.sinceUptime + approval.armingDelay.timeInterval
+        let pressedEarly = ProcessInfo.processInfo.systemUptime < armedAt
+        vm.perform(.promptPrimary, hardwareConfirmed: true)
+        if pressedEarly {
+            check(chat.pendingApproval?.callID == approval.callID, "⌘↩ before the card armed leaves it pending")
+            check(toolCall(approval.callID, in: chat)?.status == .awaitingApproval,
+                  "the call still awaits approval (\(String(describing: toolCall(approval.callID, in: chat)?.status)))")
+        } else {
+            current?.skipped.append("the early ⌘↩ check (the card armed before the self-test could press)")
+        }
+        await settleShape(viewModel)
+        capture("approval")
+
+        let approved = await approveOnceArmed(approval, vm, chat)
+        check(approved, "⌘↩ after arming answers the card")
+        let ran = await waitUntil(10) { self.toolCall(approval.callID, in: chat)?.status == .succeeded }
+        check(ran, "⌘↩ after arming runs the call (\(String(describing: toolCall(approval.callID, in: chat)?.status)))")
+        check(toolCall(approval.callID, in: chat)?.approvedVia != nil, "the call records how it was approved")
+        let finished = await waitUntil(20) { !chat.isStreaming }
+        check(finished, "the reply finishes after the tool round")
+        let text = chat.messages.last?.text ?? ""
+        check(text.contains(Self.shortcutOutput), "the final text quotes the shortcut's output (\(text.prefix(120)))")
+    }
+
+    /// Esc on the card declines it; the notch stays open and the reply says so.
+    private func toolDeny(_ vm: NotchViewModel, _ chat: ChatSession) async {
+        await ensureOpenEngaged(vm)
+        vm.composerText = Self.shortcutPrompt
+        vm.send()
+        guard let approval = await waitForVisibleApproval(vm, chat)?.0 else { return }
+        vm.perform(.promptSecondary, hardwareConfirmed: false)
+        let denied = await waitUntil(5) { self.toolCall(approval.callID, in: chat)?.status == .denied }
+        check(denied, "Esc declines the call (\(String(describing: toolCall(approval.callID, in: chat)?.status)))")
+        check(chat.pendingApproval == nil, "no card after declining")
+        check(vm.isOpen, "the notch stays open")
+        let finished = await waitUntil(20) { !chat.isStreaming }
+        check(finished, "the reply finishes")
+        let text = chat.messages.last?.text ?? ""
+        check(text.contains("You declined"), "the reply says it was declined (\(text.prefix(120)))")
+    }
+
+    /// ⌘. while the card is up cancels the call and keeps the exchange.
+    private func stopDuringApproval(_ vm: NotchViewModel, _ chat: ChatSession) async {
+        await ensureOpenEngaged(vm)
+        vm.composerText = Self.shortcutPrompt
+        vm.send()
+        let asked = await waitUntil(15) { chat.pendingApproval != nil }
+        guard asked, let approval = chat.pendingApproval else { return fail("an approval card appears") }
+        vm.perform(.stop, hardwareConfirmed: false)
+        let stopped = await waitUntil(5) { chat.pendingApproval == nil && !chat.isStreaming }
+        check(stopped, "⌘. removes the card and stops the reply")
+        let status = toolCall(approval.callID, in: chat)?.status
+        check(status == .cancelled, "the call is cancelled (\(String(describing: status)))")
+        let message = chat.messages.last { $0.id == approval.messageID }
+        check(message?.toolExchanges.isEmpty == false, "the exchange is kept on the reply")
+    }
+
+    /// A card created while the notch was closed arms only after it has been on screen for its delay.
+    private func armingFollowsVisibility(_ vm: NotchViewModel, _ chat: ChatSession) async {
+        await ensureOpenEngaged(vm)
+        vm.composerText = Self.shortcutPrompt
+        vm.send()
+        vm.close(.user)
+        let created = await waitUntil(15) { chat.pendingApproval != nil }
+        guard created, let approval = chat.pendingApproval else { return fail("the approval is created while closed") }
+        check(!vm.isOpen, "the notch stayed closed")
+        check(vm.approvalVisibility == nil, "no visibility stamp while closed")
+        await pause(2)
+        check(vm.approvalVisibility == nil, "still no visibility stamp after 2 s closed")
+
+        let openedAt = Date()
+        vm.open(reason: .programmatic, focus: true)
+        let seen = await waitUntil(5) { vm.approvalVisibility?.callID == approval.callID }
+        guard seen, let visibility = vm.approvalVisibility else { return fail("the card is stamped visible after opening") }
+        check(visibility.since >= openedAt,
+              "visibility counts from the open (\(visibility.since.timeIntervalSince(openedAt)) s after it), not from creation")
+        let armedAt = visibility.sinceUptime + approval.armingDelay.timeInterval
+        let pressedEarly = ProcessInfo.processInfo.systemUptime < armedAt
+        vm.perform(.promptPrimary, hardwareConfirmed: true)
+        if pressedEarly {
+            check(chat.pendingApproval?.callID == approval.callID, "an immediate ⌘↩ after opening is ignored")
+        } else {
+            current?.skipped.append("the immediate ⌘↩ check (the card armed before the self-test could press)")
+        }
+        let approved = await approveOnceArmed(approval, vm, chat)
+        check(approved, "after the arming delay ⌘↩ answers the card")
+        let ran = await waitUntil(10) { self.toolCall(approval.callID, in: chat)?.status == .succeeded }
+        check(ran, "after the arming delay it runs (\(String(describing: toolCall(approval.callID, in: chat)?.status)))")
+        let finished = await waitUntil(20) { !chat.isStreaming }
+        check(finished, "the reply finishes")
+    }
+
+    /// "add dentist to my calendar" on the demo EventKit store, then Undo and the note Claude gets about it.
+    private func actionsDemo(_ composition: AppComposition, _ vm: NotchViewModel, _ chat: ChatSession) async {
+        await startFreshChat(vm, chat)
+        let store = composition.actionServices.eventKit
+        let before = await dentistEvents(in: store)
+        vm.composerText = "add dentist to my calendar"
+        vm.send()
+        guard let approval = await waitForVisibleApproval(vm, chat)?.0 else { return }
+        check(approval.toolName == "calendar_create_event", "the card is for calendar_create_event (\(approval.toolName))")
+        if case .event(let preview) = approval.body {
+            check(preview.title == "Dentist", "the event card shows “Dentist” (\(preview.title))")
+            let selected = preview.selectedCalendarID ?? ""
+            check(selected.hasPrefix("demo-calendar"), "the card picks a demo calendar (\(selected))")
+            check(preview.calendars.contains { $0.id == selected }, "the picked calendar is one of the card's choices")
+        } else {
+            fail("the card shows an event (\(approval.body))")
+        }
+        if case .permission = approval.kind {
+            note("the card asks for Calendars access first; once granted the approval comes back and arms again")
+        }
+        let approved = await approveOnceArmed(approval, vm, chat)
+        check(approved, "⌘↩ after arming answers the card")
+        let created = await waitUntil(10) { self.toolCall(approval.callID, in: chat)?.status == .succeeded }
+        check(created, "approving adds the event (\(String(describing: toolCall(approval.callID, in: chat)?.status)))")
+        let after = await dentistEvents(in: store)
+        check(after.count == before.count + 1, "the demo calendar has the new event (\(before.count) → \(after.count))")
+        let finished = await waitUntil(20) { !chat.isStreaming }
+        check(finished, "the reply finishes")
+
+        vm.undoToolCall(approval.callID, in: approval.messageID)
+        let undone = await waitUntil(5) { self.toolCall(approval.callID, in: chat)?.status == .undone }
+        check(undone, "Undo marks the call undone (\(String(describing: toolCall(approval.callID, in: chat)?.status)))")
+        let afterUndo = await dentistEvents(in: store)
+        check(afterUndo.count == before.count, "Undo removed the event (\(afterUndo.count) left)")
+
+        vm.composerText = "Thanks"
+        vm.send()
+        let carriesNote = chat.lastUserMessage?.apiContent.contains { block in
+            block["text"]?.stringValue?.contains("the user undid an action") == true
+        } == true
+        check(carriesNote, "the next message tells Claude about the undo")
+        let answered = await waitUntil(20) { !chat.isStreaming }
+        check(answered, "the follow-up reply finishes")
+    }
+
+    // MARK: - v1.1: fold, routes, soft focus, keys (§10.2 steps 6–12)
+
+    /// A permission flow that opens System Settings folds the notch out of its way and brings it back on the grant.
+    private func fold(_ composition: AppComposition, _ vm: NotchViewModel, _ controller: NotchWindowController) async {
+        guard let probe = composition.permissionProbe else { return fail("the self-test graph has a mutable permission probe") }
+        await ensureOpenEngaged(vm)
+        probe.set(.calendars, .denied)
+        let openedBefore = composition.openedExternalURLs.count
+        let flow = SelfTestFlowResult()
+        Task { @MainActor in
+            flow.granted = await vm.requestPermission(.calendars, for: .calendarGlance)
+        }
+        let explained = await waitUntil(5) { vm.permissionPrompt?.phase == .explain }
+        guard explained else { return fail("the Calendars card explains first (\(String(describing: vm.permissionPrompt)))") }
+        check(vm.permissionCardContent?.primaryAction == .openSystemSettings,
+              "a denied permission offers Open System Settings (\(String(describing: vm.permissionCardContent?.primaryAction)))")
+        vm.perform(.promptPrimary, hardwareConfirmed: true)
+
+        let folded = await waitUntil(5) { vm.presentation == .closed && vm.isFolded }
+        check(folded, "the notch folds while System Settings is up (presentation \(vm.presentation), folded \(vm.isFolded))")
+        check(composition.openedExternalURLs.count == openedBefore + 1
+              && composition.openedExternalURLs.last == Permission.calendars.settingsURL,
+              "System Settings was asked for the Calendars pane (\(composition.openedExternalURLs.suffix(1)))")
+        let waitingText = SystemUIWait.systemSettings(.calendars).dropText
+        check(vm.closedGlance.drop == .systemWait(waitingText),
+              "the closed notch says “\(waitingText)” (\(String(describing: vm.closedGlance.drop)))")
+        check(waitingText == "Waiting for System Settings…", "the wait text is exact (\(waitingText))")
+        let dropDrawn = await waitUntil(3) { vm.renderedShapeSize.height > vm.closedNotchSize.height + 0.5 }
+        check(dropDrawn, "the closed shape shows the waiting line (\(vm.renderedShapeSize))")
+        await pause(0.5)
+        await settleShape(viewModel)
+        capture("closed-waiting")
+
+        probe.set(.calendars, .granted)
+        var trace: [String] = []
+        let reopened = await waitUntil(6) {
+            let state = "open \(vm.isOpen) folded \(vm.isFolded) phase \(String(describing: vm.permissionPrompt?.phase)) "
+                + "wait \(String(describing: vm.systemUIWait)) awaiting \(String(describing: vm.permissions.awaiting))"
+            if trace.last != state { trace.append(state) }
+            return vm.isOpen && vm.permissionPrompt?.phase == .granted
+        }
+        if !reopened { note("states: " + trace.joined(separator: " → ")) }
+        check(reopened, "the notch reopens on the “You're all set” card after the grant (open \(vm.isOpen), "
+              + "phase \(String(describing: vm.permissionPrompt?.phase)))")
+        check(!vm.isEngaged, "it reopens without taking the keyboard")
+        checkFocus(!controller.debugPanel.isKeyWindow, "the panel isn't key after the unfold")
+        let resolved = await waitUntil(5) { flow.granted != nil }
+        check(resolved && flow.granted == true, "the flow reports the grant (\(String(describing: flow.granted)))")
+        check(!vm.isFolded, "no longer folded")
+    }
+
+    /// ⌘/ shows the shortcut sheet, Esc hides it; ⌘Y Recents, ⌘D Shelf, Esc back to Chat.
+    private func routesAndSheet(_ vm: NotchViewModel, _ controller: NotchWindowController) async {
+        await ensureOpenEngaged(vm)
+        await pressKey(kVK_ANSI_Slash, "/", .command, vm, controller)
+        check(vm.overlay == .shortcutSheet, "⌘/ shows the shortcut sheet (\(String(describing: vm.overlay)))")
+        await pause(0.5)
+        await settleShape(viewModel)
+        capture("shortcuts")
+        await pressKey(kVK_Escape, "\u{1b}", [], vm, controller)
+        check(vm.overlay == nil, "Esc dismisses the sheet")
+        check(vm.isOpen, "and keeps the notch open")
+        await pressKey(kVK_ANSI_Y, "y", .command, vm, controller)
+        check(vm.route == .history, "⌘Y opens Recents (\(vm.route))")
+        await pressKey(kVK_ANSI_D, "d", .command, vm, controller)
+        check(vm.route == .shelf, "⌘D opens the Shelf (\(vm.route))")
+        await pressKey(kVK_Escape, "\u{1b}", [], vm, controller)
+        check(vm.route == .chat, "Esc goes back to Chat (\(vm.route))")
+        check(vm.isOpen, "the notch is still open")
+    }
+
+    /// interaction.md §8.2 step 1, plus: ⌘↩ while only soft-focused hands the keyboard back and approves nothing.
+    private func softFocus(_ vm: NotchViewModel, _ chat: ChatSession, _ controller: NotchWindowController) async {
+        let panel = controller.debugPanel
+        // A card waits in the dock, so a ⌘↩ that reached it could approve something.
+        await startFreshChat(vm, chat)
+        vm.composerText = Self.shortcutPrompt
+        vm.send()
+        let asked = await waitUntil(15) { chat.pendingApproval != nil }
+        guard asked, let approval = chat.pendingApproval else { return fail("an approval card appears") }
+
+        // The machine hands soft focus back as soon as the real pointer is off the panel, and the self-test never
+        // moves the pointer: with "Type after hovering" off the machine leaves soft focus to the view model.
+        let settings = vm.settings
+        let typeAfterHover = settings.notch.typeAfterHover
+        settings.notch.typeAfterHover = false
+        defer { settings.notch.typeAfterHover = typeAfterHover }
+
+        vm.close()
+        let frontmost = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        vm.open(reason: .hover, focus: false)
+        // The real pointer is wherever the user left it: pin so the exit timer can't close the hover-open notch.
+        vm.togglePin()
+        check(vm.isOpen && !vm.isEngaged, "hover-open without focus")
+        let notKey = await waitUntil(1) { !panel.isKeyWindow }
+        check(notKey, "a hover-open panel isn't key")
+
+        vm.softFocus()
+        check(vm.isSoftFocused && !vm.isEngaged, "soft focus is not engagement")
+        let tookKey = await waitUntil(2) { panel.isKeyWindow || Self.isScreenLocked }
+        checkFocus(tookKey && panel.isKeyWindow, "soft focus makes the panel key")
+        let composerFocused = await waitUntil(2) { self.composerTextView(panel) != nil || Self.isScreenLocked }
+        checkFocus(composerFocused && composerTextView(panel) != nil, "the composer is first responder under soft focus")
+        check(NSWorkspace.shared.frontmostApplication?.processIdentifier == frontmost,
+              "the frontmost app is unchanged (Otto never activates for soft focus)")
+        let sinceKey = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .keyDown)
+        note("seconds since the last key-down (R4): \(sinceKey)")
+
+        await pressKey(kVK_Return, "\r", .command, vm, controller, retakeKeyboard: false)
+        let handedBack = await waitUntil(2) { !vm.isSoftFocused && !panel.isKeyWindow }
+        check(handedBack, "⌘↩ while soft-focused hands the keyboard back (soft \(vm.isSoftFocused), key \(panel.isKeyWindow))")
+        check(chat.pendingApproval?.callID == approval.callID
+              && toolCall(approval.callID, in: chat)?.status == .awaitingApproval,
+              "⌘↩ while soft-focused approves nothing")
+        check(vm.isOpen, "the notch stays open")
+
+        vm.softFocus()
+        _ = await waitUntil(2) { panel.isKeyWindow || Self.isScreenLocked }
+        vm.releaseSoftFocus()
+        let released = await waitUntil(2) { !panel.isKeyWindow }
+        check(released, "releasing soft focus gives up key status")
+        check(panel.isVisible && vm.isOpen, "the panel stays visible and open")
+
+        vm.performPromptSecondary()
+        _ = await waitUntil(20) { !chat.isStreaming }
+        vm.togglePin()
+    }
+
+    /// interaction.md §8.2 step 2: ⌘/, ↑, ⌘P and ⌘⇧↑ through the panel's own key handling.
+    private func keyCommands(_ vm: NotchViewModel, _ chat: ChatSession, _ controller: NotchWindowController) async {
+        let panel = controller.debugPanel
+        await startFreshChat(vm, chat)
+        vm.composerText = "Summarize the Swift 6 migration guide"
+        vm.send()
+        let answered = await waitUntil(20) { !chat.isStreaming && chat.messageCount == 2 }
+        check(answered, "a conversation to work with")
+        _ = await waitUntil(2) { self.composerTextView(panel) != nil || Self.isScreenLocked }
+
+        await pressKey(kVK_ANSI_Slash, "/", .command, vm, controller)
+        check(vm.overlay == .shortcutSheet, "⌘/ toggles the sheet on")
+        await pause(0.5)
+        await settleShape(viewModel)
+        capture("20-shortcuts")
+        await pressKey(kVK_ANSI_Slash, "/", .command, vm, controller)
+        check(vm.overlay == nil, "⌘/ toggles the sheet off")
+
+        let question = chat.lastUserMessage?.text ?? ""
+        await pressKey(kVK_UpArrow, Self.upArrowCharacters, [], vm, controller)
+        check(vm.isEditing, "↑ in an empty composer recalls the last question")
+        check(vm.composerText == question, "the composer holds the question (\(vm.composerText))")
+        let caretAtEnd = await waitUntil(1) {
+            guard let textView = self.composerTextView(panel) else { return Self.isScreenLocked }
+            return textView.string == question
+                && textView.selectedRange() == NSRange(location: (textView.string as NSString).length, length: 0)
+        }
+        checkFocus(caretAtEnd, "the caret sits at the end of the recalled text")
+        await pause(0.4)
+        await settleShape(viewModel)
+        capture("21-editing")
+        await pressKey(kVK_Escape, "\u{1b}", [], vm, controller)
+        check(!vm.isEditing && vm.composerText.isEmpty, "Esc cancels editing")
+
+        let wasPinned = vm.isPinned
+        await pressKey(kVK_ANSI_P, "p", .command, vm, controller)
+        check(vm.isPinned == !wasPinned, "⌘P toggles the pin")
+        await pressKey(kVK_ANSI_P, "p", .command, vm, controller)
+        check(vm.isPinned == wasPinned, "⌘P again toggles it back")
+
+        let geometry = controller.debugGeometry
+        let tallFrameHeight = geometry.tallOpenHeight + NotchMetrics.shadowMargin
+        await pressKey(kVK_UpArrow, Self.upArrowCharacters, [.command, .shift], vm, controller)
+        check(vm.isTallMode, "⌘⇧↑ enters tall mode")
+        let grew = await waitUntil(3) {
+            abs(panel.frame.height - tallFrameHeight) < 0.5 && vm.renderedShapeSize.height > NotchMetrics.maxOpenHeight
+        }
+        check(grew, "the window is tall (\(panel.frame.height) vs \(tallFrameHeight)) and the shape uses it "
+              + "(\(vm.renderedShapeSize.height) > \(NotchMetrics.maxOpenHeight))")
+        await pause(0.5)
+        await settleShape(viewModel)
+        capture("22-tall")
+        await pressKey(kVK_DownArrow, Self.downArrowCharacters, [.command, .shift], vm, controller)
+        check(!vm.isTallMode, "⌘⇧↓ leaves tall mode")
+        _ = await waitUntil(3) { vm.renderedShapeSize.height <= NotchMetrics.maxOpenHeight + 0.5 }
+    }
+
+    /// interaction.md §8.2 step 3: ⌘R answers the last question again and keeps both versions.
+    private func regenerate(_ vm: NotchViewModel, _ chat: ChatSession, _ controller: NotchWindowController) async {
+        await ensureOpenEngaged(vm)
+        guard chat.lastUserMessage != nil else { return fail("a question to regenerate") }
+        await pressKey(kVK_ANSI_R, "r", .command, vm, controller)
+        let started = await waitUntil(3) { chat.isStreaming }
+        check(started, "⌘R starts a new reply")
+        let finished = await waitUntil(20) { !chat.isStreaming }
+        check(finished, "the new version completes")
+        check(chat.messages.last?.state == .complete, "the new version is complete")
+        check(chat.lastTurnVersions?.replies.count == 2,
+              "the footer pager has two versions (\(chat.lastTurnVersions?.replies.count ?? 0))")
+    }
+
+    /// interaction.md §8.2 step 4: a pinned notch ignores a click in another app.
+    private func pinnedOutsideClick(_ vm: NotchViewModel, _ controller: NotchWindowController) async {
+        await ensureOpenEngaged(vm)
+        if !vm.isPinned { vm.togglePin() }
+        check(vm.isPinned, "pinned")
+        let geometry = controller.debugGeometry
+        let openSize = CGSize(width: NotchMetrics.openWidth, height: min(vm.renderedShapeSize.height, vm.openHeightLimit))
+        let shape = geometry.shapeRect(size: openSize)
+        let inside = CGPoint(x: shape.midX, y: shape.midY)
+        let farAway = CGPoint(x: geometry.notchRect.midX + NotchMetrics.openWidth / 2 + 120, y: geometry.notchRect.midY - 60)
+
+        func context(_ point: CGPoint, _ now: TimeInterval) -> NotchPointerMachine.Context {
+            NotchPointerMachine.Context(
+                point: point, isButtonPressed: false, dragPasteboardChangeCount: { 0 }, isOpen: true,
+                openReason: vm.openReason, shouldStayOpen: false, isEngaged: false, isMenuPresented: false,
+                hasTransientError: false, renderedShapeSize: openSize, geometry: geometry, now: now,
+                isPinned: vm.isPinned, openShapeLimit: CGSize(width: NotchMetrics.openWidth, height: vm.openHeightLimit)
+            )
+        }
+        var machine = NotchPointerMachine()
+        _ = machine.handle(.refresh, context(inside, 0))
+        var effects = machine.handle(.mouseDown(.left, .elsewhere), context(farAway, 0.1))
+        check(!effects.contains(.close), "a pinned notch ignores a click in another app (\(effects))")
+        effects = machine.handle(.refresh, context(farAway, 0.2))
+        check(!effects.contains { if case .scheduleTimer(.exitClose, _) = $0 { return true }; return false },
+              "and never schedules an exit close")
+        await pause(0.5)
+        check(vm.isOpen, "the live notch is still open")
+        vm.togglePin()
+        check(!vm.isPinned, "unpinned again")
+    }
+
+    /// interaction.md §8.2 step 5: Settings opens on the current Space without activating Otto.
+    private func settingsSpace(_ composition: AppComposition, _ vm: NotchViewModel) async {
+        await ensureOpenEngaged(vm)
+        let frontmost = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+        vm.openSettings()
+        let settingsController = composition.settingsWindowController
+        let shown = await waitUntil(3) { settingsController.panel?.isVisible == true }
+        guard shown, let panel = settingsController.panel else { return fail("the Settings panel appears") }
+        check(!vm.isOpen, "the notch closes for Settings")
+        let key = await waitUntil(2) { panel.isKeyWindow || Self.isScreenLocked }
+        checkFocus(key && panel.isKeyWindow, "the Settings panel is key")
+        // A non-activating panel that is key reports NSApp.isActive == true on this macOS even though another app
+        // stays frontmost, so "doesn't activate" is measured on the frontmost app.
+        let frontmostAfter = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        check(frontmostAfter == frontmost && frontmostAfter != ownPID,
+              "opening Settings doesn't activate Otto (the frontmost app is unchanged)")
+        note("NSApp.isActive with Settings key: \(NSApp.isActive)")
+        check(panel.isOnActiveSpace, "Settings is on the active Space")
+        check(panel.collectionBehavior.contains(.fullScreenAuxiliary), "collection behavior has .fullScreenAuxiliary")
+        check(panel.collectionBehavior.contains(.moveToActiveSpace), "collection behavior has .moveToActiveSpace")
+        await pause(0.3)
+        panel.cancelOperation(nil)
+        let closed = await waitUntil(2) { !panel.isVisible }
+        check(closed, "Esc (cancelOperation) closes Settings")
+    }
+
+    /// interaction.md §8.2 step 6: hold-to-talk on the scripted speech engine with the notch closed.
+    private func voiceScripted(_ composition: AppComposition, _ vm: NotchViewModel, _ chat: ChatSession,
+                               _ controller: NotchWindowController) async {
+        let settings = composition.settings
+        await startFreshChat(vm, chat)
+        vm.close(.user)
+        _ = await waitUntil(2) { vm.renderedShapeSize.width <= vm.closedNotchSize.width + 2 * NotchMetrics.activityEarWidth + 0.5 }
+        settings.voice.enabled = true
+        settings.voice.autoSend = true
+        defer { settings.voice.enabled = false }
+
+        vm.beginVoice(.hold(.shortcut))
+        let listening = await waitUntil(3) { vm.voice.isListening }
+        check(listening, "holding the shortcut starts listening (\(vm.voice.phase))")
+        check(!vm.isOpen, "the notch stays closed while listening")
+        let pill = await waitUntil(3) { vm.renderedShapeSize.width >= VoiceMetrics.pillMinWidth - 0.5 }
+        check(pill, "the closed notch grows into the listening pill (\(vm.renderedShapeSize.width))")
+        let heard = await waitUntil(4) { vm.voice.transcript == AppComposition.selfTestVoiceTranscript }
+        check(heard, "the scripted transcript arrives (\(vm.voice.transcript))")
+        await pause(0.3)
+        await settleShape(viewModel)
+        capture("23-closed-listening")
+
+        vm.finishVoice(send: true)
+        let sent = await waitUntil(5) { chat.lastUserMessage?.text == AppComposition.selfTestVoiceTranscript }
+        check(sent, "releasing sends what was heard (\(chat.lastUserMessage?.text ?? "nothing"))")
+        let opened = await waitUntil(3) { vm.isOpen }
+        check(opened, "the notch opens for the reply")
+        check(vm.openReason == .voice, "opened by voice (\(String(describing: vm.openReason)))")
+        checkFocus(!controller.debugPanel.isKeyWindow, "the panel doesn't take the keyboard")
+        check(!vm.isEngaged, "not engaged")
+        check(vm.voiceReplyHold, "the voice reply hold keeps it open")
+        if !vm.voiceReplyHold {
+            note("hold gone: engaged \(vm.isEngaged), pointer over the open shape \(shapeContainsPointer(vm, controller)), "
+                 + "holds \(vm.stayOpenHolds), streaming \(chat.isStreaming)")
+        }
+        await pause(0.8)
+        await settleShape(viewModel)
+        capture("24-voice-reply")
+        let finished = await waitUntil(20) { !chat.isStreaming }
+        check(finished, "the reply finishes")
+        vm.stopSpeaking()
+    }
+
+    // MARK: - v1.1: context in and out (§10.2 steps 14–18)
+
+    /// "Ask Otto" through the real Services provider, on a private pasteboard.
+    private func servicesAsk(_ vm: NotchViewModel, _ chat: ChatSession, _ controller: NotchWindowController) async {
+        vm.close(.user)
+        vm.newChat()
+        let sourceApp = AppRef(pid: Self.fakeAppPID, bundleID: "com.apple.Notes", name: "Notes")
+        let provider = ServicesProvider(handler: vm, frontmostApp: { sourceApp })
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("otto.selftest.\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        pasteboard.clearContents()
+        pasteboard.setString("The quarterly numbers are in: revenue is up 12% on last year.", forType: .string)
+        var serviceError: NSString?
+        provider.askOtto(pasteboard, userData: nil, error: &serviceError)
+        check(serviceError == nil, "the service accepts the text (\(serviceError.map { String($0) } ?? ""))")
+
+        let attached = await waitUntil(5) { vm.isOpen && vm.attachments.count == 1 }
+        check(attached, "the notch opens with one chip (open \(vm.isOpen), chips \(vm.attachments.map(\.displayName)))")
+        check(vm.isEngaged, "engaged")
+        check(vm.route == .chat, "on Chat")
+        let name = vm.attachments.first?.displayName ?? ""
+        check(name.hasPrefix("Selection from"), "the chip reads “Selection from …” (\(name))")
+        let panel = controller.debugPanel
+        let focused = await waitUntil(2) { (self.composerTextView(panel) != nil && panel.isKeyWindow) || Self.isScreenLocked }
+        checkFocus(focused && composerTextView(panel) != nil, "the composer has focus")
+        await pause(0.4)
+        await settleShape(viewModel)
+        capture("services-ask")
+        if let chip = vm.attachments.first {
+            vm.removeAttachment(id: chip.id)
+        }
+    }
+
+    /// "Add to Otto Shelf" with the Shelf opening: the page shows the tiles and the landing hold keeps it open.
+    private func shelfDrop(_ vm: NotchViewModel) async throws {
+        let folder = try makeTempFolder()
+        var files: [URL] = []
+        for (index, text) in ["Budget draft", "Meeting notes"].enumerated() {
+            let url = folder.appendingPathComponent("shelf-\(index + 1).txt")
+            try text.write(to: url, atomically: true, encoding: .utf8)
+            files.append(url)
+        }
+        vm.close(.user)
+        let store = vm.shelf.store
+        let before = store.count
+        let beforeIDs = Set(store.items.map(\.id))
+        vm.addToShelf(fileURLs: files, openShelf: true)
+        check(vm.isOpen, "the notch opens for the Shelf")
+        check(vm.route == .shelf, "on the Shelf page (\(vm.route))")
+        check(!vm.isEngaged, "a Shelf drop doesn't take the keyboard")
+        check(store.count == before + files.count, "the Shelf has the new items (\(before) → \(store.count))")
+        check(vm.stayOpenHolds.contains(.shelfLanding), "the landing hold keeps it open (\(vm.stayOpenHolds))")
+        let added = Set(store.items.map(\.id)).subtracting(beforeIDs)
+        check(vm.shelf.selection == added, "the new tiles are selected")
+        await pause(0.7)
+        await settleShape(viewModel)
+        capture("shelf")
+        vm.shelf.remove(added)
+        let removed = await waitUntil(2) { store.count == before }
+        check(removed, "removing the items empties them from the Shelf (\(store.count))")
+        check(FileManager.default.fileExists(atPath: files[0].path), "the originals are untouched")
+        vm.navigate(to: .chat)
+    }
+
+    /// The drop halves against the live open width.
+    private func dropZones(_ vm: NotchViewModel) async {
+        await ensureOpenEngaged(vm)
+        let width = vm.renderedShapeSize.width
+        check(width >= NotchMetrics.openWidth - 0.5, "measured on the open shape (\(width))")
+        check(DropZone.zone(forX: width * 0.25, width: width, acceptsShelf: true) == .shelf, "left half → Shelf")
+        check(DropZone.zone(forX: width * 0.75, width: width, acceptsShelf: true) == .ask, "right half → Ask")
+        check(DropZone.zone(forX: width / 2, width: width, acceptsShelf: true) == .ask, "the middle belongs to Ask")
+        check(DropZone.zone(forX: width * 0.25, width: width, acceptsShelf: false) == .ask,
+              "without a Shelf target everything is Ask")
+    }
+
+    /// The paste sequence end to end, against a fake app: nothing reaches the user's clipboard or apps.
+    private func insertDryRun() async {
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("otto.selftest.\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        let seeded = "What the user had copied"
+        pasteboard.clearContents()
+        pasteboard.setString(seeded, forType: .string)
+        let target = AppRef(pid: Self.fakeAppPID, bundleID: "com.example.editor", name: "Editor")
+        let keys = SelfTestKeySender()
+        let environment = SelfTestInsertEnvironment(target: target)
+        let inserter = AnswerInserter(pasteboard: pasteboard, keys: keys, environment: environment)
+        let request = InsertRequest(markdown: "The **answer**, pasted.", target: InsertTarget(app: target, selection: nil),
+                                    mode: .paste, restoreClipboard: true)
+        let preflight = await inserter.preflight(request)
+        check(preflight == .ready, "preflight is ready (\(preflight))")
+        var relinquished = false
+        let outcome = await inserter.perform(request) { relinquished = true }
+        check(relinquished, "the notch is asked to give up focus first")
+        check(outcome == .pasted(verified: true, clipboard: .restored), "the answer is pasted and verified (\(outcome))")
+        check(keys.pasteCount == 1, "exactly one ⌘V (\(keys.pasteCount))")
+        check(environment.activationRequests == 1, "the target app is brought forward once (\(environment.activationRequests))")
+        check(pasteboard.string(forType: .string) == seeded, "the clipboard holds what it had before")
+    }
+
+    /// A permission card in the dock: Esc dismisses the card first, the next Esc closes the notch.
+    private func permissionCard(_ vm: NotchViewModel, _ controller: NotchWindowController) async {
+        await ensureOpenEngaged(vm)
+        let prompt = PermissionPrompt(id: UUID(), permission: .accessibility, purpose: .selection(appName: "Notes"),
+                                      phase: .explain)
+        vm.debugSeed(features: NotchDebugSeed(permissionPrompt: prompt))
+        check(vm.currentPrompt == .permission(prompt), "the dock shows the permission card")
+        await pause(0.6)
+        await settleShape(viewModel)
+        capture("permission")
+        await pressKey(kVK_Escape, "\u{1b}", [], vm, controller)
+        check(vm.permissionPrompt == nil, "Esc dismisses the card")
+        check(vm.isOpen, "before closing the notch")
+        await pressKey(kVK_Escape, "\u{1b}", [], vm, controller)
+        check(!vm.isOpen, "the next Esc closes the notch")
+    }
+
+    // MARK: - v1.1: glance and History (§10.2 steps 19–20)
+
+    /// The closed notch while a reply streams and after: phase ears, the reply preview, the unread dot, and a click
+    /// that opens at the start of the answer.
+    private func glance(_ vm: NotchViewModel, _ chat: ChatSession, _ controller: NotchWindowController) async {
+        await startFreshChat(vm, chat)
+        vm.composerText = "Tell me about glances"
+        vm.send()
+        _ = await waitUntil(5) { (chat.messages.last?.text.count ?? 0) > 0 }
+        vm.close()
+        check(chat.isStreaming, "the reply streams with the notch closed")
+        let ears = await waitUntil(3) {
+            abs(vm.renderedShapeSize.width - (vm.closedNotchSize.width + 2 * NotchMetrics.activityEarWidth)) < 0.5
+        }
+        check(ears, "phase ears: closed width + 68 (\(vm.renderedShapeSize.width) vs \(vm.closedNotchSize.width))")
+        check(vm.closedGlance.hasEars, "the glance has ears while streaming")
+
+        let finished = await waitUntil(20) { !chat.isStreaming }
+        check(finished, "the reply finishes while closed")
+        let finishedAt = ContinuousClock.now
+        guard let reply = chat.messages.last, reply.role == .assistant else { return fail("an assistant reply") }
+        let previewShown = await waitUntil(3) {
+            if case .preview? = vm.closedGlance.drop { return vm.renderedShapeSize.height > vm.closedNotchSize.height + 0.5 }
+            return false
+        }
+        check(previewShown, "the reply preview drops below the notch (\(String(describing: vm.closedGlance.drop)), "
+              + "\(vm.renderedShapeSize))")
+        if previewShown {
+            checkDropGrowthDoesNotHoverOpen(vm, controller)
+        }
+
+        // §10.2: 4.6 s after the reply finished the preview has gone and the unread dot shows (a pointer resting on
+        // the preview pauses its countdown, so allow a little longer and say so).
+        await waitUntilInstant(finishedAt + .milliseconds(4_600))
+        var unreadDot = vm.closedGlance.drop == nil
+            && (vm.closedGlance.left == .unreadDot || vm.closedGlance.right == .unreadDot)
+        if !unreadDot {
+            unreadDot = await waitUntil(3) {
+                vm.closedGlance.drop == nil && (vm.closedGlance.left == .unreadDot || vm.closedGlance.right == .unreadDot)
+            }
+            note("the unread dot came \(ContinuousClock.now - finishedAt) after the reply (the preview was paused)")
+        }
+        check(unreadDot, "the unread dot replaces the preview (\(vm.closedGlance.left), \(vm.closedGlance.right), "
+              + "drop \(String(describing: vm.closedGlance.drop)))")
+        check(vm.hasUnreadReply, "the reply is unread")
+
+        let openedAt = Date()
+        switch ClosedNotchView.clickAction(for: vm.closedGlance, isListening: false) {
+        case .openToReply(let messageID):
+            vm.openToReply(messageID)
+        case .stopSpeakingAndOpen:
+            vm.stopSpeaking()
+            vm.open(reason: .click, focus: true)
+        case .open:
+            vm.open(reason: .click, focus: true)
+        case .none:
+            fail("a click on the closed notch does nothing")
+        }
+        check(vm.isOpen, "a click opens the notch")
+        check(!vm.hasUnreadReply, "opening reads the reply")
+        let consumed = await waitUntil(3) { vm.readingAnchor == nil }
+        check(consumed, "the conversation consumed the reading anchor")
+        let landed = await waitUntil(3) {
+            guard let position = vm.history.currentReadingPosition else { return false }
+            return position.anchorMessageID == reply.id && position.savedAt >= openedAt
+        }
+        let position = vm.history.currentReadingPosition
+        check(landed, "the reading report names the answer (\(String(describing: position?.anchorMessageID == reply.id)))")
+        if let position, landed {
+            // The report names the answer as the message being read, so the question above it is scrolled away (its
+            // bottom is under the 22 pt top fade) and the answer's top is at most the fade plus the 14 pt row spacing
+            // below the viewport top. Above it, the answer is scrolled past by fraction × its height, and the
+            // conversation's document height bounds that height.
+            let documentHeight = conversationScrollView(in: controller.debugPanel)?.documentView?.frame.height
+            let bound = documentHeight ?? Self.fallbackAnswerHeight
+            let scrolledPast = position.fractionScrolledPast * bound
+            note("answer scrolled past ≤ \(Int(scrolledPast.rounded(.up))) pt (fraction \(position.fractionScrolledPast), "
+                 + "document \(documentHeight.map { "\(Int($0)) pt" } ?? "not found"))")
+            check(scrolledPast <= 40, "the answer's top is within 40 pt of the viewport top")
+            if position.isAtBottom {
+                note("the conversation fits the viewport, so the answer is fully visible")
+            }
+        }
+    }
+
+    /// A drop growing under a resting pointer must not hover-open the notch (the notch came to the pointer).
+    private func checkDropGrowthDoesNotHoverOpen(_ vm: NotchViewModel, _ controller: NotchWindowController) {
+        let geometry = controller.debugGeometry
+        let closedSize = geometry.closedSize
+        let grownSize = vm.closedLayout.size
+        let grownTarget = geometry.hoverTarget(shapeSize: grownSize)
+        let point = CGPoint(x: geometry.notchRect.midX, y: grownTarget.minY + 2)
+        guard !geometry.hoverTarget(shapeSize: closedSize).contains(point), grownTarget.contains(point) else {
+            current?.skipped.append("drop growth check: no point lies under the drop but off the plain notch")
+            return
+        }
+        let dwell = NotchPointerMachine.Configuration().hoverDwell
+        func context(_ size: CGSize, _ now: TimeInterval) -> NotchPointerMachine.Context {
+            NotchPointerMachine.Context(
+                point: point, isButtonPressed: false, dragPasteboardChangeCount: { 0 }, isOpen: false, openReason: nil,
+                shouldStayOpen: false, isEngaged: false, isMenuPresented: false, hasTransientError: false,
+                renderedShapeSize: size, geometry: geometry, now: now
+            )
+        }
+        var machine = NotchPointerMachine()
+        var effects = machine.handle(.refresh, context(closedSize, 0))
+        effects += machine.handle(.refresh, context(grownSize, 0.05))
+        effects += machine.handle(.refresh, context(grownSize, 0.3))
+        effects += machine.handle(.timerFired(.hoverOpen), context(grownSize, 0.3 + dwell))
+        effects += machine.handle(.refresh, context(grownSize, 1.5))
+        check(!effects.contains(.open(.hover, focus: false)),
+              "a drop growing under a resting pointer doesn't hover-open the notch")
+    }
+
+    /// history.md §13.2 steps 1–5 on `ConversationStore(.directory(<dir>/History))`.
+    private func history(_ composition: AppComposition, _ vm: NotchViewModel, _ chat: ChatSession) async {
+        let history = composition.history
+        let recents = composition.recents
+        let conversations = directory
+            .appendingPathComponent("History", isDirectory: true)
+            .appendingPathComponent(AppSupport.Directory.conversations.rawValue, isDirectory: true)
+
+        // 1. Save on turn end (a retried step first removes the conversation its first attempt left).
+        await startFreshChat(vm, chat)
+        for leftover in history.summaries where leftover.title == "History check" {
+            history.delete(leftover.id)
+            history.commitPendingDeletion()
+        }
+        vm.composerText = "History check"
+        vm.send()
+        let finished = await waitUntil(20) { !chat.isStreaming }
+        check(finished, "the reply finishes")
+        let id = chat.conversationID
+        let file = conversations.appendingPathComponent("\(id.uuidString).json")
+        let saved = await waitUntil(5) {
+            FileManager.default.fileExists(atPath: file.path)
+                && history.summaries.contains { $0.id == id && $0.title == "History check" }
+        }
+        check(saved, "the conversation is saved in Conversations.noindex and indexed as “History check”")
+        check(Self.posixPermissions(of: file) == 0o600, "the conversation file is 0600 (\(String(Self.posixPermissions(of: file) ?? 0, radix: 8)))")
+        let index = conversations.appendingPathComponent("index.json")
+        let indexSaved = await waitUntil(5) { FileManager.default.fileExists(atPath: index.path) }
+        check(indexSaved, "the index is written")
+        if indexSaved {
+            check(Self.posixPermissions(of: index) == 0o600, "the index is 0600")
+        }
+
+        // 2. Recents.
+        vm.toggleHistory()
+        check(vm.route == .history, "⌘Y shows Recents (\(vm.route))")
+        check(recents.selectedID != nil, "a row is selected")
+        await pause(0.5)
+        await settleShape(viewModel)
+        capture("recents")
+        recents.query = "History check"
+        let found = await waitUntil(3) { !recents.isSearching && recents.rows.count == 1 && recents.rows.first?.id == id }
+        check(found, "searching finds exactly that conversation (\(recents.rows.map(\.title)))")
+        await pause(0.3)
+        await settleShape(viewModel)
+        capture("recents-search")
+        recents.query = ""
+
+        // 3. New chat, then Continue.
+        vm.navigate(to: .chat)
+        vm.newChat()
+        check(chat.messages.isEmpty, "⌘N empties the chat")
+        check(history.continuation?.id == id, "the Continue chip offers the conversation just left")
+        await pause(0.5)
+        await settleShape(viewModel)
+        capture("continue-chip")
+        vm.continuePreviousConversation()
+        let continued = await waitUntil(3) { chat.conversationID == id && chat.messageCount == 2 }
+        check(continued, "Continue brings it back (\(chat.messageCount) messages)")
+
+        // 4. Delete with Undo, then for good.
+        vm.toggleHistory()
+        recents.selectedID = id
+        vm.deleteSelectedRecent()
+        check(!history.summaries.contains { $0.id == id }, "the row goes at once")
+        check(history.pendingDeletion?.id == id, "the Undo bar shows")
+        vm.undoRecentDeletion()
+        check(history.summaries.contains { $0.id == id }, "Undo brings the row back")
+        recents.selectedID = id
+        vm.deleteSelectedRecent()
+        history.commitPendingDeletion()
+        let removed = await waitUntil(5) { !FileManager.default.fileExists(atPath: file.path) }
+        check(removed, "committing the deletion removes the file")
+        vm.navigate(to: .chat)
+
+        // 5. Idle fresh start, on a side stack whose History reads an injected clock.
+        await idleFreshStart(composition.settings)
+    }
+
+    /// history.md §13.2 step 5: a HistoryController on a clock the step moves 20 minutes ahead.
+    private func idleFreshStart(_ settings: AppSettings) async {
+        let previousInterval = settings.history.idleReset
+        settings.history.idleReset = .fifteenMinutes
+        defer { settings.history.idleReset = previousInterval }
+        let clock = SelfTestClock()
+        let chat = ChatSession(settings: settings, makeClient: { MockLLMClient(latencyScale: 0) })
+        let history = HistoryController(settings: settings, chat: chat, store: ConversationStore(location: .inMemory),
+                                        now: { clock.now })
+        var services = NotchServices.inert(settings: settings, chat: chat)
+        services.history = history
+        services.recents = RecentsState(history: history)
+        let vm = NotchViewModel(settings: settings, chat: chat, services: services)
+
+        vm.open(reason: .programmatic, focus: true)
+        vm.composerText = "Idle check"
+        vm.send()
+        let answered = await waitUntil(20) { !chat.isStreaming && chat.messageCount == 2 }
+        check(answered, "the side stack answers")
+        let conversationID = chat.conversationID
+        vm.close(.user)
+        clock.now = clock.now.addingTimeInterval(20 * 60)
+        vm.open(reason: .programmatic, focus: true)
+        check(chat.messages.isEmpty, "after 20 idle minutes the notch opens on a fresh chat")
+        check(history.continuation?.id == conversationID, "and offers the previous conversation to continue")
+        vm.close(.user)
+        chat.reset()
+    }
+
+    // MARK: - v1.1: real probes (§10.2 step 21)
+
+    /// Only on a build signed with a stable identity: TCC and Apple Events answers mean nothing for an ad-hoc build.
+    private func realProbes() async {
+        guard let identity = Self.stableSigningIdentity else {
+            current?.skipped.append("real probes (this build is signed ad hoc, not with a stable identity)")
+            return
+        }
+        note("signed with \(identity)")
+        let status = EKEventStore.authorizationStatus(for: .event)
+        note("EventKit authorization status for events: \(status.rawValue)")
+        let runner = ProcessRunner()
+        do {
+            let shortcuts = try await runner.run(URL(fileURLWithPath: "/usr/bin/shortcuts"), arguments: ["list"],
+                                                 stdin: nil, timeout: .seconds(20), outputLimit: 256 * 1024)
+            check(shortcuts.exitCode == 0 && !shortcuts.timedOut,
+                  "`shortcuts list` exits 0 (exit \(shortcuts.exitCode), timed out \(shortcuts.timedOut))")
+        } catch {
+            fail("`shortcuts list` couldn't run: \(error.localizedDescription)")
+        }
+        do {
+            let script = try await runner.run(URL(fileURLWithPath: "/usr/bin/osascript"), arguments: ["-e", "return 1"],
+                                              stdin: nil, timeout: .seconds(20), outputLimit: 4096)
+            check(script.exitCode == 0 && script.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == "1",
+                  "ProcessRunner runs `osascript -e 'return 1'` (exit \(script.exitCode))")
+        } catch {
+            fail("osascript couldn't run: \(error.localizedDescription)")
+        }
+    }
+
+    // MARK: - Step helpers
+
+    private static let shortcutPrompt = "run my shortcut"
+    /// DemoShortcutsService's output for “Resize Images”, which the mock's follow-up quotes.
+    private static let shortcutOutput = "Resized 12 images"
+    /// Slack after a card's arming moment for the executor's own clock.
+    private static let armingMargin: TimeInterval = 0.15
+    /// A process id no app has: the fake apps the Services and paste steps name.
+    private static let fakeAppPID: pid_t = 999_999
+    /// An answer taller than any demo reply, for bounding the scroll when no scroll view can be measured.
+    private static let fallbackAnswerHeight: Double = 2_000
+    private static let upArrowCharacters = String(Character(UnicodeScalar(UInt16(NSUpArrowFunctionKey)) ?? " "))
+    private static let downArrowCharacters = String(Character(UnicodeScalar(UInt16(NSDownArrowFunctionKey)) ?? " "))
+
+    /// Open, engaged, on Chat, nothing streaming, with the composer ready.
+    private func ensureOpenEngaged(_ vm: NotchViewModel) async {
+        if vm.isOpen {
+            vm.engage()
+        } else {
+            vm.open(reason: .programmatic, focus: true)
+        }
+        if vm.route != .chat {
+            vm.navigate(to: .chat)
+        }
+        if vm.chat.isStreaming {
+            vm.chat.cancel()
+        }
+        let panel = controller?.debugPanel
+        _ = await waitUntil(2) {
+            vm.renderedShapeSize.width >= NotchMetrics.openWidth - 0.5
+                && (panel.map { self.composerTextView($0) != nil } ?? true || Self.isScreenLocked)
+        }
+    }
+
+    /// `ensureOpenEngaged` plus ⌘N: the step's own conversation.
+    private func startFreshChat(_ vm: NotchViewModel, _ chat: ChatSession) async {
+        await ensureOpenEngaged(vm)
+        vm.newChat()
+        _ = await waitUntil(1) { chat.messages.isEmpty }
+    }
+
+    /// Waits for the current approval to be on screen and reviewed (its visibility stamp).
+    private func waitForVisibleApproval(_ vm: NotchViewModel, _ chat: ChatSession)
+        async -> (PendingApproval, NotchViewModel.ApprovalVisibility)? {
+        let visible = await waitUntil(15) {
+            guard let approval = chat.pendingApproval else { return false }
+            return vm.approvalVisibility?.callID == approval.callID
+        }
+        guard visible, let approval = chat.pendingApproval, let visibility = vm.approvalVisibility else {
+            fail("the approval card is shown and reviewed (pending: \(chat.pendingApproval != nil), "
+                 + "visible: \(vm.approvalVisibility != nil))")
+            return nil
+        }
+        return (approval, visibility)
+    }
+
+    /// Presses ⌘↩ (trusted input) once the card has armed for its current visibility stamp. If the stamp moved (the
+    /// card left the screen and came back) the arming starts over, so it waits again, up to three times.
+    private func approveOnceArmed(_ approval: PendingApproval, _ vm: NotchViewModel, _ chat: ChatSession) async -> Bool {
+        let callID = approval.callID
+        for attempt in 1...4 {
+            let stamped = await waitUntil(5) { vm.approvalVisibility?.callID == callID }
+            guard stamped, let visibility = vm.approvalVisibility, let card = chat.pendingApproval, card.callID == callID
+            else {
+                note("attempt \(attempt): the card isn't stamped visible (open \(vm.isOpen), route \(vm.route), "
+                     + "prompt \(String(describing: vm.currentPrompt?.id)))")
+                continue
+            }
+            await waitUntilUptime(visibility.sinceUptime + card.armingDelay.timeInterval + Self.armingMargin)
+            vm.perform(.promptPrimary, hardwareConfirmed: true)
+            // Answered once the call leaves its card: it runs (a permission card first runs its steps, then the
+            // approval comes back as a fresh card that arms from zero again).
+            let answered = await waitUntil(3) {
+                guard let status = self.toolCall(callID, in: chat)?.status else { return false }
+                return status != .awaitingApproval && status != .needsPermission && status != .queued
+            }
+            if answered { return true }
+            let restamped = vm.approvalVisibility.map { $0.since != visibility.since } ?? true
+            note("attempt \(attempt): the \(Self.label(of: card.kind)) card is still up after ⌘↩ (visibility "
+                 + "\(restamped ? "re-stamped" : "unchanged"), status "
+                 + "\(String(describing: toolCall(callID, in: chat)?.status)))")
+        }
+        return false
+    }
+
+    private static func label(of kind: PendingApproval.Kind) -> String {
+        switch kind {
+        case .approval: return "approval"
+        case .consent: return "consent"
+        case .permission: return "permission"
+        }
+    }
+
+    /// The conversation's scroll view: the tallest document among the panel's scroll views.
+    private func conversationScrollView(in panel: NSPanel) -> NSScrollView? {
+        var found: [NSScrollView] = []
+        var pending = panel.contentView.map { [$0] } ?? []
+        while let view = pending.popLast() {
+            if let scrollView = view as? NSScrollView { found.append(scrollView) }
+            pending.append(contentsOf: view.subviews)
+        }
+        return found.max { ($0.documentView?.frame.height ?? 0) < ($1.documentView?.frame.height ?? 0) }
+    }
+
+    private func toolCall(_ id: String, in chat: ChatSession) -> ToolCall? {
+        for message in chat.messages.reversed() {
+            if let call = message.toolCalls.first(where: { $0.id == id }) { return call }
+        }
+        return nil
+    }
+
+    private func dentistEvents(in store: any EventKitProviding) async -> [CalendarEventRecord] {
+        let start = Calendar.current.startOfDay(for: Date())
+        let end = start.addingTimeInterval(3 * 86_400)
+        let events = (try? await store.events(from: start, to: end, calendarIDs: nil)) ?? []
+        return events.filter { $0.title == "Dentist" }
+    }
+
+    /// A key-down through the panel's own key handling (its local monitor) when the panel is key. While the screen is
+    /// locked AppKit makes no window key, so the same key goes through the key map and `perform` directly.
+    /// With `retakeKeyboard`, an open notch whose panel lost the keyboard to another app first takes it back (as a
+    /// person would by clicking into it).
+    private func pressKey(_ keyCode: Int, _ characters: String, _ flags: NSEvent.ModifierFlags,
+                          _ vm: NotchViewModel, _ controller: NotchWindowController, retakeKeyboard: Bool = true) async {
+        let panel = controller.debugPanel
+        if retakeKeyboard, vm.isOpen, !panel.isKeyWindow, !Self.isScreenLocked {
+            vm.engage()
+            let retaken = await waitUntil(1) { panel.isKeyWindow }
+            note("took the keyboard back before key \(keyCode) (\(retaken ? "done" : "failed"))")
+        }
+        if panel.isKeyWindow,
+           let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags,
+                                        timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: panel.windowNumber,
+                                        context: nil, characters: characters, charactersIgnoringModifiers: characters,
+                                        isARepeat: false, keyCode: UInt16(keyCode)) {
+            NSApp.sendEvent(event)
+        } else {
+            let textView = panel.firstResponder as? NSTextView
+            let context = vm.keyContext(hasMarkedText: false,
+                                        composerIsFirstResponder: vm.route == .chat && textView?.isEditable == true,
+                                        clipboardWantsAttachmentPaste: false)
+            if let command = NotchKeyCommands.command(keyCode: UInt16(keyCode), characters: characters, flags: flags,
+                                                      context: context) {
+                vm.perform(command, hardwareConfirmed: false)
+            }
+            if Self.isScreenLocked {
+                current?.skipped.append("key \(keyCode) went through the key map directly (screen locked)")
+            } else {
+                fail("the panel wasn't key for key \(keyCode)")
+            }
+        }
+        await pause(0.15)
+    }
+
+    private func makeTempFolder() throws -> URL {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("otto-selftest-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        tempFiles.append(folder)
+        return folder
+    }
+
+    private static func posixPermissions(of url: URL) -> Int? {
+        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+        return (attributes?[.posixPermissions] as? NSNumber)?.intValue
+    }
+
+    /// How the running binary is signed when it carries a certificate (not ad hoc), else nil. Never names the signer.
+    private static var stableSigningIdentity: String? {
+        var code: SecCode?
+        guard SecCodeCopySelf([], &code) == errSecSuccess, let code else { return nil }
+        var staticCode: SecStaticCode?
+        guard SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess, let staticCode else { return nil }
+        var information: CFDictionary?
+        guard SecCodeCopySigningInformation(staticCode, SecCSFlags(rawValue: kSecCSSigningInformation), &information)
+                == errSecSuccess,
+              let dictionary = information as? [String: Any] else { return nil }
+        let flags = (dictionary[kSecCodeInfoFlags as String] as? NSNumber)?.uint32Value ?? 0
+        guard flags & SecCodeSignatureFlags.adhoc.rawValue == 0,
+              let certificates = dictionary[kSecCodeInfoCertificates as String] as? [SecCertificate],
+              !certificates.isEmpty else { return nil }
+        let team = dictionary[kSecCodeInfoTeamIdentifier as String] as? String
+        return team == nil ? "a certificate without a team" : "a certificate with a team identifier"
+    }
+
     // MARK: - Helpers
 
-    private func step(_ name: String, _ body: () async throws -> Void) async {
+    /// Attempts of a retryable step (the first plus the reruns after outside activity).
+    private static let maximumAttempts = 3
+
+    /// Runs one step. A step marked `retryable` sets up its own state; when it fails while another app took the
+    /// keyboard or someone clicked outside Otto (the Mac is in use: that closes or unfocuses the notch under the
+    /// script), it runs again, up to `maximumAttempts` in all, and the report keeps each earlier attempt's failures
+    /// as a note.
+    private func step(_ name: String, retryable: Bool = false, _ body: () async throws -> Void) async {
         let start = ContinuousClock.now
-        current = StepReport(name: name, passed: true, failures: [], skipped: [], notes: [], captures: [], durationMs: 0)
-        do {
-            try await body()
-        } catch {
-            fail("threw: \(error.localizedDescription)")
+        var attempt = 1
+        var earlier: [String] = []
+        while true {
+            current = StepReport(name: name, passed: true, failures: [], skipped: [], notes: [], captures: [], durationMs: 0)
+            let interference = SelfTestInterference()
+            do {
+                try await body()
+            } catch {
+                fail("threw: \(error.localizedDescription)")
+            }
+            interference.stop()
+            guard let failures = current?.failures, !failures.isEmpty, retryable, attempt < Self.maximumAttempts,
+                  interference.events > 0 else {
+                if interference.events > 0 {
+                    note("outside activity during the step: \(interference.summary)")
+                }
+                break
+            }
+            earlier.append("attempt \(attempt) failed while the Mac was in use (\(interference.summary)): "
+                           + failures.joined(separator: "; "))
+            attempt += 1
+            await pause(0.5)
         }
         guard var finished = current else { return }
+        finished.notes.insert(contentsOf: earlier, at: 0)
         let elapsed = ContinuousClock.now - start
         finished.durationMs = Int(elapsed.components.seconds * 1000 + elapsed.components.attoseconds / 1_000_000_000_000_000)
         finished.passed = finished.failures.isEmpty
@@ -536,6 +1601,38 @@ final class SelfTest {
             try? await Task.sleep(for: .milliseconds(20))
         }
         return true
+    }
+
+    /// Waits (up to 2 s) until the rendered shape has kept its size for 100 ms, so a capture shows the settled layout
+    /// rather than a frame of the resize animation.
+    private func settleShape(_ vm: NotchViewModel?) async {
+        guard let vm else { return }
+        var last = vm.renderedShapeSize
+        var stableSince = ContinuousClock.now
+        let deadline = ContinuousClock.now + .seconds(2)
+        while ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(20))
+            if vm.renderedShapeSize != last {
+                last = vm.renderedShapeSize
+                stableSince = ContinuousClock.now
+            } else if ContinuousClock.now - stableSince >= .milliseconds(100) {
+                return
+            }
+        }
+    }
+
+    /// Sleeps until `instant` on the continuous clock.
+    private func waitUntilInstant(_ instant: ContinuousClock.Instant) async {
+        let remaining = instant - ContinuousClock.now
+        guard remaining > .zero else { return }
+        try? await Task.sleep(for: remaining)
+    }
+
+    /// Sleeps until the system uptime reaches `uptime`.
+    private func waitUntilUptime(_ uptime: TimeInterval) async {
+        let remaining = uptime - ProcessInfo.processInfo.systemUptime
+        guard remaining > 0 else { return }
+        try? await Task.sleep(for: .milliseconds(Int((remaining * 1000).rounded(.up))))
     }
 
     /// The composer's text view when it is the panel's first responder.
@@ -608,12 +1705,12 @@ final class SelfTest {
         }
     }
 
+    /// Ends the reply, flushes the graph's stores, drops its throwaway preferences and removes the temp files.
     private func cleanUp() {
-        chat?.reset()
+        composition?.terminate()
         for url in tempFiles {
             try? FileManager.default.removeItem(at: url)
         }
-        UserDefaults.standard.removePersistentDomain(forName: suiteName)
     }
 
     /// A small opaque PNG (a warm gradient swatch).
@@ -631,6 +1728,124 @@ final class SelfTest {
         guard let data = rep.representation(using: .png, properties: [:]) else { throw CocoaError(.fileWriteUnknown) }
         return data
     }
+}
+
+// MARK: - Fakes for the dry-run paste and the idle clock
+
+/// A key sender that records ⌘V instead of posting it.
+private final class SelfTestKeySender: KeySending {
+    private(set) var pasteCount = 0
+
+    var isSecureInputEnabled: Bool { false }
+
+    func areModifiersDown() -> Bool { false }
+
+    func postPaste() throws {
+        pasteCount += 1
+    }
+}
+
+/// A pretend target app: running, frontmost once asked, Accessibility granted, and a focused value that changes
+/// when the paste lands. Sleeps return at once.
+@MainActor private final class SelfTestInsertEnvironment: InsertEnvironment {
+    private let target: AppRef
+    private var isFrontmost = false
+    private var pasteLanded = false
+    private(set) var activationRequests = 0
+
+    init(target: AppRef) {
+        self.target = target
+    }
+
+    var isAccessibilityTrusted: Bool { true }
+
+    func frontmostPID() -> pid_t? {
+        isFrontmost ? target.pid : nil
+    }
+
+    func isRunning(_ app: AppRef) -> Bool {
+        app == target
+    }
+
+    func requestActivation(of app: AppRef) {
+        activationRequests += 1
+        isFrontmost = app == target
+    }
+
+    func isChromiumOrElectron(_ app: AppRef) -> Bool { false }
+
+    func focusedElementIsSecure(in app: AppRef) async -> Bool { false }
+
+    /// The first read is "before ⌘V"; every later read sees the pasted text.
+    func focusedValueFingerprint(in app: AppRef) async -> ValueFingerprint? {
+        defer { pasteLanded = true }
+        return pasteLanded
+            ? ValueFingerprint(characterCount: 42, valueHash: "after")
+            : ValueFingerprint(characterCount: 12, valueHash: "before")
+    }
+
+    func selectionState(of snapshot: SelectionSnapshot) async -> SelectionState { .unknown }
+
+    func restoreSelection(_ snapshot: SelectionSnapshot) async -> Bool { false }
+
+    func sleep(for duration: Duration) async {}
+}
+
+/// Counts what the person at the Mac does while a step runs: other apps coming forward, clicks outside Otto's
+/// windows, and whether they typed (the session's last hardware key-down; the self-test's own keys never reach the
+/// HID system). Only counts; never records where or what.
+@MainActor private final class SelfTestInterference {
+    private var activations = 0
+    private var clicks = 0
+    private var typed = false
+    private let startedAt = ContinuousClock.now
+    private var observer: NSObjectProtocol?
+    private var monitor: Any?
+
+    init() {
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+        observer = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
+        ) { [weak self] notification in
+            let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+            guard app?.processIdentifier != ownPID else { return }
+            MainActor.assumeIsolated { self?.activations += 1 }
+        }
+        monitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+            MainActor.assumeIsolated { self?.clicks += 1 }
+        }
+    }
+
+    var events: Int { activations + clicks + (typed ? 1 : 0) }
+
+    var summary: String {
+        "\(activations) app activation(s), \(clicks) click(s) outside Otto" + (typed ? ", typing on the keyboard" : "")
+    }
+
+    func stop() {
+        let elapsed = ContinuousClock.now - startedAt
+        let sinceKeyDown = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .keyDown)
+        let elapsedSeconds = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
+        typed = sinceKeyDown < elapsedSeconds
+        if let observer {
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+            self.observer = nil
+        }
+        if let monitor {
+            NSEvent.removeMonitor(monitor)
+            self.monitor = nil
+        }
+    }
+}
+
+/// What the fold step's permission flow answered, once it has.
+@MainActor private final class SelfTestFlowResult {
+    var granted: Bool?
+}
+
+/// The idle step's clock (History reads it through its injected `now`).
+private final class SelfTestClock {
+    var now = Date()
 }
 
 #endif
