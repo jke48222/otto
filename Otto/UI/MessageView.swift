@@ -307,24 +307,6 @@ private struct AssistantMessageView: View {
 
 // MARK: - Pieces
 
-private struct StatusLine: View {
-    let symbol: String
-    let text: String
-    let color: Color
-
-    var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Image(systemName: symbol)
-                .font(.system(size: 11, weight: .semibold))
-            Text(text)
-                .font(Theme.font(13))
-                .fixedSize(horizontal: false, vertical: true)
-                .textSelection(.enabled)
-        }
-        .foregroundStyle(color)
-    }
-}
-
 private struct ActivityRow: View {
     let activity: ToolActivity
     var wasInterrupted = false
@@ -447,37 +429,5 @@ private struct SourcePill: View {
         .onHover { isHovering = $0 }
         .help(detail.isEmpty ? url.absoluteString : "\(detail)\n\(url.absoluteString)")
         .accessibilityLabel("Source: \(detail.isEmpty ? title : detail)")
-    }
-}
-
-private struct FooterButton: View {
-    let title: String
-    let symbol: String
-    var isProminent: Bool = false
-    let action: () -> Void
-
-    @State private var isHovering = false
-    @Environment(\.isEnabled) private var isEnabled
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 4) {
-                Image(systemName: symbol)
-                    .font(.system(size: 9.5, weight: .semibold))
-                Text(title)
-                    .font(Theme.font(11.5, .medium))
-            }
-            .foregroundStyle(isProminent || isHovering ? Theme.textPrimary : Theme.textTertiary)
-            .padding(.horizontal, 7)
-            .frame(height: 20)
-            .background {
-                Capsule(style: .continuous)
-                    .fill(Color.white.opacity(isHovering ? 0.08 : (isProminent ? 0.05 : 0)))
-            }
-            .contentShape(Capsule(style: .continuous))
-        }
-        .buttonStyle(PressableButtonStyle(pressedScale: 0.95))
-        .opacity(isEnabled ? 1 : 0.4)
-        .onHover { isHovering = $0 }
     }
 }

@@ -337,27 +337,6 @@ struct TypeBadge: View {
     }
 }
 
-private struct ChipRemoveButton: View {
-    /// VoiceOver label naming what the ✕ affects, e.g. "Remove cat-meme.txt".
-    let label: String
-    let action: () -> Void
-    @State private var isHovering = false
-
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: "xmark")
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(Color.white.opacity(isHovering ? 0.9 : 0.7))
-                .frame(width: 16, height: 16)
-                .contentShape(Circle())
-        }
-        .buttonStyle(PressableButtonStyle(pressedScale: 0.85))
-        .onHover { isHovering = $0 }
-        .help(label)
-        .accessibilityLabel(label)
-    }
-}
-
 private struct AttachmentChip: View {
     let attachment: Attachment
     let alwaysShowsRemove: Bool

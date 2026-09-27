@@ -2,65 +2,12 @@
 //  ChatSessionTests.swift
 //  Otto
 //
-//  ChatSession history/streaming behaviour, plus the NotchViewModel and AppSettings state it feeds.
+//  ChatSession history/streaming behaviour and its transcript, phase and usage reporting, plus the
+//  SystemPrompt and AppSettings state it reads.
 //
 
-import AppKit
-import UniformTypeIdentifiers
-import PDFKit
 import XCTest
 @testable import Otto
-
-// MARK: - Scripted client
-
-/// An LLMClient that replays one scripted response per request and records every request.
-private final class ScriptedLLMClient: LLMClient, @unchecked Sendable {
-    enum Response {
-        /// Yields the events, then finishes.
-        case events([StreamEvent])
-        /// Yields `prefix`, then throws `error`.
-        case failure(Error, after: [StreamEvent])
-        /// Yields the events and then never finishes; only cancellation ends it.
-        case stall([StreamEvent])
-    }
-
-    private let lock = NSLock()
-    private var responses: [Response]
-    private var recordedRequests: [MessagesRequest] = []
-    private var recordedCancellations = 0
-
-    init(_ responses: [Response]) {
-        self.responses = responses
-    }
-
-    var requests: [MessagesRequest] { lock.withLock { recordedRequests } }
-    var cancellations: Int { lock.withLock { recordedCancellations } }
-
-    func stream(_ request: MessagesRequest) -> AsyncThrowingStream<StreamEvent, Error> {
-        let response: Response? = lock.withLock {
-            recordedRequests.append(request)
-            return responses.isEmpty ? nil : responses.removeFirst()
-        }
-        return AsyncThrowingStream { continuation in
-            continuation.onTermination = { [weak self] termination in
-                guard case .cancelled = termination, let self else { return }
-                self.lock.withLock { self.recordedCancellations += 1 }
-            }
-            switch response {
-            case .events(let events):
-                events.forEach { continuation.yield($0) }
-                continuation.finish()
-            case .failure(let error, let prefix):
-                prefix.forEach { continuation.yield($0) }
-                continuation.finish(throwing: error)
-            case .stall(let events):
-                events.forEach { continuation.yield($0) }
-            case nil:
-                continuation.finish(throwing: LLMError.network("No scripted response left."))
-            }
-        }
-    }
-}
 
 // MARK: - Fixtures
 
@@ -127,22 +74,6 @@ private func textAttachment(_ name: String, _ text: String = "hello") -> Attachm
     )
 }
 
-private func pdfAttachment(_ name: String, pages: Int) -> Attachment {
-    let document = PDFDocument()
-    for index in 0..<pages {
-        document.insert(PDFPage(), at: index)
-    }
-    let base64 = (document.dataRepresentation() ?? Data()).base64EncodedString()
-    return Attachment(
-        kind: .pdf,
-        displayName: name,
-        badge: "PDF",
-        sourceURL: URL(fileURLWithPath: "/tmp/otto-tests/\(name)"),
-        payload: .pdf(base64: base64),
-        byteCount: base64.utf8.count
-    )
-}
-
 private func webAttachment(_ url: String, title: String = "Page") -> Attachment {
     let pageURL = URL(string: url) ?? URL(fileURLWithPath: "/")
     return Attachment(
@@ -154,6 +85,60 @@ private func webAttachment(_ url: String, title: String = "Page") -> Attachment 
         payload: .webPage(title: title, url: pageURL),
         byteCount: 0
     )
+}
+
+/// A completed response that reports `usage`.
+private func completed(_ content: [JSONValue], stopReason: String?, usage: JSONValue?) -> StreamEvent {
+    .completed(StreamResult(content: content, stopReason: stopReason, stopDetails: nil, model: "claude-opus-5", usage: usage))
+}
+
+private func usage(output: Int64) -> JSONValue {
+    ["input_tokens": 1_200, "output_tokens": .int(output)]
+}
+
+/// What ChatSession reported to its observers, in order.
+private enum SessionEvent: Equatable {
+    case transcript(TranscriptChange)
+    case replyFinished
+}
+
+/// Set from observation callbacks (which may not mutate captured locals).
+private final class FlagBox {
+    var isSet = false
+}
+
+/// An LLMClient whose single open response is fed one event at a time by the test. The session asks for
+/// the next event only after it has applied the previous one, so `isAwaitingEvent` tells the test that
+/// everything pushed so far has landed.
+private final class SteppedLLMClient: LLMClient, @unchecked Sendable {
+    private let lock = NSLock()
+    private var queue: [StreamEvent] = []
+    private var pulls = 0
+    private var delivered = 0
+
+    /// The session is waiting inside the stream and nothing it hasn't taken is queued.
+    var isAwaitingEvent: Bool {
+        lock.withLock { queue.isEmpty && pulls > delivered }
+    }
+
+    func push(_ event: StreamEvent) {
+        lock.withLock { queue.append(event) }
+    }
+
+    func stream(_ request: MessagesRequest) -> AsyncThrowingStream<StreamEvent, Error> {
+        AsyncThrowingStream(unfolding: { [self] in
+            lock.withLock { pulls += 1 }
+            while true {
+                let next: StreamEvent? = lock.withLock {
+                    guard !queue.isEmpty else { return nil }
+                    delivered += 1
+                    return queue.removeFirst()
+                }
+                if let next { return next }
+                try await Task.sleep(nanoseconds: 1_000_000)
+            }
+        })
+    }
 }
 
 @MainActor
@@ -953,6 +938,378 @@ final class ChatSessionTests: XCTestCase {
         XCTAssertTrue(description.hasPrefix(AttachmentBudget.requestTooLargeDescription))
         XCTAssertTrue(description.hasSuffix(ChatSession.excludedFromContextNote))
     }
+
+    // MARK: Transcript, phase and usage
+
+    private func restoredConversation() -> (LoadedConversation, user: ChatMessage, assistant: ChatMessage) {
+        let user = ChatMessage(role: .user, text: "Old question", apiContent: [textBlock("Old question")])
+        let assistant = ChatMessage(role: .assistant, text: "Old answer", apiContent: [textBlock("Old answer")],
+                                    model: "claude-opus-5")
+        let conversation = LoadedConversation(
+            id: UUID(),
+            title: "Old question",
+            createdAt: Date(timeIntervalSince1970: 1_800_000_000),
+            updatedAt: Date(timeIntervalSince1970: 1_800_000_600),
+            messages: [user, assistant],
+            unavailableAttachmentIDs: [UUID()],
+            textOnlyContextMessageIDs: [assistant.id],
+            readingPosition: nil
+        )
+        return (conversation, user, assistant)
+    }
+
+    /// Sends `text` on a stepped client and waits until the reply's stream is open.
+    private func startSteppedTurn(_ chat: ChatSession, _ client: SteppedLLMClient, text: String = "Go") async {
+        chat.send(text: text, attachments: [])
+        await waitUntil { client.isAwaitingEvent }
+    }
+
+    private func deliver(_ event: StreamEvent, to client: SteppedLLMClient) async {
+        client.push(event)
+        await waitUntil { client.isAwaitingEvent }
+    }
+
+    func testTranscriptEmissionsFollowTheTurnAndPrecedeReplyFinished() async {
+        let client = ScriptedLLMClient([reply("Hi there."), reply("Again.")])
+        let (chat, _) = makeSession(client)
+        var events: [SessionEvent] = []
+        chat.onTranscriptChanged = { change in
+            events.append(.transcript(change))
+            switch change {
+            case .userMessageAdded:
+                XCTAssertEqual(chat.messages.last(where: { $0.role == .user })?.text, events.count == 1 ? "Hello" : "More")
+            case .turnFinished:
+                XCTAssertFalse(chat.isStreaming)
+                XCTAssertEqual(chat.phase, .idle)
+                XCTAssertEqual(chat.lastFinishedAssistantID, chat.messages.last?.id)
+                XCTAssertEqual(chat.transcriptSnapshot().messages.last?.state, .complete)
+            case .messagesRemoved, .willReset, .loaded:
+                XCTFail("Unexpected \(change)")
+            }
+        }
+        chat.onReplyFinished = { events.append(.replyFinished) }
+        let conversationID = chat.conversationID
+
+        chat.send(text: "Hello", attachments: [])
+        XCTAssertEqual(events, [.transcript(.userMessageAdded)])
+        await waitForReply(chat)
+        chat.send(text: "More", attachments: [])
+        await waitForReply(chat)
+
+        XCTAssertEqual(events, [
+            .transcript(.userMessageAdded), .transcript(.turnFinished), .replyFinished,
+            .transcript(.userMessageAdded), .transcript(.turnFinished), .replyFinished,
+        ])
+        XCTAssertEqual(chat.conversationID, conversationID)
+        XCTAssertEqual(chat.transcriptSnapshot().conversationID, conversationID)
+    }
+
+    func testCancelAndRetryReportTheTurnFinishingButNoNewUserMessage() async {
+        // The first turn is stopped before its task asks for a response, so the only one is the retry's.
+        let client = ScriptedLLMClient([reply("Second try.")])
+        let (chat, _) = makeSession(client)
+        var events: [SessionEvent] = []
+        chat.onTranscriptChanged = { events.append(.transcript($0)) }
+        chat.onReplyFinished = { events.append(.replyFinished) }
+
+        chat.send(text: "Question", attachments: [])
+        chat.cancel()
+        chat.retry(messageID: chat.messages[1].id)
+        await waitForReply(chat)
+
+        XCTAssertEqual(events, [
+            .transcript(.userMessageAdded), .transcript(.turnFinished), .replyFinished,
+            .transcript(.turnFinished), .replyFinished,
+        ])
+        XCTAssertEqual(chat.messages.map(\.text), ["Question", "Second try."])
+        XCTAssertEqual(client.requests.count, 1)
+    }
+
+    func testResetReportsWillResetOnlyWhenNonEmptyAndStartsANewConversation() async {
+        let client = ScriptedLLMClient([.stall([.messageStart(model: "claude-opus-5"), .textDelta("Streaming")])])
+        let (chat, _) = makeSession(client)
+        var events: [SessionEvent] = []
+        var snapshotAtWillReset: TranscriptSnapshot?
+        chat.onTranscriptChanged = { change in
+            events.append(.transcript(change))
+            if change == .willReset { snapshotAtWillReset = chat.transcriptSnapshot() }
+        }
+        chat.onReplyFinished = { events.append(.replyFinished) }
+
+        let firstID = chat.conversationID
+        let firstCreatedAt = chat.conversationCreatedAt
+        chat.reset()
+        XCTAssertTrue(events.isEmpty)
+        XCTAssertNotEqual(chat.conversationID, firstID)
+        XCTAssertGreaterThanOrEqual(chat.conversationCreatedAt, firstCreatedAt)
+
+        let secondID = chat.conversationID
+        chat.send(text: "Old chat", attachments: [])
+        await waitUntil { chat.messages.last?.text == "Streaming" }
+        chat.reset()
+
+        XCTAssertEqual(events, [.transcript(.userMessageAdded), .transcript(.willReset)])
+        XCTAssertEqual(snapshotAtWillReset?.conversationID, secondID)
+        XCTAssertEqual(snapshotAtWillReset?.messages.map(\.text), ["Old chat", "Streaming"])
+        XCTAssertNotEqual(chat.conversationID, secondID)
+        XCTAssertTrue(chat.messages.isEmpty)
+        XCTAssertEqual(chat.phase, .idle)
+        XCTAssertNil(chat.lastFinishedAssistantID)
+    }
+
+    func testLoadReplacesTheConversationAndReportsLoaded() async {
+        let client = ScriptedLLMClient([reply("Next.")])
+        let (chat, _) = makeSession(client)
+        let (conversation, user, assistant) = restoredConversation()
+        var events: [SessionEvent] = []
+        chat.onTranscriptChanged = { events.append(.transcript($0)) }
+
+        chat.load(conversation)
+
+        XCTAssertEqual(events, [.transcript(.loaded)])
+        XCTAssertEqual(chat.conversationID, conversation.id)
+        XCTAssertEqual(chat.conversationCreatedAt, conversation.createdAt)
+        XCTAssertEqual(chat.messages, [user, assistant])
+        XCTAssertEqual(chat.unavailableAttachmentIDs, conversation.unavailableAttachmentIDs)
+        XCTAssertEqual(chat.messageCount, 2)
+        XCTAssertEqual(chat.lastMessageState, .complete)
+        XCTAssertTrue(chat.hasCopyableReply)
+        XCTAssertEqual(chat.lastAssistantText, "Old answer")
+        XCTAssertFalse(chat.isStreaming)
+        XCTAssertEqual(chat.phase, .idle)
+        let snapshot = chat.transcriptSnapshot()
+        XCTAssertEqual(snapshot.conversationID, conversation.id)
+        XCTAssertEqual(snapshot.createdAt, conversation.createdAt)
+        XCTAssertEqual(snapshot.messages, [user, assistant])
+        XCTAssertEqual(snapshot.unavailableAttachmentIDs, conversation.unavailableAttachmentIDs)
+
+        // Continuing the restored conversation sends it as context and keeps its identity.
+        chat.send(text: "Go on", attachments: [])
+        await waitForReply(chat)
+        XCTAssertEqual(client.requests[0].messages, [
+            entry("user", [textBlock("Old question")]),
+            entry("assistant", [textBlock("Old answer")]),
+            entry("user", [textBlock("Go on")]),
+        ])
+        XCTAssertEqual(chat.conversationID, conversation.id)
+
+        chat.reset()
+        XCTAssertTrue(chat.unavailableAttachmentIDs.isEmpty)
+        XCTAssertNotEqual(chat.conversationID, conversation.id)
+    }
+
+    func testLoadCancelsARunningReplyAndReportsItFinishedFirst() async {
+        let client = ScriptedLLMClient([.stall([.messageStart(model: "claude-opus-5"), .textDelta("Half an ans")])])
+        let (chat, _) = makeSession(client)
+        let (conversation, user, assistant) = restoredConversation()
+        var events: [SessionEvent] = []
+        var snapshotAtTurnFinished: TranscriptSnapshot?
+        chat.onTranscriptChanged = { change in
+            events.append(.transcript(change))
+            if change == .turnFinished { snapshotAtTurnFinished = chat.transcriptSnapshot() }
+        }
+        chat.onReplyFinished = { events.append(.replyFinished) }
+
+        chat.send(text: "Current question", attachments: [])
+        let currentID = chat.conversationID
+        await waitUntil { chat.messages.last?.text == "Half an ans" }
+        chat.load(conversation)
+
+        XCTAssertEqual(events, [
+            .transcript(.userMessageAdded), .transcript(.turnFinished), .replyFinished, .transcript(.loaded),
+        ])
+        XCTAssertEqual(snapshotAtTurnFinished?.conversationID, currentID)
+        XCTAssertEqual(snapshotAtTurnFinished?.messages.last?.state, .cancelled)
+        XCTAssertEqual(snapshotAtTurnFinished?.messages.last?.text, "Half an ans")
+        XCTAssertEqual(chat.messages, [user, assistant])
+        XCTAssertEqual(chat.conversationID, conversation.id)
+        XCTAssertFalse(chat.isStreaming)
+        XCTAssertEqual(chat.phase, .idle)
+        await waitUntil { client.cancellations == 1 }
+    }
+
+    func testSnapshotFlushesPendingDeltas() async {
+        let client = SteppedLLMClient()
+        let chat = ChatSession(settings: makeSettings(), makeClient: { client })
+        await startSteppedTurn(chat, client)
+        await deliver(.messageStart(model: "claude-opus-5"), to: client)
+        await deliver(.textDelta("Hello"), to: client)
+        XCTAssertEqual(chat.messages.last?.text, "Hello")
+
+        // Text right after a flush waits for the next one (deltaFlushInterval); the snapshot must not.
+        await deliver(.textDelta(" world"), to: client)
+        let snapshot = chat.transcriptSnapshot()
+
+        XCTAssertEqual(snapshot.messages.last?.text, "Hello world")
+        XCTAssertEqual(chat.messages.last?.text, "Hello world")
+        XCTAssertEqual(snapshot.conversationID, chat.conversationID)
+        chat.cancel()
+    }
+
+    func testPhaseFollowsTheReplyAndIgnoresLaterDeltas() async {
+        let client = SteppedLLMClient()
+        let chat = ChatSession(settings: makeSettings(), makeClient: { client })
+        let searching = ToolActivity(id: "srvtoolu_1", kind: .webSearch, label: "Searching “swift”", isDone: false)
+        XCTAssertEqual(chat.phase, .idle)
+
+        chat.send(text: "Go", attachments: [])
+        XCTAssertEqual(chat.phase, .connecting)
+        await waitUntil { client.isAwaitingEvent }
+
+        await deliver(.messageStart(model: "claude-opus-5"), to: client)
+        XCTAssertEqual(chat.phase, .thinking)
+        await deliver(.thinkingStarted, to: client)
+        XCTAssertEqual(chat.phase, .thinking)
+        await deliver(.toolActivity(searching), to: client)
+        XCTAssertEqual(chat.phase, .searching(label: "Searching “swift”"))
+        var finished = searching
+        finished.isDone = true
+        await deliver(.toolActivity(finished), to: client)
+        XCTAssertEqual(chat.phase, .thinking)
+        await deliver(.textDelta("The answer"), to: client)
+        XCTAssertEqual(chat.phase, .writing)
+
+        let phaseChanged = FlagBox()
+        withObservationTracking {
+            _ = chat.phase
+        } onChange: {
+            phaseChanged.isSet = true
+        }
+        for word in [" is", " forty", " two", "."] {
+            await deliver(.textDelta(word), to: client)
+        }
+        await deliver(.sources([SourceLink(title: "Swift", url: URL(fileURLWithPath: "/swift"))]), to: client)
+        XCTAssertEqual(chat.phase, .writing)
+        XCTAssertFalse(phaseChanged.isSet)
+
+        client.push(completed([textBlock("The answer is forty two.")]))
+        await waitForReply(chat)
+        XCTAssertEqual(chat.phase, .idle)
+        XCTAssertTrue(phaseChanged.isSet)
+    }
+
+    func testPhaseOfASeededConversation() {
+        let (chat, _) = makeSession(ScriptedLLMClient([]))
+        chat.debugSeed(messages: [
+            ChatMessage(role: .user, text: "Hi"),
+            ChatMessage(role: .assistant, text: "Wri", state: .streaming, model: "claude-opus-5"),
+        ], isStreaming: true)
+        XCTAssertEqual(chat.phase, .writing)
+
+        chat.cancel()
+        XCTAssertEqual(chat.phase, .idle)
+    }
+
+    func testLastFinishedAssistantIDNamesARetriedOlderTurn() async {
+        let client = ScriptedLLMClient([reply("Better answer.")])
+        let (chat, _) = makeSession(client)
+        let failed = ChatMessage(role: .assistant, state: .failed("Overloaded"), includeInContext: false)
+        chat.debugSeed(messages: [
+            ChatMessage(role: .user, text: "Q1", apiContent: [textBlock("Q1")]),
+            failed,
+            ChatMessage(role: .user, text: "Q2", apiContent: [textBlock("Q2")]),
+            ChatMessage(role: .assistant, text: "A2", apiContent: [textBlock("A2")]),
+        ], isStreaming: false)
+        var idAtReplyFinished: UUID?
+        chat.onReplyFinished = { idAtReplyFinished = chat.lastFinishedAssistantID }
+
+        chat.retry(messageID: failed.id)
+        await waitForReply(chat)
+
+        XCTAssertEqual(chat.lastFinishedAssistantID, chat.messages[1].id)
+        XCTAssertEqual(idAtReplyFinished, chat.messages[1].id)
+        XCTAssertNotEqual(chat.lastFinishedAssistantID, chat.messages.last?.id)
+    }
+
+    func testUsageIsRecordedOncePerCompletedRequest() async {
+        let first = usage(output: 40)
+        let streamed = usage(output: 5)
+        let client = ScriptedLLMClient([
+            .events([
+                .messageStart(model: "claude-opus-5"),
+                .textDelta("Looking"),
+                .usage(usage(output: 1)),
+                completed([textBlock("Looking")], stopReason: "pause_turn", usage: first),
+            ]),
+            .events([
+                .messageStart(model: "claude-opus-5"),
+                .usage(streamed),
+                completed([textBlock(" it up.")], stopReason: "end_turn", usage: nil),
+            ]),
+        ])
+        let (chat, settings) = makeSession(client)
+        let recorder = FakeUsageRecorder()
+        chat.usageRecorder = recorder
+        var finishedAnswersAtReplyFinished: [UUID] = []
+        chat.onReplyFinished = { finishedAnswersAtReplyFinished = recorder.finishedAnswers }
+
+        chat.send(text: "Search", attachments: [])
+        let assistantID = chat.messages[1].id
+        await waitForReply(chat)
+
+        XCTAssertEqual(client.requests.count, 2)
+        XCTAssertEqual(recorder.records.map(\.usage), [first, streamed])
+        XCTAssertEqual(recorder.records.map(\.stopReason), ["pause_turn", "end_turn"])
+        XCTAssertEqual(recorder.records.map(\.isPartial), [false, false])
+        XCTAssertEqual(recorder.records.map(\.messageID), [assistantID, assistantID])
+        XCTAssertEqual(recorder.records.map(\.requestedModel), [settings.model.rawValue, settings.model.rawValue])
+        XCTAssertEqual(recorder.records.map(\.servedModel), ["claude-opus-5", "claude-opus-5"])
+        XCTAssertEqual(recorder.finishedAnswers, [assistantID])
+        XCTAssertEqual(finishedAnswersAtReplyFinished, [assistantID])
+    }
+
+    func testNothingIsRecordedForAResponseWithoutUsage() async {
+        let client = ScriptedLLMClient([reply("Hi.")])
+        let (chat, _) = makeSession(client)
+        let recorder = FakeUsageRecorder()
+        chat.usageRecorder = recorder
+
+        chat.send(text: "Hello", attachments: [])
+        await waitForReply(chat)
+
+        XCTAssertTrue(recorder.records.isEmpty)
+        XCTAssertEqual(recorder.finishedAnswers, [chat.messages[1].id])
+    }
+
+    func testCancelAfterUsageRecordsAPartialRequest() async {
+        let spent = usage(output: 12)
+        let client = ScriptedLLMClient([
+            .stall([.messageStart(model: "claude-opus-5"), .usage(spent), .textDelta("Part")]),
+        ])
+        let (chat, settings) = makeSession(client)
+        let recorder = FakeUsageRecorder()
+        chat.usageRecorder = recorder
+
+        chat.send(text: "Long question", attachments: [])
+        let assistantID = chat.messages[1].id
+        await waitUntil { chat.messages.last?.text == "Part" }
+        chat.cancel()
+
+        XCTAssertEqual(recorder.records, [FakeUsageRecorder.Record(
+            usage: spent, requestedModel: settings.model.rawValue, servedModel: "claude-opus-5", stopReason: nil,
+            isPartial: true, messageID: assistantID, date: recorder.records.first?.date ?? Date()
+        )])
+        XCTAssertEqual(recorder.finishedAnswers, [assistantID])
+        await waitUntil { client.cancellations == 1 }
+        XCTAssertEqual(recorder.records.count, 1)
+    }
+
+    func testFailureAfterUsageRecordsAPartialRequest() async {
+        let spent = usage(output: 3)
+        let client = ScriptedLLMClient([
+            .failure(LLMError.overloaded, after: [.messageStart(model: "claude-opus-5"), .usage(spent)]),
+        ])
+        let (chat, _) = makeSession(client)
+        let recorder = FakeUsageRecorder()
+        chat.usageRecorder = recorder
+
+        chat.send(text: "Question", attachments: [])
+        await waitForReply(chat)
+
+        XCTAssertEqual(recorder.records.map(\.usage), [spent])
+        XCTAssertEqual(recorder.records.map(\.isPartial), [true])
+        XCTAssertEqual(recorder.finishedAnswers, [chat.messages[1].id])
+    }
 }
 
 // MARK: - SystemPrompt & AppSettings
@@ -1009,282 +1366,5 @@ final class SystemPromptAndSettingsTests: XCTestCase {
         XCTAssertFalse(reloaded.webAccess)
         XCTAssertTrue(reloaded.autoAttachBrowserTab)
         XCTAssertEqual(reloaded.customInstructions, "Be brief.")
-    }
-}
-
-// MARK: - NotchViewModel
-
-@MainActor
-final class NotchViewModelTests: XCTestCase {
-    private func makeViewModel(_ client: ScriptedLLMClient = ScriptedLLMClient([])) -> NotchViewModel {
-        let settings = makeSettings()
-        // Keep the tests away from AppleScript lookups of whatever browser happens to be frontmost.
-        settings.suggestBrowserTab = false
-        let chat = ChatSession(settings: settings, makeClient: { client })
-        return NotchViewModel(settings: settings, chat: chat)
-    }
-
-    func testAddAttachmentDedupesBySourceAndCapsAtTen() {
-        let vm = makeViewModel()
-        vm.addAttachment(textAttachment("a.txt"))
-        vm.addAttachment(textAttachment("a.txt"))
-        XCTAssertEqual(vm.attachments.count, 1)
-
-        for index in 1...12 {
-            vm.addAttachment(textAttachment("file\(index).txt"))
-        }
-        XCTAssertEqual(vm.attachments.count, NotchViewModel.maxAttachments)
-        XCTAssertEqual(vm.transientError, NotchViewModel.attachmentLimitMessage)
-
-        vm.removeAttachment(id: vm.attachments[0].id)
-        XCTAssertEqual(vm.attachments.count, NotchViewModel.maxAttachments - 1)
-    }
-
-    func testAddAttachmentRefusesWhatWouldExceedTheRequestBudget() {
-        let vm = makeViewModel()
-        vm.open(reason: .click, focus: true)
-        let big = String(repeating: "a", count: 16_000_000)
-        vm.addAttachment(textAttachment("big1.txt", big))
-        vm.addAttachment(textAttachment("big2.txt", big))
-
-        XCTAssertEqual(vm.attachments.map(\.displayName), ["big1.txt"])
-        XCTAssertNotNil(vm.transientError)
-    }
-
-    func testSendRechecksThePageLimitAfterTheModelChanged() {
-        let vm = makeViewModel()
-        vm.settings.model = .opus5
-        vm.open(reason: .click, focus: true)
-        vm.addAttachment(pdfAttachment("long.pdf", pages: 101))
-        XCTAssertEqual(vm.attachments.count, 1)
-        vm.composerText = "Summarize"
-
-        vm.settings.model = .haiku45
-        vm.send()
-
-        XCTAssertTrue(vm.chat.messages.isEmpty)
-        XCTAssertEqual(vm.transientError?.contains("100 pages"), true)
-        XCTAssertEqual(vm.attachments.count, 1)
-        XCTAssertEqual(vm.composerText, "Summarize")
-    }
-
-    func testHistoryStripsEarlierPDFsOverTheModelsPageLimit() {
-        let pdf = pdfAttachment("long.pdf", pages: 101)
-        let earlier = ChatMessage(role: .user, text: "Read this", attachments: [pdf],
-                                  apiContent: pdf.contentBlocks() + [textBlock("Read this")])
-        let answer = ChatMessage(role: .assistant, text: "Done.", apiContent: [textBlock("Done.")])
-        let latest = ChatMessage(role: .user, text: "Thanks", apiContent: [textBlock("Thanks")])
-        let messages = [earlier, answer, latest]
-
-        let haiku = ChatSession.requestHistory(for: messages, inFlight: nil, resumingInFlight: false,
-                                               enabledServerTools: [], model: .haiku45)
-        XCTAssertEqual(haiku[0]["content"]?[0]?.typeName, "text")
-        let opus = ChatSession.requestHistory(for: messages, inFlight: nil, resumingInFlight: false,
-                                              enabledServerTools: [], model: .opus5)
-        XCTAssertEqual(opus[0]["content"]?[0]?.typeName, "document")
-    }
-
-    func testAutoAttachOnlyForTabsKnownToBeNonPrivate() {
-        let vm = makeViewModel()
-        vm.settings.autoAttachBrowserTab = true
-        vm.open(reason: .click, focus: true)
-
-        let url = URL(string: "https://example.com/private") ?? URL(fileURLWithPath: "/")
-        vm.applySuggestion(BrowserTab(title: "Maybe private", url: url, bundleID: "com.apple.Safari"))
-        XCTAssertTrue(vm.attachments.isEmpty)
-        XCTAssertEqual(vm.suggestedTab?.sourceURL, url)
-
-        let normal = URL(string: "https://example.com/normal") ?? URL(fileURLWithPath: "/")
-        vm.applySuggestion(BrowserTab(title: "Normal", url: normal, bundleID: "com.google.Chrome", isKnownNonPrivate: true))
-        XCTAssertEqual(vm.attachments.map(\.sourceURL), [normal])
-        XCTAssertNil(vm.suggestedTab)
-
-        // Moving to an unverified tab takes the earlier auto-attached chip back out.
-        vm.applySuggestion(BrowserTab(title: "Maybe private", url: url, bundleID: "com.apple.Safari"))
-        XCTAssertTrue(vm.attachments.isEmpty)
-        XCTAssertEqual(vm.suggestedTab?.sourceURL, url)
-    }
-
-    func testStreamedDeltasAreCoalescedButFinalTextIsExact() async {
-        let words = (1...200).map { "w\($0) " }
-        let full = words.joined()
-        let events: [StreamEvent] = [.messageStart(model: "claude-opus-5")]
-            + words.map { StreamEvent.textDelta($0) }
-            + [completed([textBlock(full)])]
-        let client = ScriptedLLMClient([.events(events)])
-        let session = ChatSession(settings: makeSettings(), makeClient: { client })
-
-        var observedTexts = 0
-        var lastSeen = ""
-        func track() {
-            withObservationTracking {
-                lastSeen = session.messages.last?.text ?? ""
-            } onChange: {
-                Task { @MainActor in
-                    observedTexts += 1
-                    track()
-                }
-            }
-        }
-        track()
-        session.send(text: "Go", attachments: [])
-        XCTAssertEqual(session.messageCount, 2)
-        XCTAssertEqual(session.lastMessageState, .streaming)
-        XCTAssertFalse(session.hasCopyableReply)
-        await waitUntil { !session.isStreaming }
-
-        XCTAssertEqual(session.messages.last?.text, full)
-        XCTAssertEqual(session.lastMessageState, .complete)
-        XCTAssertTrue(session.hasCopyableReply)
-        // 200 deltas delivered back-to-back must not produce 200 transcript writes.
-        XCTAssertLessThan(observedTexts, 50)
-        _ = lastSeen
-    }
-
-    func testDropLoadsOnlyWhatFits() async {
-        let vm = makeViewModel()
-        vm.open(reason: .click, focus: true)
-        for index in 1...8 {
-            vm.addAttachment(textAttachment("kept\(index).txt"))
-        }
-        let providers = (1...5).map { index in
-            NSItemProvider(
-                item: URL(fileURLWithPath: "/tmp/otto-tests/missing-\(index).pdf") as NSURL,
-                typeIdentifier: UTType.fileURL.identifier
-            )
-        }
-
-        XCTAssertTrue(vm.handleDrop(providers))
-        XCTAssertEqual(vm.pendingAttachmentLoads, 2)
-        XCTAssertEqual(vm.transientError, NotchViewModel.attachmentLimitMessage)
-        await waitUntil { vm.pendingAttachmentLoads == 0 }
-    }
-
-    func testCanSendAndSendClearsComposer() async {
-        let client = ScriptedLLMClient([reply("Hi!")])
-        let vm = makeViewModel(client)
-        vm.open(reason: .click, focus: true)
-
-        XCTAssertFalse(vm.canSend)
-        vm.composerText = "   "
-        XCTAssertFalse(vm.canSend)
-        vm.composerText = "Hi otto"
-        XCTAssertTrue(vm.canSend)
-
-        let notes = textAttachment("notes.txt")
-        vm.addAttachment(notes)
-        vm.send()
-
-        XCTAssertEqual(vm.composerText, "")
-        XCTAssertTrue(vm.attachments.isEmpty)
-        XCTAssertTrue(vm.isOpen)
-        XCTAssertTrue(vm.isEngaged)
-        XCTAssertFalse(vm.canSend)
-        XCTAssertEqual(vm.chat.messages.first?.text, "Hi otto")
-        XCTAssertEqual(vm.chat.messages.first?.attachments, [notes])
-
-        await waitForReply(vm.chat)
-        vm.composerText = "Next"
-        XCTAssertTrue(vm.canSend)
-    }
-
-    func testOpenAndCloseDriveWindowHooks() {
-        let vm = makeViewModel()
-        var keyRequests: [Bool] = []
-        var presentations: [NotchViewModel.Presentation] = []
-        vm.onRequestKey = { keyRequests.append($0) }
-        vm.onPresentationChange = { presentations.append($0) }
-        vm.hasUnreadReply = true
-
-        vm.open(reason: .hover, focus: false)
-        XCTAssertTrue(vm.isOpen)
-        XCTAssertEqual(vm.openReason, .hover)
-        XCTAssertFalse(vm.isEngaged)
-        XCTAssertFalse(vm.hasUnreadReply)
-        XCTAssertEqual(vm.focusRequest, 0)
-        XCTAssertEqual(keyRequests, [])
-
-        vm.open(reason: .click, focus: true)
-        XCTAssertTrue(vm.isEngaged)
-        XCTAssertEqual(vm.focusRequest, 1)
-        XCTAssertEqual(keyRequests, [true])
-        XCTAssertEqual(presentations, [.open])
-
-        vm.isMenuPresented = true
-        XCTAssertTrue(vm.shouldStayOpen)
-        vm.close()
-        XCTAssertFalse(vm.isOpen)
-        XCTAssertNil(vm.openReason)
-        XCTAssertFalse(vm.isEngaged)
-        XCTAssertFalse(vm.isMenuPresented)
-        XCTAssertFalse(vm.shouldStayOpen)
-        XCTAssertEqual(keyRequests, [true, false])
-        XCTAssertEqual(presentations, [.open, .closed])
-
-        vm.toggle(reason: .hotkey)
-        XCTAssertTrue(vm.isOpen)
-        XCTAssertTrue(vm.isEngaged)
-        vm.toggle(reason: .hotkey)
-        XCTAssertFalse(vm.isOpen)
-    }
-
-    func testSuggestedTabAcceptAndDismiss() {
-        let vm = makeViewModel()
-        let tab = webAttachment("https://techcrunch.com", title: "TechCrunch")
-
-        vm.debugSeed(presentation: .open, composerText: "", attachments: [], suggestedTab: tab, hasUnreadReply: false)
-        vm.acceptSuggestedTab()
-        XCTAssertNil(vm.suggestedTab)
-        XCTAssertEqual(vm.attachments, [tab])
-
-        vm.debugSeed(presentation: .open, composerText: "", attachments: [], suggestedTab: tab, hasUnreadReply: false)
-        vm.dismissSuggestedTab()
-        XCTAssertNil(vm.suggestedTab)
-        XCTAssertTrue(vm.attachments.isEmpty)
-
-        vm.debugSeed(presentation: .open, composerText: "", attachments: [], suggestedTab: tab, hasUnreadReply: false)
-        vm.close()
-        XCTAssertNil(vm.suggestedTab)
-    }
-
-    func testReplyFinishingWhileClosedIsUnread() async {
-        let client = ScriptedLLMClient([reply("Done while you were away.")])
-        let vm = makeViewModel(client)
-
-        vm.chat.send(text: "Background question", attachments: [])
-        XCTAssertTrue(vm.showsClosedActivity)
-        await waitForReply(vm.chat)
-
-        XCTAssertTrue(vm.hasUnreadReply)
-        XCTAssertTrue(vm.showsClosedActivity)
-        vm.open(reason: .click, focus: true)
-        XCTAssertFalse(vm.hasUnreadReply)
-        XCTAssertFalse(vm.showsClosedActivity)
-    }
-
-    func testTransientErrorClearsItself() async {
-        let vm = makeViewModel()
-        vm.transientErrorLifetime = .milliseconds(40)
-
-        vm.transientError = "Something went wrong"
-        XCTAssertEqual(vm.transientError, "Something went wrong")
-        await waitUntil(timeout: 2) { vm.transientError == nil }
-    }
-
-    func testNewChatClearsConversationAndComposer() async {
-        let client = ScriptedLLMClient([reply("Hello.")])
-        let vm = makeViewModel(client)
-        vm.open(reason: .click, focus: true)
-        vm.composerText = "Hi"
-        vm.send()
-        await waitForReply(vm.chat)
-        vm.composerText = "Draft"
-        vm.addAttachment(textAttachment("draft.txt"))
-
-        vm.newChat()
-
-        XCTAssertTrue(vm.chat.messages.isEmpty)
-        XCTAssertEqual(vm.composerText, "")
-        XCTAssertTrue(vm.attachments.isEmpty)
     }
 }
