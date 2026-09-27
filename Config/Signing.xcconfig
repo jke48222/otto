@@ -1,0 +1,16 @@
+// Signing for Otto.
+//
+// By default Otto builds with an ad hoc signature ("Sign to Run Locally"), so anyone can
+// clone and build it without an Apple Developer account.
+//
+// To sign with your own identity (keeps Keychain access prompts away between rebuilds),
+// create Config/Local.xcconfig (git-ignored) with, for example:
+//
+//     CODE_SIGN_IDENTITY = Apple Development
+//     DEVELOPMENT_TEAM = ABCDE12345
+//
+CODE_SIGN_STYLE = Manual
+CODE_SIGN_IDENTITY = -
+DEVELOPMENT_TEAM =
+
+#include? "Local.xcconfig"
