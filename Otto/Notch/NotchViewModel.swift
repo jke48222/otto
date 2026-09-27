@@ -2,9 +2,12 @@
 //  NotchViewModel.swift
 //  Otto
 //
-//  State of the notch panel: presentation, composer, context chips and the browser-tab suggestion.
-//  The window controller drives pointer/keyboard behaviour through the hooks at the bottom of the
-//  property list; the SwiftUI views read and bind everything else.
+//  State of the notch panel: presentation, focus and holds, the fold for system UI, routes and the dock's
+//  prompts, the composer and its context chips, notices, editing and the reading position. This file owns every
+//  stored property and every state transition; NotchViewModel+Prompts orchestrates the dock (approvals,
+//  permission flows, cards) and NotchViewModel+Interaction answers the window controller's and the views'
+//  questions (key context, placeholder, height limit). The feature files (voice, context, shelf, history,
+//  glance, actions, commands) build on the same stored properties.
 //
 
 import AppKit
@@ -12,15 +15,74 @@ import Observation
 import UniformTypeIdentifiers
 import os
 
+/// A neutral confirmation under the composer ("Copied the last reply").
+struct TransientNotice: Equatable, Sendable { let text: String; let symbol: String }
+
+/// ↑ recalled the last question into the composer; sending replaces that turn.
+struct EditingTurn: Equatable, Sendable { let userMessageID: UUID }
+
+/// Snapshots and SelfTest only: feature state set in one call (`NotchViewModel.debugSeed(features:)`).
+struct NotchDebugSeed {
+    var route: NotchRoute = .chat
+    var overlay: NotchOverlay? = nil
+    var isPinned = false
+    var isTallMode = false
+    var editingTurnMessageID: UUID? = nil
+    var card: NotchCard? = nil
+    var permissionPrompt: PermissionPrompt? = nil
+    var notice: TransientNotice? = nil
+    var dropSession: DropSession? = nil
+    var readingAnchorMessageID: UUID? = nil
+    var isSoftFocused = false
+    /// closed-waiting.png (also sets isFolded).
+    var systemUIWait: SystemUIWait? = nil
+    /// Approval shots: a date at least armingDelay ago renders the armed state.
+    var approvalVisibleSince: Date? = nil
+}
+
 @MainActor @Observable final class NotchViewModel {
     enum Presentation: Equatable { case closed, open }
-    enum OpenReason: Equatable { case hover, click, hotkey, drag, programmatic }
+    enum OpenReason: Equatable { case hover, click, hotkey, drag, programmatic, voice }
+
+    /// When the current approval became visible and reviewed (§4.5); arming counts from here.
+    struct ApprovalVisibility: Equatable, Sendable { let callID: String; let since: Date; let sinceUptime: TimeInterval }
+
+    /// A card waiting in the dock queue, with the open it was queued in (the neighbor card shows on the next open).
+    struct QueuedCard: Equatable, Sendable {
+        var card: NotchCard
+        let queuedAtOpen: Int
+    }
+
+    /// The phase of the permission card a tool approval of kind `.permission` shows.
+    struct ToolPermissionState: Equatable, Sendable {
+        let callID: String
+        var phase: PermissionPrompt.Phase
+    }
 
     static let maxAttachments = 10
     static let attachmentLimitMessage = "You can attach up to \(maxAttachments) items."
 
     let settings: AppSettings
     let chat: ChatSession
+
+    // MARK: Services (read by views)
+
+    let permissions: PermissionsCenter
+    let approvals: ApprovalStore
+    let voice: VoiceController
+    let history: HistoryController
+    let recents: RecentsState
+    let glance: GlanceController
+    let ledger: UsageLedger
+    let nowPlaying: NowPlayingMonitor
+    let calendar: CalendarGlance
+    let shelf: ShelfController
+    let suggestions: ContextSuggestions
+    let inserter: InsertCoordinator
+    /// nil in inert graphs (tests, snapshots, promo).
+    let notifications: NotificationPresenter?
+
+    // MARK: Presentation and composer
 
     private(set) var presentation: Presentation = .closed
     private(set) var openReason: OpenReason?
@@ -42,15 +104,14 @@ import os
         didSet { scheduleTransientErrorClear() }
     }
 
-    /// Increments whenever the composer should take keyboard focus.
+    /// Increments whenever the composer (or the active route's first responder) should take keyboard focus.
     private(set) var focusRequest = 0
     var hasUnreadReply = false
 
-    /// A +/⋮ menu is open — do not auto-close. Also reads true while the file picker, a screen
-    /// capture or the system's Automation consent dialog is up, even if a menu's disappearance resets
-    /// the flag in the meantime (the window controller reads only this flag to hold the notch open).
+    /// Outside clicks don't close the notch while true: a +/⋮ menu, the file picker, a screen capture, or a sheet
+    /// or preview of Otto's own above the notch. Waiting on system UI is not part of it: the notch folds instead.
     var isMenuPresented: Bool {
-        get { menuFlag || isPickingFiles || isCapturingScreen || isAwaitingAutomationConsent }
+        get { menuFlag || isPickingFiles || isCapturingScreen || !modalHolds.isEmpty }
         set { menuFlag = newValue }
     }
 
@@ -61,16 +122,92 @@ import os
     var renderedShapeSize: CGSize = NotchMetrics.virtualNotchSize
 
     var canSend: Bool {
-        guard !chat.isStreaming, pendingAttachmentLoads == 0 else { return false }
+        guard pendingAttachmentLoads == 0 else { return false }
+        // Editing replaces the last turn, which stops a reply that is still streaming.
+        guard isEditing || !chat.isStreaming else { return false }
         return !composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty
     }
 
+    /// Hover-exit and the drop-settle fold-up never close while true.
     var shouldStayOpen: Bool {
-        isEngaged || isMenuPresented || isDropTargeted || pendingAttachmentLoads > 0
+        isEngaged || isMenuPresented || isDropTargeted || pendingAttachmentLoads > 0 || isPinned
+            || !stayOpenHolds.isEmpty
     }
 
     /// The closed notch grows "ears" while a reply streams or an unread reply waits.
     var showsClosedActivity: Bool { chat.isStreaming || hasUnreadReply }
+
+    // MARK: Focus, holds, pin, tall mode
+
+    private(set) var stayOpenHolds: Set<StayOpenHold> = []
+    private(set) var modalHolds: Set<ModalHold> = []
+    /// The panel holds the keyboard because the pointer rests on it, not because the user committed (§6.2).
+    private(set) var isSoftFocused = false
+    /// Mirrors `panel.isKeyWindow`; the window controller writes it.
+    var isPanelKey = false
+    private(set) var isPinned = false
+    private(set) var isTallMode = false
+    /// Set by the window controller from the screen geometry.
+    var tallOpenHeight: CGFloat = NotchMetrics.maxOpenHeight
+    @ObservationIgnored var onWillChangeOpenHeightLimit: ((CGFloat) -> Void)?
+    /// Preferred over onOpenSettings when set. The anchor scrolls the tab to a section.
+    @ObservationIgnored var onOpenSettingsTab: ((SettingsTab?, SettingsAnchor?) -> Void)?
+
+    // MARK: Fold for system UI (§4.5)
+
+    /// permissions.awaiting (only for a flow started in the notch) ?? chat.systemUIToolWait ?? the browser-tab /
+    /// media Automation prompt in flight. Drives the fold and closed-notch row 2.
+    private(set) var systemUIWait: SystemUIWait?
+    /// The VM folded an open notch for `systemUIWait` and will reopen it (unfocused) when the wait ends, unless the
+    /// user opened or closed it in between.
+    private(set) var isFolded = false
+
+    // MARK: Routes, overlays, prompts
+
+    private(set) var route: NotchRoute = .chat
+    private(set) var overlay: NotchOverlay?
+    private(set) var permissionPrompt: PermissionPrompt?
+    /// FIFO, one card per kind. `card` is the first one that may show now.
+    private(set) var cardQueue: [QueuedCard] = []
+    /// The card of a tool approval that needs macOS access: which step it is on.
+    private(set) var toolPermission: ToolPermissionState?
+
+    // MARK: Approvals
+
+    private(set) var approvalVisibility: ApprovalVisibility?
+    @ObservationIgnored private(set) var lastPanelMouseDown: (uptime: TimeInterval, isHardware: Bool)?
+    /// The choices on the approval card (always-allow checkbox, calendar or list picker). ⌘↩ approves with them;
+    /// the card binds to them. Reset for every new approval.
+    var approvalOptions = ApprovalOptions()
+
+    // MARK: Notices, editing, reading position
+
+    /// An error (`transientError`) always wins the slot under the composer.
+    private(set) var transientNotice: TransientNotice?
+    private(set) var editingTurn: EditingTurn?
+    private(set) var unreadReplyID: UUID?
+    private(set) var readingAnchor: ReadingAnchor?
+
+    // MARK: Feature state (the voice, context, shelf and history files use it)
+
+    /// A voice question keeps the notch open until its reply has been read (§6.7).
+    private(set) var voiceReplyHold = false
+    /// The app the user was in when the notch opened (never Otto): the paste target and the chip names.
+    @ObservationIgnored private(set) var openContextApp: AppRef?
+    private(set) var dropSession: DropSession?
+    /// User messages that were asked by voice ("When I ask by voice" spoken replies).
+    @ObservationIgnored var voiceTurnUserMessageIDs: Set<UUID> = []
+    /// Set by the voice flow right before it calls `send()`; `send()` records the new user message and clears it.
+    @ObservationIgnored var isSendingVoiceTurn = false
+    /// Accepted selection chips → the selection they came from (Replace mode), keyed by attachment id.
+    @ObservationIgnored var selectionSnapshots: [UUID: SelectionSnapshot] = [:]
+    /// Permissions the notch asked for outside a PermissionPrompt (voice, card actions). While macOS shows their
+    /// dialog or System Settings the notch folds; each entry goes once that wait ends.
+    private(set) var notchPermissionRequests: Set<Permission> = []
+    /// An Automation consent dialog Otto triggered itself (the browser-tab lookup, Now Playing controls).
+    var automationPromptInFlight: Permission?
+    /// How the last permission flow ended without a grant ("Just Copy" on the paste card); nil after a grant.
+    @ObservationIgnored private(set) var lastPermissionDeclineAction: PermissionCardAction?
 
     // MARK: Window-controller hooks
 
@@ -82,18 +219,60 @@ import os
     @ObservationIgnored var onBeginScreenCapture: (() -> Void)?
     @ObservationIgnored var onEndScreenCapture: (() -> Void)?
 
+    // MARK: Seams (tests shorten or fake them)
+
+    /// How long `transientError` stays visible.
+    @ObservationIgnored var transientErrorLifetime: Duration = .seconds(4)
+    /// How long "You're all set" shows before a permission flow continues.
+    @ObservationIgnored var grantedCardLifetime: Duration = .milliseconds(900)
+    /// The longest a permission flow waits for a switch in System Settings (the center caps it too).
+    @ObservationIgnored var permissionWaitTimeout: Duration = .seconds(180)
+    @ObservationIgnored var now: () -> Date = { Date() }
+    /// System uptime, the clock `NSEvent.timestamp` uses (approval arming vs. the approving key press).
+    @ObservationIgnored var uptime: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+    /// VoiceOver announcements (the fold).
+    @ObservationIgnored var announce: (String) -> Void = { GlanceController.postAccessibilityAnnouncement($0) }
+    /// Opens a URL outside Otto (Dictation settings). Inert graphs never open anything.
+    @ObservationIgnored var openExternalURL: (URL) -> Void
+    /// The interactive region capture behind "Take Screenshot" (tests replace it).
+    @ObservationIgnored var captureInteractive: @MainActor () async throws -> Attachment? = {
+        try await ScreenCapture.captureInteractive()
+    }
+
     // MARK: Private state
 
     private var menuFlag = false
     private var isPickingFiles = false
     private var isCapturingScreen = false
-    /// A prompt-allowed tab lookup is about to show (or is showing) the Automation consent dialog.
-    /// Clicking it must not close or disengage the notch.
-    private var isAwaitingAutomationConsent = false
+    /// Holds set through `setHold`/`setModalHold`; the rest come from subsystem state (`refreshHolds`).
+    private var manualStayOpenHolds: Set<StayOpenHold> = []
+    private var manualModalHolds: Set<ModalHold> = []
 
-    /// How long `transientError` stays visible. Internal so tests can shorten it.
-    @ObservationIgnored var transientErrorLifetime: Duration = .seconds(4)
     @ObservationIgnored private var transientErrorTask: Task<Void, Never>?
+    @ObservationIgnored private var noticeTask: Task<Void, Never>?
+    /// The subsystem observations (hold sources, the fold, approvals, the history notice).
+    @ObservationIgnored private var observations: [AnyObject] = []
+    /// `open()` calls so far; cards remember the open they were queued in.
+    @ObservationIgnored private(set) var openSerial = 0
+    @ObservationIgnored private var readingAnchorSerial = 0
+    /// The user clicked into or typed in the panel since it opened (History counts that as activity).
+    @ObservationIgnored private var engagedThisOpen = false
+    /// A notification or preview asked to open at this reply.
+    @ObservationIgnored private var replyToRevealOnOpen: UUID?
+    @ObservationIgnored private var hasShownPinNotice = false
+    /// The Shelf's landing hold was cleared by a close; it counts again once the Shelf starts a new one.
+    @ObservationIgnored private var landingHoldReleased = false
+    /// Snapshots froze `systemUIWait` through `debugSeed(features:)`; live sources no longer move it.
+    @ObservationIgnored private var systemUIWaitIsSeeded = false
+    @ObservationIgnored private var reviewedApprovalCallID: String?
+    @ObservationIgnored private var observedApprovalCallID: String?
+    @ObservationIgnored private var notchRequestsInFlight: [Permission: Int] = [:]
+
+    // Permission flows (driven by NotchViewModel+Prompts).
+    @ObservationIgnored private var permissionContinuation: CheckedContinuation<Bool, Never>?
+    @ObservationIgnored private var permissionTask: Task<Void, Never>?
+    @ObservationIgnored private var toolPermissionTask: Task<Void, Never>?
+    @ObservationIgnored private var cardWaiters: [NotchCard.Kind: CheckedContinuation<NotchCard.Action, Never>] = [:]
 
     /// File URLs currently loading, so the same file dropped twice is loaded once.
     @ObservationIgnored private var loadingFileURLs: Set<URL> = []
@@ -108,7 +287,7 @@ import os
     @ObservationIgnored private var dismissedTabURL: URL?
     /// The app that was active before Otto activated itself for the file picker; it gets focus
     /// back when the notch closes.
-    @ObservationIgnored private var appToReactivate: NSRunningApplication?
+    @ObservationIgnored var appToReactivate: NSRunningApplication?
     /// The open file picker, so asking for it again brings it back instead of doing nothing.
     @ObservationIgnored private weak var filePanel: NSOpenPanel?
     /// The chip `autoAttachBrowserTab` added for the current tab. It stands for "the page I'm on
@@ -117,57 +296,138 @@ import os
     @ObservationIgnored private var autoAttachedTabID: UUID?
     /// Whether the latest tab lookup was allowed to ask for Automation permission.
     @ObservationIgnored private var lastLookupAllowedPrompt = false
+    /// `automationPromptInFlight` belongs to the tab lookup (not to a feature that set it).
+    @ObservationIgnored private var tabLookupOwnsAutomationPrompt = false
 
     /// One level above the notch panel (`NotchPanel.auxiliaryWindowLevel`), so the open notch never
     /// covers the picker, and so it stays visible (and reachable) when another app is activated while
     /// it is up — Otto is an accessory app, so ⌘Tab can't bring it back.
     static let filePickerLevel = NotchPanel.auxiliaryWindowLevel
 
-    private static let logger = Logger(subsystem: "com.jalenedusei.otto", category: "Notch")
+    static let logger = Logger(subsystem: "com.jalenedusei.otto", category: "Notch")
 
-    init(settings: AppSettings, chat: ChatSession) {
+    /// `services == nil` ⇒ `.inert(settings:chat:)` (keeps every existing call site compiling).
+    init(settings: AppSettings, chat: ChatSession, services: NotchServices? = nil) {
+        let isInert = services == nil
+        let services = services ?? .inert(settings: settings, chat: chat)
         self.settings = settings
         self.chat = chat
+        permissions = services.permissions
+        approvals = services.approvals
+        voice = services.voice
+        history = services.history
+        recents = services.recents
+        glance = services.glance
+        ledger = services.ledger
+        nowPlaying = services.nowPlaying
+        calendar = services.calendar
+        shelf = services.shelf
+        suggestions = services.suggestions
+        inserter = services.inserter
+        notifications = services.notifications
+        openExternalURL = isInert ? { _ in } : { NSWorkspace.shared.open($0) }
 
         chat.onReplyFinished = { [weak self] in
-            guard let self, !self.isOpen else { return }
-            self.hasUnreadReply = true
+            self?.noteReplyFinished()
+        }
+        shelf.onHoldsChanged = { [weak self] in
+            self?.refreshHolds()
+        }
+        shelf.onError = { [weak self] message in
+            self?.transientError = message
+        }
+        voice.onNotice = { [weak self] message in
+            self?.showNotice(message, symbol: "info.circle", lifetime: .seconds(4))
         }
         startTrackingFrontmostApp()
+        startObservingSubsystems()
+        installFeatures()
     }
 
     // MARK: - Presentation
 
     func open(reason: OpenReason, focus: Bool) {
         let wasOpen = isOpen
+        if !wasOpen {
+            let hasDraft = !composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || !attachments.isEmpty || pendingAttachmentLoads > 0
+            history.startFreshIfIdle(hasUnreadReply: hasUnreadReply, hasDraft: hasDraft)
+            openContextApp = currentExternalApp.flatMap(AppRef.init)
+            openSerial += 1
+            engagedThisOpen = false
+        }
+        let hadUnread = hasUnreadReply
+
         presentation = .open
         openReason = reason
-        hasUnreadReply = false
+        isFolded = false
         if !wasOpen {
             onPresentationChange?(.open)
         }
 
+        if !wasOpen || replyToRevealOnOpen != nil {
+            restoreReadingOnOpen(hadUnread: hadUnread)
+        }
+        hasUnreadReply = false
+        unreadReplyID = nil
+
         refreshSuggestedTab(allowPrompt: reason == .click || reason == .hotkey)
+        if !wasOpen {
+            suggestions.refresh(for: openContextApp, allowSelection: reason != .drag)
+            glance.notchDidOpen()
+            calendar.panelDidOpen()
+        }
 
         if focus {
+            isSoftFocused = false
             isEngaged = true
+            engagedThisOpen = true
             onRequestKey?(true)
             focusRequest += 1
         }
+        refreshHolds()
+        refreshApprovalVisibility()
     }
 
-    func close() {
+    func close(_ reason: CloseReason = .programmatic) {
         let wasOpen = isOpen
+        let isFold = reason == .systemUI
         presentation = .closed
         openReason = nil
         isEngaged = false
+        isSoftFocused = false
         isMenuPresented = false
-        isAwaitingAutomationConsent = false
-        suggestedTab = nil
-        removeAutoAttachedTab(keepingDraftContext: true)
-        suggestionGeneration += 1
-        suggestionTask?.cancel()
-        suggestionTask = nil
+        overlay = nil
+        dropSession = nil
+
+        if !isFold {
+            // The user (or Otto on their behalf) closed it: a fold in progress is theirs now.
+            isFolded = false
+            isPinned = false
+            leaveRoute()
+            route = .chat
+            clearContextSuggestions()
+            history.commitPendingDeletion()
+        }
+        if systemUIWait == nil, let prompt = permissionPrompt {
+            // A flow already on "You're all set" still resumes its action.
+            finishPermissionFlow(granted: prompt.phase == .granted)
+        }
+        if shelf.isShowingQuickLook {
+            shelf.quickLook.hide()
+        }
+        calendar.panelDidClose()
+        if engagedThisOpen {
+            history.noteActivity()
+        }
+        engagedThisOpen = false
+        if reason.isUserInitiated {
+            voice.stopSpeaking()
+            if voice.isActive { voice.cancel() }
+        }
+        manualStayOpenHolds.subtract([.voiceReplyHold, .shelfLanding])
+        voiceReplyHold = false
+        landingHoldReleased = shelf.isHoldingLanding
 
         onRequestKey?(false)
         if wasOpen {
@@ -179,11 +439,13 @@ import os
                 app.activate(options: [])
             }
         }
+        refreshHolds()
+        refreshApprovalVisibility()
     }
 
     func toggle(reason: OpenReason) {
         if isOpen {
-            close()
+            close(.user)
         } else {
             open(reason: reason, focus: reason != .hover && reason != .drag)
         }
@@ -191,7 +453,10 @@ import os
 
     /// The user clicked into the panel.
     func engage() {
+        isSoftFocused = false
         isEngaged = true
+        engagedThisOpen = true
+        setVoiceReplyHold(false)
         onRequestKey?(true)
         // A hover (or drag) open looks the tab up without asking for Automation permission, and with
         // a 90 ms dwell it always wins the race against a click. Clicking in is a deliberate act, so
@@ -199,6 +464,509 @@ import os
         if isOpen, !lastLookupAllowedPrompt, suggestedTab == nil, autoAttachedTabID == nil {
             refreshSuggestedTab(allowPrompt: true)
         }
+    }
+
+    /// The pointer rested on the open panel: take the keyboard without engaging (§6.2). Never asks for Automation.
+    func softFocus() {
+        guard isOpen, !isEngaged, !isSoftFocused else { return }
+        isSoftFocused = true
+        onRequestKey?(true)
+        focusRequest += 1
+    }
+
+    /// Hands the keyboard back to the user's app unless they engaged in the meantime.
+    func releaseSoftFocus() {
+        guard isSoftFocused else { return }
+        isSoftFocused = false
+        guard !isEngaged else { return }
+        onRequestKey?(false)
+    }
+
+    /// The panel resigned key (the window controller calls it; key is already gone).
+    func panelDidLoseKey() {
+        isSoftFocused = false
+        if isEngaged && !isMenuPresented {
+            isEngaged = false
+        }
+    }
+
+    /// Pinned: the global shortcut hands the keyboard back without closing.
+    func disengage() {
+        isSoftFocused = false
+        isEngaged = false
+        onRequestKey?(false)
+    }
+
+    /// The pointer entered the open shape: a new enter/exit cycle ends the voice reply hold.
+    func pointerEnteredPanel() {
+        setVoiceReplyHold(false)
+    }
+
+    func togglePin() {
+        isPinned.toggle()
+        if isPinned, !hasShownPinNotice {
+            hasShownPinNotice = true
+            showNotice("Pinned. Otto stays open while you work", symbol: "pin")
+        }
+    }
+
+    /// Tall reading mode needs a conversation. The window grows (`onWillChangeOpenHeightLimit`) before the flag flips.
+    func setTallMode(_ on: Bool) {
+        guard on != isTallMode else { return }
+        if on, chat.messages.isEmpty {
+            showNotice("Tall mode is for reading. Start a conversation first.", symbol: "info.circle")
+            return
+        }
+        let limit = on && systemUIWait == nil ? tallOpenHeight : NotchMetrics.maxOpenHeight
+        if limit != openHeightLimit {
+            onWillChangeOpenHeightLimit?(limit)
+        }
+        isTallMode = on
+    }
+
+    func toggleTallMode() {
+        setTallMode(!isTallMode)
+    }
+
+    // MARK: - Holds
+
+    func setHold(_ hold: StayOpenHold, _ active: Bool) {
+        if active {
+            manualStayOpenHolds.insert(hold)
+        } else {
+            manualStayOpenHolds.remove(hold)
+        }
+        if hold == .voiceReplyHold, voiceReplyHold != active {
+            voiceReplyHold = active
+        }
+        refreshHolds()
+    }
+
+    func setModalHold(_ hold: ModalHold, _ active: Bool) {
+        if active {
+            manualModalHolds.insert(hold)
+        } else {
+            manualModalHolds.remove(hold)
+        }
+        refreshHolds()
+    }
+
+    /// The voice flow's hold after a spoken question (cleared by engage, close, a new pointer enter).
+    func setVoiceReplyHold(_ active: Bool) {
+        guard voiceReplyHold != active || manualStayOpenHolds.contains(.voiceReplyHold) != active else { return }
+        setHold(.voiceReplyHold, active)
+    }
+
+    /// Re-derives the holds that follow subsystem state (§4.5 table) and adds the ones set by hand.
+    func refreshHolds() {
+        if !shelf.isHoldingLanding {
+            landingHoldReleased = false
+        }
+        var holds = manualStayOpenHolds
+        if voice.isActive { holds.insert(.voiceSession) }
+        if shelf.isDraggingOut { holds.insert(.shelfDragOut) }
+        if shelf.isHoldingLanding, !landingHoldReleased { holds.insert(.shelfLanding) }
+        if inserter.activity != nil { holds.insert(.insertInProgress) }
+        if promptRequiresDecision { holds.insert(.promptDecision) }
+        if holds != stayOpenHolds {
+            stayOpenHolds = holds
+        }
+
+        var modal = manualModalHolds
+        if shelf.isSharing { modal.insert(.sharing) }
+        if shelf.isShowingQuickLook { modal.insert(.quickLook) }
+        if modal != modalHolds {
+            modalHolds = modal
+        }
+    }
+
+    // MARK: - Fold for system UI
+
+    /// Keeps `systemUIWait` current and folds or unfolds the notch around it (§4.5).
+    func updateSystemUIWait(_ wait: SystemUIWait?) {
+        pruneNotchPermissionRequests()
+        guard !systemUIWaitIsSeeded, wait != systemUIWait else { return }
+        let previous = systemUIWait
+        let limit = isTallMode && wait == nil ? tallOpenHeight : NotchMetrics.maxOpenHeight
+        if limit != openHeightLimit {
+            onWillChangeOpenHeightLimit?(limit)
+        }
+        systemUIWait = wait
+
+        if previous == nil, let wait, isOpen {
+            Self.logger.info("Folding the notch while macOS shows its own UI")
+            isFolded = true
+            close(.systemUI)
+            announce("Otto moved out of the way. \(wait.dropText)")
+        } else if wait == nil, isFolded {
+            isFolded = false
+            if !isOpen {
+                Self.logger.info("Reopening the notch after the system UI closed")
+                open(reason: .programmatic, focus: false)
+            }
+        }
+        refreshApprovalVisibility()
+    }
+
+    /// Drops notch-started requests whose macOS UI is gone.
+    private func pruneNotchPermissionRequests() {
+        guard !notchPermissionRequests.isEmpty else { return }
+        let awaited = permissions.awaiting.map(Self.permission(of:))
+        let kept = notchPermissionRequests.filter { $0 == awaited || notchRequestsInFlight[$0, default: 0] > 0 }
+        if kept != notchPermissionRequests {
+            notchPermissionRequests = kept
+        }
+    }
+
+    /// Marks `permission` as asked for by the notch for as long as `body` runs and its macOS UI stays up.
+    func trackNotchPermissionRequest<T>(_ permission: Permission, _ body: () async -> T) async -> T {
+        notchRequestsInFlight[permission, default: 0] += 1
+        notchPermissionRequests.insert(permission)
+        let result = await body()
+        let remaining = notchRequestsInFlight[permission, default: 1] - 1
+        notchRequestsInFlight[permission] = remaining > 0 ? remaining : nil
+        updateSystemUIWait(derivedSystemUIWait)
+        return result
+    }
+
+    /// Opens System Settings for `permission` as part of a notch flow (the notch folds while it is up).
+    func openSystemSettingsFromNotch(for permission: Permission) {
+        notchPermissionRequests.insert(permission)
+        permissions.openSystemSettings(for: permission)
+    }
+
+    static func permission(of wait: PermissionWait) -> Permission {
+        switch wait {
+        case .systemPrompt(let permission), .systemSettings(let permission): return permission
+        }
+    }
+
+    // MARK: - Routes and overlay
+
+    /// Ignores unavailable routes; bumps `focusRequest` so the page's first responder takes the keyboard.
+    func navigate(to route: NotchRoute) {
+        guard availableRoutes.contains(route) else { return }
+        if route != self.route {
+            leaveRoute()
+            self.route = route
+            if route == .history {
+                recents.activate(preferred: history.continuation?.id)
+            }
+        }
+        focusRequest += 1
+        refreshApprovalVisibility()
+    }
+
+    /// Opens (focused) when closed; the active route toggles back to Chat.
+    func toggle(route: NotchRoute) {
+        guard availableRoutes.contains(route) else { return }
+        if !isOpen {
+            open(reason: .programmatic, focus: true)
+            navigate(to: route)
+            return
+        }
+        navigate(to: self.route == route ? .chat : route)
+    }
+
+    func toggleShortcutSheet() {
+        if overlay == nil {
+            if route != .chat { navigate(to: .chat) }
+            overlay = .shortcutSheet
+        } else {
+            overlay = nil
+        }
+    }
+
+    func dismissOverlay() {
+        overlay = nil
+    }
+
+    private func leaveRoute() {
+        guard route == .history else { return }
+        recents.deactivate()
+        history.commitPendingDeletion()
+    }
+
+    // MARK: - Cards
+
+    /// Queues a card (de-duplicated by kind: a card already queued is updated in place).
+    func present(card: NotchCard) {
+        if let index = cardQueue.firstIndex(where: { $0.card.kind == card.kind }) {
+            cardQueue[index].card = card
+        } else {
+            cardQueue.append(QueuedCard(card: card, queuedAtOpen: openSerial))
+        }
+        refreshHolds()
+        refreshApprovalVisibility()
+    }
+
+    /// Presents `card` and returns the action the user picks on it (the default action is then left to the caller).
+    func awaitCardDecision(_ card: NotchCard) async -> NotchCard.Action {
+        if let earlier = cardWaiters.removeValue(forKey: card.kind) {
+            earlier.resume(returning: .dismiss)
+        }
+        present(card: card)
+        return await withCheckedContinuation { continuation in
+            cardWaiters[card.kind] = continuation
+        }
+    }
+
+    /// Takes the card of `kind` out of the queue. Returns the waiter that asked for its decision, if any.
+    @discardableResult func removeCard(kind: NotchCard.Kind) -> CheckedContinuation<NotchCard.Action, Never>? {
+        cardQueue.removeAll { $0.card.kind == kind }
+        refreshHolds()
+        refreshApprovalVisibility()
+        return cardWaiters.removeValue(forKey: kind)
+    }
+
+    /// The history notice is queued once History has read its index (never in inert graphs) and leaves the queue
+    /// when it was answered anywhere (the dock or Recents).
+    private func syncHistoryNotice(_ wanted: Bool) {
+        let queued = cardQueue.contains { $0.card.kind == .historyNotice }
+        if wanted, !queued {
+            present(card: Self.historyNoticeCard(retention: settings.history.retention))
+        } else if !wanted, queued {
+            removeCard(kind: .historyNotice)?.resume(returning: .dismiss)
+        }
+    }
+
+    // MARK: - Permission prompt state
+
+    /// Shows the explain step of a feature permission flow; `requestPermission` awaits the returned continuation.
+    func beginPermissionPrompt(_ prompt: PermissionPrompt, continuation: CheckedContinuation<Bool, Never>) {
+        finishPermissionFlow(granted: false)
+        lastPermissionDeclineAction = nil
+        permissionPrompt = prompt
+        permissionContinuation = continuation
+        refreshHolds()
+        refreshApprovalVisibility()
+    }
+
+    /// Moves the current flow to `phase` (ignored when `id` is no longer the current prompt).
+    func setPermissionPhase(_ phase: PermissionPrompt.Phase, for id: UUID) {
+        guard var prompt = permissionPrompt, prompt.id == id, prompt.phase != phase else { return }
+        prompt.phase = phase
+        permissionPrompt = prompt
+        refreshHolds()
+    }
+
+    /// Runs one step of the current flow; a new step cancels the previous one.
+    func runPermissionStep(_ step: @escaping @MainActor () async -> Void) {
+        permissionTask?.cancel()
+        permissionTask = Task { @MainActor in
+            await step()
+        }
+    }
+
+    /// Ends the current flow once: clears the prompt and resumes `requestPermission`.
+    func finishPermissionFlow(granted: Bool, declinedWith action: PermissionCardAction? = nil) {
+        permissionTask?.cancel()
+        permissionTask = nil
+        let continuation = permissionContinuation
+        permissionContinuation = nil
+        if permissionPrompt != nil {
+            permissionPrompt = nil
+        }
+        if !granted, let action {
+            lastPermissionDeclineAction = action
+        }
+        continuation?.resume(returning: granted)
+        refreshHolds()
+        refreshApprovalVisibility()
+    }
+
+    /// The step a tool approval's permission card is on (nil when `callID` isn't the pending approval).
+    func setToolPermissionPhase(_ phase: PermissionPrompt.Phase?, callID: String) {
+        guard let phase else {
+            if toolPermission?.callID == callID { toolPermission = nil }
+            return
+        }
+        let state = ToolPermissionState(callID: callID, phase: phase)
+        if toolPermission != state {
+            toolPermission = state
+        }
+    }
+
+    /// The approval was declined (or went away): stop asking macOS on its behalf.
+    func endToolPermissionFlow(callID: String) {
+        toolPermissionTask?.cancel()
+        toolPermissionTask = nil
+        setToolPermissionPhase(nil, callID: callID)
+    }
+
+    func runToolPermissionStep(_ step: @escaping @MainActor () async -> Void) {
+        toolPermissionTask?.cancel()
+        toolPermissionTask = Task { @MainActor in
+            await step()
+        }
+    }
+
+    // MARK: - Approval visibility (§4.5)
+
+    /// Stamps `approvalVisibility` the moment the pending approval is on screen and reviewed, and clears it the
+    /// moment any condition stops holding (a later stamp restarts arming from zero).
+    func refreshApprovalVisibility() {
+        guard let approval = chat.pendingApproval else {
+            reviewedApprovalCallID = nil
+            if approvalVisibility != nil { approvalVisibility = nil }
+            return
+        }
+        let onScreen = isOpen && !isFolded && route == .chat && !isCapturingScreen
+            && currentPrompt == .approval(approval)
+        guard onScreen else {
+            // Off screen: the card reports its review again when it reappears.
+            reviewedApprovalCallID = nil
+            if approvalVisibility != nil { approvalVisibility = nil }
+            return
+        }
+        guard reviewedApprovalCallID == approval.callID else {
+            if approvalVisibility != nil { approvalVisibility = nil }
+            return
+        }
+        if approvalVisibility?.callID != approval.callID {
+            approvalVisibility = ApprovalVisibility(callID: approval.callID, since: now(), sinceUptime: uptime())
+        }
+    }
+
+    /// The card's body fits, or the user scrolled a long script to its end (§5.7).
+    func noteApprovalReviewed(callID: String) {
+        guard chat.pendingApproval?.callID == callID else { return }
+        reviewedApprovalCallID = callID
+        refreshApprovalVisibility()
+    }
+
+    /// Window controller's local mouse-down monitor, for clicks on the panel (InputProvenance.evidence).
+    func notePanelMouseDown(uptime: TimeInterval, isHardware: Bool) {
+        lastPanelMouseDown = (uptime: uptime, isHardware: isHardware)
+    }
+
+    /// A new approval starts with fresh card options (the picker's preselected calendar or list).
+    private func approvalDidChange() {
+        let approval = chat.pendingApproval
+        if approval?.callID != observedApprovalCallID {
+            observedApprovalCallID = approval?.callID
+            approvalOptions = Self.defaultOptions(for: approval)
+            toolPermissionTask?.cancel()
+            toolPermissionTask = nil
+            if let previous = toolPermission, previous.callID != approval?.callID {
+                toolPermission = nil
+            }
+        }
+        refreshHolds()
+        refreshApprovalVisibility()
+    }
+
+    private static func defaultOptions(for approval: PendingApproval?) -> ApprovalOptions {
+        switch approval?.body {
+        case .event(let preview)?: return ApprovalOptions(calendarIdentifier: preview.selectedCalendarID)
+        case .reminder(let preview)?: return ApprovalOptions(calendarIdentifier: preview.selectedListID)
+        default: return ApprovalOptions()
+        }
+    }
+
+    // MARK: - Notices
+
+    /// A neutral line under the composer; re-arms its timer even when the text is the same.
+    func showNotice(_ text: String, symbol: String = "checkmark.circle", lifetime: Duration = .milliseconds(2400)) {
+        let notice = TransientNotice(text: text, symbol: symbol)
+        transientNotice = notice
+        noticeTask?.cancel()
+        noticeTask = Task { [weak self] in
+            try? await Task.sleep(for: lifetime)
+            guard !Task.isCancelled, let self, self.transientNotice == notice else { return }
+            self.transientNotice = nil
+        }
+    }
+
+    // MARK: - Editing (↑ recall and resend)
+
+    /// Recalls the last question into an empty composer for editing. False (and nothing happens) otherwise.
+    @discardableResult func recallLastMessage() -> Bool {
+        guard !isEditing,
+              composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, attachments.isEmpty,
+              let message = chat.lastUserMessage else { return false }
+        composerText = message.text
+        attachments = message.attachments
+        editingTurn = EditingTurn(userMessageID: message.id)
+        focusRequest += 1
+        return true
+    }
+
+    /// Esc while editing: the composer was empty before the recall, so clearing it loses nothing.
+    func cancelEditing() {
+        guard isEditing else { return }
+        editingTurn = nil
+        composerText = ""
+        attachments = []
+    }
+
+    // MARK: - Reading position (§6.6)
+
+    func consumeReadingAnchor() -> ReadingAnchor? {
+        let anchor = readingAnchor
+        readingAnchor = nil
+        return anchor
+    }
+
+    /// One-shot scroll request to the top of `messageID`.
+    func setReadingAnchor(_ messageID: UUID) {
+        readingAnchorSerial += 1
+        readingAnchor = ReadingAnchor(messageID: messageID, serial: readingAnchorSerial)
+    }
+
+    /// A notification or the reply preview: open at the start of that answer (or where the user left off).
+    func openToReply(_ messageID: UUID?) {
+        if let messageID, chat.messages.contains(where: { $0.id == messageID }) {
+            replyToRevealOnOpen = messageID
+        }
+        if isOpen {
+            if route != .chat { navigate(to: .chat) }
+            if let messageID = replyToRevealOnOpen {
+                replyToRevealOnOpen = nil
+                setReadingAnchor(messageID)
+            }
+            engage()
+            focusRequest += 1
+        } else {
+            open(reason: .programmatic, focus: true)
+        }
+    }
+
+    private func restoreReadingOnOpen(hadUnread: Bool) {
+        let unread = hadUnread ? (unreadReplyID ?? chat.lastFinishedAssistantID) : nil
+        let reveal = replyToRevealOnOpen ?? unread
+        replyToRevealOnOpen = nil
+        let target = ReadingRestore.target(unreadReplyID: reveal, saved: history.currentReadingPosition,
+                                           messages: chat.messages)
+        if case .messageTop(let messageID) = target {
+            setReadingAnchor(messageID)
+        }
+    }
+
+    /// The reply finished while the notch was closed: it is unread. A feature that wraps `chat.onReplyFinished`
+    /// calls this first.
+    func noteReplyFinished() {
+        guard !isOpen else { return }
+        hasUnreadReply = true
+        unreadReplyID = chat.lastFinishedAssistantID
+    }
+
+    // MARK: - Drop
+
+    func setDropSession(_ session: DropSession?) {
+        if dropSession != session {
+            dropSession = session
+        }
+    }
+
+    /// Services and other entry points that know the app the request came from (nil: none, never Otto).
+    func setOpenContextApp(_ app: AppRef?) {
+        openContextApp = app
+    }
+
+    /// The composer (or the active route's first responder) takes the keyboard.
+    func requestFocus() {
+        focusRequest += 1
     }
 
     // MARK: - Chat
@@ -211,12 +979,43 @@ import os
             transientError = problem.localizedDescription
             return
         }
-        chat.send(text: composerText, attachments: attachments)
+        let text = composerText
+        let sent = attachments
+        let selection = sent.lazy.compactMap { self.selectionSnapshots[$0.id] }.first
+        let previousUserID = chat.lastUserMessage?.id
+
+        voice.stopSpeaking()
+        if let editing = editingTurn {
+            editingTurn = nil
+            if editing.userMessageID == chat.lastUserMessage?.id {
+                chat.replaceLastTurn(text: text, attachments: sent)
+            } else {
+                chat.send(text: text, attachments: sent)
+            }
+        } else {
+            chat.send(text: text, attachments: sent)
+        }
         composerText = ""
         attachments = []
         autoAttachedTabID = nil
+        for attachment in sent {
+            selectionSnapshots[attachment.id] = nil
+        }
+
+        if let userID = chat.lastUserMessage?.id, userID != previousUserID {
+            if let app = openContextApp {
+                inserter.recordTarget(userMessageID: userID, target: InsertTarget(app: app, selection: selection))
+            }
+            if isSendingVoiceTurn {
+                voiceTurnUserMessageIDs.insert(userID)
+            }
+        }
+        isSendingVoiceTurn = false
+        history.dismissContinuation()
+        history.noteActivity()
         if isOpen {
             isEngaged = true
+            engagedThisOpen = true
         }
     }
 
@@ -224,16 +1023,31 @@ import os
         chat.cancel()
     }
 
+    /// ⌘N: History saves the conversation and offers it as the continuation.
     func newChat() {
-        chat.reset()
+        voice.stopSpeaking()
+        editingTurn = nil
+        history.startNewConversation()
         composerText = ""
         attachments = []
         autoAttachedTabID = nil
+        selectionSnapshots = [:]
+        voiceTurnUserMessageIDs = []
         hasUnreadReply = false
+        unreadReplyID = nil
         transientError = nil
+        readingAnchor = nil
+        if route != .chat {
+            leaveRoute()
+            route = .chat
+        }
+        setTallMode(false)
+        inserter.reset()
+        notifications?.clearDelivered()
         if isEngaged {
             focusRequest += 1
         }
+        refreshApprovalVisibility()
     }
 
     func copyLastResponse() {
@@ -243,14 +1057,25 @@ import os
         }
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
-        if !pasteboard.setString(text, forType: .string) {
+        if pasteboard.setString(text, forType: .string) {
+            showNotice("Copied the last reply")
+        } else {
             transientError = "Couldn't copy the reply to the clipboard."
         }
     }
 
     func openSettings() {
-        close()
-        onOpenSettings?()
+        openSettings(tab: nil)
+    }
+
+    /// Closes the notch, then opens Settings on `tab`, scrolled to `anchor`.
+    func openSettings(tab: SettingsTab?, anchor: SettingsAnchor? = nil) {
+        close(.programmatic)
+        if let onOpenSettingsTab {
+            onOpenSettingsTab(tab ?? anchor?.tab, anchor)
+        } else {
+            onOpenSettings?()
+        }
     }
 
     // MARK: - Attachments
@@ -310,6 +1135,7 @@ import os
     func removeAttachment(id: UUID) {
         guard let index = attachments.firstIndex(where: { $0.id == id }) else { return }
         let removed = attachments.remove(at: index)
+        selectionSnapshots[id] = nil
         if removed.id == autoAttachedTabID {
             autoAttachedTabID = nil
         }
@@ -390,12 +1216,14 @@ import os
             return
         }
         isCapturingScreen = true
+        refreshApprovalVisibility()
         onBeginScreenCapture?()
 
         Task { [weak self] in
+            guard let capture = self?.captureInteractive else { return }
             let result: Result<Attachment?, Error>
             do {
-                result = .success(try await ScreenCapture.captureInteractive())
+                result = .success(try await capture())
             } catch {
                 result = .failure(error)
             }
@@ -509,16 +1337,45 @@ import os
         self.hasUnreadReply = hasUnreadReply
     }
 
-    // MARK: - Attachment helpers
+    /// Snapshots and SelfTest only: the feature state a scene needs, set directly (no fold, no timers).
+    func debugSeed(features: NotchDebugSeed) {
+        route = features.route
+        overlay = features.overlay
+        isPinned = features.isPinned
+        isTallMode = features.isTallMode
+        editingTurn = features.editingTurnMessageID.map(EditingTurn.init(userMessageID:))
+        cardQueue = features.card.map { [QueuedCard(card: $0, queuedAtOpen: openSerial - 1)] } ?? []
+        permissionPrompt = features.permissionPrompt
+        transientNotice = features.notice
+        dropSession = features.dropSession
+        readingAnchor = nil
+        if let messageID = features.readingAnchorMessageID {
+            setReadingAnchor(messageID)
+        }
+        isSoftFocused = features.isSoftFocused
+        systemUIWaitIsSeeded = features.systemUIWait != nil
+        systemUIWait = features.systemUIWait
+        isFolded = features.systemUIWait != nil
+        if let since = features.approvalVisibleSince, let approval = chat.pendingApproval {
+            let age = max(0, now().timeIntervalSince(since))
+            reviewedApprovalCallID = approval.callID
+            approvalVisibility = ApprovalVisibility(callID: approval.callID, since: since, sinceUptime: uptime() - age)
+        } else {
+            approvalVisibility = nil
+        }
+        refreshHolds()
+    }
 
-    private enum InsertOutcome { case added, duplicate, full, rejected }
+    // MARK: - Attachment helpers (internal for the feature files)
 
-    private var remainingCapacity: Int {
+    enum AttachmentInsertOutcome { case added, duplicate, full, rejected }
+
+    var remainingCapacity: Int {
         max(0, Self.maxAttachments - attachments.count - pendingAttachmentLoads)
     }
 
     @discardableResult
-    private func insert(_ attachment: Attachment) -> InsertOutcome {
+    func insert(_ attachment: Attachment) -> AttachmentInsertOutcome {
         if let url = attachment.sourceURL, attachments.contains(where: { Self.isSameSource($0.sourceURL, url) }) {
             return .duplicate
         }
@@ -537,6 +1394,22 @@ import os
             suggestedTab = nil
         }
         return .added
+    }
+
+    func report(_ errors: [Error]) {
+        guard let first = errors.first else { return }
+        let message = first.localizedDescription
+        transientError = errors.count == 1
+            ? message
+            : "\(message) (and \(errors.count - 1) more couldn't be attached)"
+    }
+
+    static func isSameSource(_ lhs: URL?, _ rhs: URL?) -> Bool {
+        guard let lhs, let rhs else { return false }
+        if lhs.isFileURL && rhs.isFileURL {
+            return lhs.standardizedFileURL.path == rhs.standardizedFileURL.path
+        }
+        return lhs.absoluteString == rhs.absoluteString
     }
 
     private func integrate(_ content: PasteboardContent, errors: [Error]) {
@@ -558,14 +1431,6 @@ import os
         }
     }
 
-    private func report(_ errors: [Error]) {
-        guard let first = errors.first else { return }
-        let message = first.localizedDescription
-        transientError = errors.count == 1
-            ? message
-            : "\(message) (and \(errors.count - 1) more couldn't be attached)"
-    }
-
     private func scheduleTransientErrorClear() {
         transientErrorTask?.cancel()
         transientErrorTask = nil
@@ -576,14 +1441,6 @@ import os
             guard !Task.isCancelled, let self, self.transientError == message else { return }
             self.transientError = nil
         }
-    }
-
-    private static func isSameSource(_ lhs: URL?, _ rhs: URL?) -> Bool {
-        guard let lhs, let rhs else { return false }
-        if lhs.isFileURL && rhs.isFileURL {
-            return lhs.standardizedFileURL.path == rhs.standardizedFileURL.path
-        }
-        return lhs.absoluteString == rhs.absoluteString
     }
 
     private static func isLoadable(_ provider: NSItemProvider) -> Bool {
@@ -597,6 +1454,51 @@ import os
             return true
         }
         return pasteboard.canReadItem(withDataConformingToTypes: [UTType.image.identifier])
+    }
+
+    // MARK: - Subsystem observation
+
+    /// What the holds follow (§4.5 table).
+    private struct HoldSources: Equatable {
+        var voiceActive = false
+        var draggingOut = false
+        var landing = false
+        var inserting = false
+        var promptDecision = false
+        var sharing = false
+        var quickLook = false
+    }
+
+    private var holdSources: HoldSources {
+        HoldSources(voiceActive: voice.isActive, draggingOut: shelf.isDraggingOut, landing: shelf.isHoldingLanding,
+                    inserting: inserter.activity != nil, promptDecision: promptRequiresDecision,
+                    sharing: shelf.isSharing, quickLook: shelf.isShowingQuickLook)
+    }
+
+    private var wantsHistoryNotice: Bool {
+        history.isIndexLoaded && settings.history.enabled && !settings.history.noticeAcknowledged
+    }
+
+    private func startObservingSubsystems() {
+        systemUIWait = derivedSystemUIWait
+        observedApprovalCallID = chat.pendingApproval?.callID
+        approvalOptions = Self.defaultOptions(for: chat.pendingApproval)
+        observations = [
+            ObservationLoop(read: { [weak self] in self?.derivedSystemUIWait }, onChange: { [weak self] wait in
+                self?.updateSystemUIWait(wait ?? nil)
+            }),
+            ObservationLoop(read: { [weak self] in self?.holdSources ?? HoldSources() }, onChange: { [weak self] _ in
+                self?.refreshHolds()
+            }),
+            ObservationLoop(read: { [weak self] in self?.chat.pendingApproval?.callID }, onChange: { [weak self] _ in
+                self?.approvalDidChange()
+            }),
+            ObservationLoop(read: { [weak self] in self?.wantsHistoryNotice ?? false }, onChange: { [weak self] wanted in
+                self?.syncHistoryNotice(wanted)
+            }),
+        ]
+        syncHistoryNotice(wantsHistoryNotice)
+        refreshHolds()
     }
 
     // MARK: - Suggested browser tab
@@ -623,7 +1525,7 @@ import os
 
     /// The app the user is working in: the frontmost app unless that is Otto itself (e.g. while
     /// the file picker is up), in which case the last other app that was frontmost.
-    private var currentExternalApp: NSRunningApplication? {
+    var currentExternalApp: NSRunningApplication? {
         if let front = NSWorkspace.shared.frontmostApplication, !Self.isOtto(front), !front.isTerminated {
             return front
         }
@@ -631,12 +1533,29 @@ import os
         return last
     }
 
+    /// Close (not the fold): the chips described the app the user was in when the notch opened.
+    private func clearContextSuggestions() {
+        suggestedTab = nil
+        removeAutoAttachedTab(keepingDraftContext: true)
+        suggestionGeneration += 1
+        suggestionTask?.cancel()
+        suggestionTask = nil
+        releaseTabAutomationPrompt()
+        suggestions.clear()
+    }
+
+    private func releaseTabAutomationPrompt() {
+        guard tabLookupOwnsAutomationPrompt else { return }
+        tabLookupOwnsAutomationPrompt = false
+        automationPromptInFlight = nil
+    }
+
     private func refreshSuggestedTab(allowPrompt: Bool) {
         suggestionGeneration += 1
         lastLookupAllowedPrompt = allowPrompt
         suggestionTask?.cancel()
         suggestionTask = nil
-        isAwaitingAutomationConsent = false
+        releaseTabAutomationPrompt()
 
         guard settings.suggestBrowserTab,
               let app = currentExternalApp,
@@ -647,13 +1566,14 @@ import os
 
         let generation = suggestionGeneration
         suggestionTask = Task { [weak self] in
-            // A prompt-allowed lookup of a browser Otto hasn't been allowed to automate yet shows
-            // the system consent dialog. Hold the notch open (via `isMenuPresented`) while it is up,
-            // so clicking Allow neither closes nor disengages it.
+            // A prompt-allowed lookup of a browser Otto hasn't been allowed to automate yet shows the system
+            // consent dialog. The notch folds out of its way (systemUIWait) and comes back once it's answered.
             var consentWasPending = false
             if allowPrompt, await BrowserContext.automationConsentStatus(of: app) == .wouldPrompt {
                 guard !Task.isCancelled, let self, self.isOpen, self.suggestionGeneration == generation else { return }
-                self.isAwaitingAutomationConsent = true
+                self.tabLookupOwnsAutomationPrompt = true
+                self.automationPromptInFlight = .automation(bundleID: app.bundleIdentifier ?? "",
+                                                            appName: app.localizedName ?? "your browser")
                 consentWasPending = true
             }
             var tab = await BrowserContext.currentTab(of: app, allowPrompt: allowPrompt)
@@ -664,8 +1584,8 @@ import os
             }
             // Drop results that arrive after the notch closed or after a newer refresh started.
             guard !Task.isCancelled, let self, self.suggestionGeneration == generation else { return }
-            self.isAwaitingAutomationConsent = false
-            guard self.isOpen else { return }
+            self.releaseTabAutomationPrompt()
+            guard self.isOpen || self.isFolded else { return }
             self.suggestionTask = nil
             self.applySuggestion(tab)
         }
@@ -677,7 +1597,7 @@ import os
     private func lookUpAfterConsent(app: NSRunningApplication, generation: Int) async -> BrowserTab? {
         let deadline = ContinuousClock.now + .seconds(60)
         while ContinuousClock.now < deadline {
-            guard !Task.isCancelled, isOpen, suggestionGeneration == generation else { return nil }
+            guard !Task.isCancelled, isOpen || isFolded, suggestionGeneration == generation else { return nil }
             switch await BrowserContext.automationConsentStatus(of: app) {
             case .authorized:
                 return await BrowserContext.currentTab(of: app, allowPrompt: false)
