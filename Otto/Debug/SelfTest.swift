@@ -13,6 +13,10 @@
 //  so no Automation prompt can appear.
 //
 
+// Debug tooling: compiled only into Debug builds, or into a Release build made with the
+// OTTO_TOOLS compilation condition (scripts/make_media.sh does this to record footage).
+#if DEBUG || OTTO_TOOLS
+
 import AppKit
 import os
 import Quartz
@@ -628,3 +632,5 @@ final class SelfTest {
         return data
     }
 }
+
+#endif

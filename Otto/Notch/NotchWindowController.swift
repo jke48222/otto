@@ -116,6 +116,7 @@ final class NotchWindowController {
         refreshPointerState()
     }
 
+    #if DEBUG || OTTO_TOOLS
     // MARK: - Self-test access
 
     /// The notch panel, for `SelfTest` only (it inspects key status, click-through and first responder,
@@ -123,6 +124,7 @@ final class NotchWindowController {
     var debugPanel: NSPanel { panel }
     /// The geometry the controller currently lays the notch out with, for `SelfTest` only.
     var debugGeometry: NotchGeometry { geometry }
+    #endif
 
     // MARK: - Setup
 

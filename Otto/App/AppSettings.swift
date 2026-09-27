@@ -93,14 +93,18 @@ import os
     var hasAPIKey: Bool { resolvedAPIKey != nil }
 
     @ObservationIgnored private let defaults: UserDefaults
+    /// False for throwaway settings (the promo stage): the API key then lives only in memory and the
+    /// Keychain is never read or written.
+    @ObservationIgnored private let usesKeychain: Bool
     @ObservationIgnored private let environmentAPIKey: String?
     /// The value currently stored in the Keychain, so redundant writes are skipped.
     @ObservationIgnored private var persistedAPIKey: String
     /// Set while `launchAtLogin` is being reverted so its `didSet` does not re-run the registration.
     @ObservationIgnored private var isRevertingLaunchAtLogin = false
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard, usesKeychain: Bool = true) {
         self.defaults = defaults
+        self.usesKeychain = usesKeychain
 
         model = defaults.string(forKey: Key.model).flatMap(ModelOption.init(rawValue:)) ?? .opus5
         effort = defaults.string(forKey: Key.effort).flatMap(EffortLevel.init(rawValue:)) ?? .medium
@@ -119,7 +123,7 @@ import os
             defaults.set(registered, forKey: Key.launchAtLogin)
         }
 
-        let storedKey = KeychainStore.read(account: KeychainStore.apiKeyAccount)?
+        let storedKey = !usesKeychain ? "" : KeychainStore.read(account: KeychainStore.apiKeyAccount)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         apiKey = storedKey
         persistedAPIKey = storedKey
@@ -143,6 +147,10 @@ import os
 
     private func persistAPIKey(_ normalized: String) {
         guard normalized != persistedAPIKey else { return }
+        guard usesKeychain else {
+            persistedAPIKey = normalized
+            return
+        }
 
         if normalized.isEmpty {
             do {

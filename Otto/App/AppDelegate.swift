@@ -31,8 +31,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         if LaunchOptions.isRunningTests { return }
 
+        #if DEBUG || OTTO_TOOLS
+        // Developer tooling (Otto/Debug): not compiled into shipping Release builds.
         if let directory = LaunchOptions.snapshotDirectory {
             renderSnapshots(to: directory)
+            return
+        }
+
+        if let directory = LaunchOptions.promoStillsDirectory {
+            PromoStage.renderStills(to: directory)
+            return
+        }
+
+        if let directory = LaunchOptions.promoDirectory {
+            PromoStage.perform(scene: LaunchOptions.promoScene, handshakeDirectory: directory)
             return
         }
 
@@ -41,6 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             SelfTest.start(reportingTo: directory)
             return
         }
+        #endif
 
         installMainMenu()
         startApp()
@@ -158,6 +171,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Snapshots
 
+    #if DEBUG || OTTO_TOOLS
     private func renderSnapshots(to directory: URL) {
         logger.info("Rendering snapshots to \(directory.path, privacy: .public)")
         // Watchdog on a background queue: if rendering wedges the main thread, still exit non-zero.
@@ -170,6 +184,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             exit(0)
         }
     }
+    #endif
 
     // MARK: - Main menu
 
