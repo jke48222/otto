@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Otto: the AI assistant that lives in your notch</title>
+  <meta name="description" content="Otto lives in your MacBook's notch. Hover the notch, ask Claude, get back to work. A native macOS app, open source under MIT. Uses the Claude API with your own Anthropic key.">
+  <meta name="theme-color" content="#060607">
+  <meta name="color-scheme" content="dark">
+  <link rel="canonical" href="__SITE_URL__/">
+
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Otto">
+  <meta property="og:title" content="Otto: the AI assistant that lives in your notch">
+  <meta property="og:description" content="Hover the notch, ask anything, get back to work. A native macOS app that uses the Claude API with your own Anthropic key.">
+  <meta property="og:url" content="__SITE_URL__/">
+  <meta property="og:image" content="__SITE_URL__/media/social-preview.png">
+  <meta property="og:image:width" content="1280">
+  <meta property="og:image:height" content="640">
+  <meta property="og:image:alt" content="Otto, the AI assistant that lives in your notch">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Otto: the AI assistant that lives in your notch">
+  <meta name="twitter:description" content="Hover the notch, ask anything, get back to work. A native macOS app that uses the Claude API with your own Anthropic key.">
+  <meta name="twitter:image" content="__SITE_URL__/media/social-preview.png">
+
+  <link rel="icon" type="image/png" href="media/icon.png">
+  <link rel="apple-touch-icon" href="media/icon.png">
+  <link rel="preload" as="image" href="media/otto-promo-poster.jpg" fetchpriority="high">
+  <link rel="stylesheet" href="styles.css">
+  <script>document.documentElement.classList.add("js");</script>
+  <script src="script.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <!-- The site header is drawn as a notch hanging from the top edge of the window. -->
+  <header class="notchbar" id="top">
+    <nav class="notchbar__inner" aria-label="Primary">
+      <a class="brand" href="#top" aria-label="Otto, back to top">
+        <span class="orb" aria-hidden="true"></span>
+        <span class="brand__name">Otto</span>
+      </a>
+      <ul class="notchbar__links">
+        <li><a href="#features">Features</a></li>
+        <li><a href="#how">How it works</a></li>
+        <li><a href="#privacy">Privacy</a></li>
+        <li><a href="#faq">FAQ</a></li>
+      </ul>
+      <a class="notchbar__cta" href="https://github.com/jke48222/otto#build-from-source">Get the code</a>
+    </nav>
+  </header>
+
+  <main id="main">
+    <!-- Hero -->
+    <section class="hero" aria-labelledby="hero-title">
+      <div class="hero__glow" aria-hidden="true"></div>
+      <div class="wrap hero__copy">
+        <img class="hero__icon" src="media/icon.png" width="512" height="512" alt="" decoding="async">
+        <p class="eyebrow reveal">Open source (MIT)&nbsp;&middot; macOS 14 or later</p>
+        <h1 id="hero-title" class="display reveal">The AI assistant that lives in your&nbsp;notch.</h1>
+        <p class="lede reveal">Hover the notch, ask anything, get back to work.</p>
+        <div class="cta-row reveal">
+          <a class="btn btn--primary" href="https://github.com/jke48222/otto#build-from-source">
+            <svg class="btn__icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false"><path d="M7 6 3 10l4 4m6-8 4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            Build from source, free
+          </a>
+          <a class="btn btn--clay" href="https://github.com/jke48222/otto/subscription">
+            <svg class="btn__icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false"><path d="M5.5 13.5V9a4.5 4.5 0 0 1 9 0v4.5l1.3 1.5H4.2l1.3-1.5ZM8.3 17a1.8 1.8 0 0 0 3.4 0" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            Get notified: signed app
+          </a>
+        </div>
+        <p class="fineprint reveal">The signed, notarized app is coming soon as a one&#8209;time purchase. Watch releases on GitHub to hear when it ships.<br>Uses the Claude API: bring your own Anthropic key, and Anthropic bills your usage.</p>
+      </div>
+
+      <div class="wrap wrap--wide">
+        <figure class="display-frame reveal">
+          <div class="display-frame__screen">
+            <video class="promo" id="promo" autoplay muted loop playsinline preload="metadata"
+                   poster="media/otto-promo-poster.jpg" width="1920" height="1080"
+                   aria-label="Otto opening from the MacBook notch, answering a question with web sources, then tucking away">
+              <source src="media/otto-promo.mp4" type="video/mp4">
+            </video>
+            <button class="video-toggle" id="promo-toggle" type="button" aria-controls="promo" aria-pressed="false">
+              <svg class="i-pause" viewBox="0 0 20 20" aria-hidden="true" focusable="false"><path d="M7 5v10m6-10v10" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+              <svg class="i-play" viewBox="0 0 20 20" aria-hidden="true" focusable="false"><path d="M7 5.2v9.6a.6.6 0 0 0 .9.5l7.6-4.8a.6.6 0 0 0 0-1L7.9 4.7a.6.6 0 0 0-.9.5Z" fill="currentColor"/></svg>
+              <span class="visually-hidden" id="promo-toggle-label">Pause video</span>
+            </button>
+          </div>
+          <figcaption class="visually-hidden">A 40-second tour of Otto.</figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <!-- Pillars -->
+    <section class="section" id="features" aria-labelledby="features-title">
+      <div class="wrap">
+        <header class="section__head reveal">
+          <p class="eyebrow">Why Otto</p>
+          <h2 id="features-title" class="h2">Claude, right where your eyes already are.</h2>
+          <p class="section__sub">No window to find, no tab to switch to. Otto sits in the one part of your screen you never use, and gets out of the way the moment you're done.</p>
+        </header>
+
+        <article class="pillar reveal">
+          <div class="pillar__media">
+            <img src="media/screens/glance.png" width="2080" height="1300" loading="lazy" decoding="async"
+                 alt="The MacBook notch with Otto tucked away inside it, a breathing orb and three equalizer bars showing a reply is still arriving">
+          </div>
+          <div class="pillar__copy">
+            <p class="pillar__num" aria-hidden="true">01</p>
+            <h3 class="h3">One glance away</h3>
+            <p>Rest your pointer on the notch or press <kbd>⌥</kbd><kbd>Space</kbd>. Otto springs open right below the camera, then tucks itself back into the notch when you move on. Still working on an answer? A soft glow on the notch lets you know.</p>
+            <ul class="facts">
+              <li>Opens on hover, click or <kbd>⌥</kbd><kbd>Space</kbd></li>
+              <li>Press <kbd>Esc</kbd> or click away to dismiss</li>
+              <li>No notch? Otto draws one at the top of any display</li>
+            </ul>
+          </div>
+        </article>
+
+        <article class="pillar pillar--flip reveal">
+          <div class="pillar__media">
+            <img src="media/screens/context.png" width="2080" height="1300" loading="lazy" decoding="async"
+                 alt="Otto open under the notch with context chips for a browser tab, an image, a PDF and a text file above the composer">
+          </div>
+          <div class="pillar__copy">
+            <p class="pillar__num" aria-hidden="true">02</p>
+            <h3 class="h3">Knows what you're looking at</h3>
+            <p>Drop in files, images, PDFs and screenshots, or paste them with <kbd>⌘</kbd><kbd>V</kbd>. Reading something in your browser? Otto offers the tab you're on as a chip. One click and it's part of your question.</p>
+            <ul class="facts">
+              <li>Drag onto the notch, even while it's closed</li>
+              <li>Capture a screen region from the <b>+</b> menu</li>
+              <li>Works with Safari and Chromium-based browsers</li>
+            </ul>
+          </div>
+        </article>
+
+        <article class="pillar reveal">
+          <div class="pillar__media">
+            <img src="media/screens/answer.png" width="2080" height="1300" loading="lazy" decoding="async"
+                 alt="An answer in Otto with a collapsed thought process, a completed web search, a code block with a Copy button and source links">
+          </div>
+          <div class="pillar__copy">
+            <p class="pillar__num" aria-hidden="true">03</p>
+            <h3 class="h3">Answers that stream in</h3>
+            <p>Replies appear as they're written, right in the notch. Otto can search the web and cite its sources, lets you open up its thinking, and renders clean Markdown with code blocks you can copy in one click.</p>
+            <ul class="facts">
+              <li>Web search with source links</li>
+              <li>Visible thought process</li>
+              <li>Claude Opus 5, Sonnet 5 or Haiku 4.5</li>
+            </ul>
+          </div>
+        </article>
+
+        <article class="pillar pillar--flip reveal">
+          <div class="pillar__media">
+            <img src="media/screens/settings.png" width="2080" height="1300" loading="lazy" decoding="async"
+                 alt="Otto's Settings window with the API key field, model picker and web access options">
+          </div>
+          <div class="pillar__copy">
+            <p class="pillar__num" aria-hidden="true">04</p>
+            <h3 class="h3">Your key, your Mac</h3>
+            <p>Bring your own Anthropic API key. It lives in your macOS Keychain, nothing leaves your Mac until you press send, and there's no account to create and no telemetry to opt out of.</p>
+            <ul class="facts">
+              <li>API key stored in your login Keychain</li>
+              <li>No account, no analytics, no tracking</li>
+              <li>Open source under the MIT license</li>
+            </ul>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <!-- How it works -->
+    <section class="section section--tint" id="how" aria-labelledby="how-title">
+      <div class="wrap">
+        <header class="section__head reveal">
+          <p class="eyebrow">How it works</p>
+          <h2 id="how-title" class="h2">Three steps from clone to answer.</h2>
+        </header>
+
+        <ol class="steps">
+          <li class="step clay reveal">
+            <span class="step__num" aria-hidden="true">1</span>
+            <h3 class="h4">Build Otto</h3>
+            <p>With Xcode 16 or later, run <code>brew install xcodegen</code>, clone the repo and run <code>scripts/run.sh</code>. Otto lives in the notch and the menu bar, not the Dock.</p>
+          </li>
+          <li class="step clay reveal">
+            <span class="step__num" aria-hidden="true">2</span>
+            <h3 class="h4">Add your API key</h3>
+            <p>Settings opens on first launch. Paste a key from the <a href="https://console.anthropic.com/settings/keys">Anthropic Console</a> and click <b>Save</b>. It goes straight into your Keychain.</p>
+          </li>
+          <li class="step clay reveal">
+            <span class="step__num" aria-hidden="true">3</span>
+            <h3 class="h4">Hover and ask</h3>
+            <p>Rest your pointer on the notch or press <kbd>⌥</kbd><kbd>Space</kbd>, type your question and press <kbd>Return</kbd>. That's it.</p>
+          </li>
+        </ol>
+
+        <figure class="wide-shot reveal">
+          <img src="media/screens/ask.png" width="2080" height="1300" loading="lazy" decoding="async"
+               alt="Otto open under the notch with a question typed into the composer, ready to send">
+        </figure>
+      </div>
+    </section>
+
+    <!-- Privacy -->
+    <section class="section" id="privacy" aria-labelledby="privacy-title">
+      <div class="wrap">
+        <header class="section__head reveal">
+          <p class="eyebrow">Privacy</p>
+          <h2 id="privacy-title" class="h2">You decide what leaves your Mac.</h2>
+          <p class="section__sub">Otto has no servers of its own. It talks to exactly one place, Anthropic's API, and only when you ask it to.</p>
+        </header>
+
+        <div class="privacy">
+          <div class="privacy__col clay reveal">
+            <h3 class="h4"><span class="dot dot--home" aria-hidden="true"></span>Stays on your Mac</h3>
+            <ul class="checklist">
+              <li>Your API key, in the login Keychain and nowhere else on disk</li>
+              <li>Your files, images and screenshots, until you press send</li>
+              <li>Your settings and custom instructions</li>
+              <li>Everything about you: there's no account and no telemetry</li>
+            </ul>
+          </div>
+          <div class="privacy__col clay reveal">
+            <h3 class="h4"><span class="dot dot--out" aria-hidden="true"></span>Sent to Anthropic when you press send</h3>
+            <ul class="checklist">
+              <li>Your message and the context chips you attached</li>
+              <li>Web searches, which Anthropic runs for Claude while web access is on. You can turn it off in Settings.</li>
+              <li>Nothing else. Usage is billed to your own Anthropic account.</li>
+            </ul>
+          </div>
+        </div>
+
+        <p class="privacy__note reveal">Otto asks for permissions only when a feature needs them: Automation, per browser, to read the front tab's title and address; Screen Recording only if you use <b>Capture Screen Region</b>. It never needs Accessibility access.</p>
+      </div>
+    </section>
+
+    <!-- FAQ -->
+    <section class="section section--tint" id="faq" aria-labelledby="faq-title">
+      <div class="wrap wrap--narrow">
+        <header class="section__head reveal">
+          <p class="eyebrow">FAQ</p>
+          <h2 id="faq-title" class="h2">Questions, answered.</h2>
+        </header>
+
+        <div class="faq">
+          <details class="faq__item">
+            <summary>What does Otto cost?</summary>
+            <div class="faq__body"><p>The source code is free under the MIT license, and building it yourself costs nothing. The signed, notarized app will be a one-time purchase when it ships. Either way, Otto uses your own Anthropic API key, so Anthropic bills your Claude usage to your account at its API rates.</p></div>
+          </details>
+          <details class="faq__item">
+            <summary>When can I get the signed app?</summary>
+            <div class="faq__body"><p>It's coming soon. To hear when it ships, open the repo's <a href="https://github.com/jke48222/otto/subscription">notification settings</a> on GitHub, choose <b>Custom</b>, check <b>Releases</b> and click <b>Apply</b>. Until then you can build the same code from source.</p></div>
+          </details>
+          <details class="faq__item">
+            <summary>What do I need to run it?</summary>
+            <div class="faq__body"><p>A Mac running macOS 14 Sonoma or later and an Anthropic API key with credit. You can create a key in the <a href="https://console.anthropic.com/settings/keys">Anthropic Console</a>. A Claude.ai subscription is separate from API access and doesn't work here. To build from source you also need Xcode 16 or later.</p></div>
+          </details>
+          <details class="faq__item">
+            <summary>Why isn't Otto on the Mac App Store?</summary>
+            <div class="faq__body"><p>Mac App Store apps must run in Apple's App Sandbox, and Otto's notch panel, global shortcut and browser tab reading are built to run outside it. The signed app will be sold directly instead.</p></div>
+          </details>
+          <details class="faq__item">
+            <summary>My Mac doesn't have a notch. Can I still use Otto?</summary>
+            <div class="faq__body"><p>Yes. On Macs without a notch, and on external displays, Otto draws a virtual notch at the top center of the screen. Everything else works the same way.</p></div>
+          </details>
+          <details class="faq__item">
+            <summary>Which Claude models can I use?</summary>
+            <div class="faq__body"><p>Pick Claude Opus 5, Sonnet 5 or Haiku 4.5 in Settings. You can also choose a response style, turn web search on or off, and add custom instructions.</p></div>
+          </details>
+          <details class="faq__item">
+            <summary>Where is my API key stored?</summary>
+            <div class="faq__body"><p>In your macOS login Keychain. Otto never writes it anywhere else, and only sends it to Anthropic's API to authenticate your requests.</p></div>
+          </details>
+          <details class="faq__item">
+            <summary>What permissions does Otto ask for?</summary>
+            <div class="faq__body"><p>Only what a feature needs, the first time you use it. Automation access for each browser lets Otto read the current tab's title and address. Screen Recording is needed only for Capture Screen Region. Otto doesn't need Accessibility access: the shortcut and hover detection work without it.</p></div>
+          </details>
+          <details class="faq__item">
+            <summary>Another app already uses <kbd>⌥</kbd><kbd>Space</kbd>. What now?</summary>
+            <div class="faq__body"><p>You can turn Otto's shortcut off in Settings and open Otto by hovering or clicking the notch, or from the menu bar icon. Or change the shortcut in the other app.</p></div>
+          </details>
+          <details class="faq__item">
+            <summary>How do I quit Otto?</summary>
+            <div class="faq__body"><p>Otto doesn't live in the Dock. Quit it from the menu bar icon or from the <b>⋮</b> menu inside the notch.</p></div>
+          </details>
+          <details class="faq__item">
+            <summary>Can I build it from source?</summary>
+            <div class="faq__body"><p>Yes, and today that's how you get it. Otto is a native Swift app with no third-party dependencies. Install XcodeGen with <code>brew install xcodegen</code>, clone the repository and run <code>scripts/run.sh</code>. The <a href="https://github.com/jke48222/otto#build-from-source">README</a> has the details.</p></div>
+          </details>
+          <details class="faq__item">
+            <summary>Is Otto made by Anthropic?</summary>
+            <div class="faq__body"><p>No. Otto is an independent open source project by Jalen Edusei. It uses the Claude API with your own key and is not affiliated with, endorsed by or sponsored by Anthropic.</p></div>
+          </details>
+        </div>
+      </div>
+    </section>
+
+    <!-- Closing CTA -->
+    <section class="closer" aria-labelledby="closer-title">
+      <div class="wrap">
+        <div class="closer__inner reveal">
+          <img class="closer__icon" src="media/icon.png" width="512" height="512" alt="" loading="lazy" decoding="async">
+          <h2 id="closer-title" class="h2">Put Claude one hover away.</h2>
+          <p class="section__sub">Build it free from source on macOS 14 or later. The signed app is coming soon.</p>
+          <div class="cta-row">
+            <a class="btn btn--primary" href="https://github.com/jke48222/otto#build-from-source">
+              <svg class="btn__icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false"><path d="M7 6 3 10l4 4m6-8 4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              Build from source, free
+            </a>
+            <a class="btn btn--clay" href="https://github.com/jke48222/otto/subscription">
+              <svg class="btn__icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false"><path d="M5.5 13.5V9a4.5 4.5 0 0 1 9 0v4.5l1.3 1.5H4.2l1.3-1.5ZM8.3 17a1.8 1.8 0 0 0 3.4 0" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              Watch releases on GitHub
+            </a>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap footer__inner">
+      <div class="footer__brand">
+        <span class="orb" aria-hidden="true"></span>
+        <span class="brand__name">Otto</span>
+      </div>
+      <nav class="footer__links" aria-label="Footer">
+        <a href="https://github.com/jke48222/otto">GitHub</a>
+        <a href="https://github.com/jke48222/otto/releases">Releases</a>
+        <a href="https://www.jalenedusei.com">Jalen Edusei</a>
+        <a href="https://github.com/jke48222/otto/issues">Report an issue</a>
+        <a href="https://github.com/jke48222/otto/blob/main/LICENSE">MIT License</a>
+      </nav>
+      <p class="footer__legal">© 2026 Jalen Edusei. Released under the MIT License.<br>
+        Otto is an independent project and is not affiliated with, endorsed by or sponsored by Anthropic. Claude and Anthropic are trademarks of Anthropic, PBC.</p>
+    </div>
+  </footer>
+</body>
+</html>
