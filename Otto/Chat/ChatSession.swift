@@ -3,25 +3,30 @@
 //  Otto
 //
 //  Owns the conversation: builds Messages API history, streams replies into the in-flight assistant
-//  message, and handles pause_turn continuations, refusals, cancellation and retries. It also reports
-//  the transcript to History, the reply phase to the closed notch and token usage to the ledger.
+//  message, and runs the client tool loop (rounds handed to the tool executor, results sent back in the same
+//  reply) along with pause_turn continuations, refusals, cancellation, retries and regenerated versions. It
+//  also reports the transcript to History, the reply phase to the closed notch and token usage to the ledger.
 //
 
 import Foundation
 import Observation
 import os
 
-@MainActor @Observable final class ChatSession {
+@MainActor @Observable final class ChatSession: ToolCallStore {
     /// Automatic `pause_turn` continuations allowed per turn.
     static let maxPauseContinuations = 5
     static let refusalMessage = "Otto can't help with that one."
     static let truncationNote = "\n\n_(Reply truncated.)_"
     /// Appended when a turn still wanted to continue after `maxPauseContinuations`.
     static let pauseLimitNote = "\n\n_(Stopped after several web lookups.)_"
+    /// Appended when Claude still asked for actions after the action limit's wrap-up request.
+    static let toolLimitNote = "\n\n_(Stopped after several actions.)_"
     /// Appended to the failure copy when the user message that caused it is left out of the context.
     static let excludedFromContextNote = "Otto left this message out of the conversation so you can keep chatting."
     /// Text block sent when the user attached items without typing anything.
     static let attachmentsOnlyPrompt = "Please take a look at the attached."
+    /// `ToolActivity` id of the note that web access is paused for the rest of a reply (`otto.` ids are Otto's own).
+    static let webPausedActivityID = "otto.webPaused"
 
     /// Budget for attachment payload (base64 image/PDF data and text documents) in one request. The
     /// Messages API rejects requests over 32 MB; this leaves room for JSON escaping and the rest.
@@ -82,6 +87,60 @@ import os
     /// `.completed` after usage arrived) and one `finishAnswer` per settled turn.
     @ObservationIgnored weak var usageRecorder: UsageRecording?
 
+    // MARK: Tool loop
+
+    /// The dock's current tool-loop prompt (the executor's; observable through it).
+    var pendingApproval: PendingApproval? { executor?.pendingApproval }
+    /// Called on the main actor when the executor puts a new prompt in the dock.
+    @ObservationIgnored var onAttentionNeeded: ((PendingApproval) -> Void)?
+    /// The in-flight tool call that needs system UI (the view model folds the notch while non-nil): a call in
+    /// `.waitingForSystem(app)` → `.toolDialog(appName: app)`; else a `.running` call whose tool `mayPresentUI`
+    /// and that started at least `ToolLimits.uiFoldDelay` ago → `.toolRun(title: activeTitle)` (with the "fewer
+    /// prompts" safety mode, tool runs never fold). A one-shot timer re-evaluates at the delay mark.
+    private(set) var systemUIToolWait: SystemUIWait?
+
+    // MARK: Keyboard essentials
+
+    /// Replies to one user turn, kept when it is regenerated.
+    struct ReplyVersions: Equatable {
+        let userMessageID: UUID
+        /// Complete replies to that user turn, oldest first.
+        var replies: [ChatMessage]
+        /// Index of the reply currently in `messages`; `replies.count` while a new one streams or when the shown
+        /// reply isn't a stored version (failed, cancelled, refused).
+        var currentIndex: Int
+    }
+
+    /// Versions of the reply to the last user turn (nil until the first regenerate). Cleared by send,
+    /// replaceLastTurn, reset and debugSeed.
+    private(set) var lastTurnVersions: ReplyVersions?
+
+    /// The newest user message (↑ recall and edit).
+    var lastUserMessage: ChatMessage? { messages.last(where: { $0.role == .user }) }
+
+    enum RegenerateOutcome: Equatable { case started, nothingToRegenerate }
+
+    // MARK: Spoken replies
+
+    /// Called after each delta flush that wrote text into an assistant message, and once more with
+    /// `isFinal == true` (the final text) when a turn completes. Cancelled, refused and failed turns get no
+    /// final call.
+    @ObservationIgnored var onAssistantTextProgress: ((_ assistantID: UUID, _ text: String, _ isFinal: Bool) -> Void)?
+
+    // MARK: Clock seams
+
+    /// The time used for `<context>` blocks, the system prompt date and `systemUIToolWait` (tests replace it).
+    @ObservationIgnored var clock: @MainActor () -> Date = { Date() }
+    /// Runs `action` once after `delay`; `systemUIToolWait` uses it to re-evaluate at the fold delay (tests
+    /// capture the action and fire it themselves).
+    @ObservationIgnored var scheduleSystemUIRefresh:
+        @MainActor (_ delay: Duration, _ action: @escaping @MainActor () -> Void) -> Void = { delay, action in
+        Task { @MainActor in
+            try? await Task.sleep(for: delay)
+            action()
+        }
+    }
+
     /// Trimmed text of the most recent completed assistant reply that has visible text.
     var lastAssistantText: String? {
         for message in messages.reversed() where message.role == .assistant && message.state == .complete {
@@ -93,10 +152,16 @@ import os
 
     @ObservationIgnored private let settings: AppSettings
     @ObservationIgnored private let makeClient: @MainActor () throws -> LLMClient
+    @ObservationIgnored private let registry: ToolRegistry
+    @ObservationIgnored private let executor: ToolExecuting?
+    @ObservationIgnored private let permissions: PermissionProviding?
+    @ObservationIgnored private let isDemo: Bool
     @ObservationIgnored private var streamTask: Task<Void, Never>?
     /// The assistant message the running task writes into. A task whose id no longer matches (after
     /// `cancel()` / `reset()`) must not touch any state — it is only winding down.
     @ObservationIgnored private var activeAssistantID: UUID?
+    /// The configuration of the running turn (its tool snapshot and safety mode).
+    @ObservationIgnored private var activeConfig: TurnConfig?
 
     /// Streamed deltas not yet written into their message (see `deltaFlushInterval`).
     private struct PendingDeltas {
@@ -113,15 +178,39 @@ import os
     @ObservationIgnored private var inFlightUsage: JSONValue?
     /// The model the running turn requested (`MessagesRequest.model`), for usage records.
     @ObservationIgnored private var inFlightRequestedModel: String?
+    /// Whether the response being streamed has delivered any event (a rejected request delivers none).
+    @ObservationIgnored private var responseDeliveredEvent = false
+    /// A `systemUIToolWait` re-evaluation is scheduled.
+    @ObservationIgnored private var systemUIRefreshScheduled = false
 
     private static let logger = Logger(subsystem: "com.jalenedusei.otto", category: "Chat")
+    private static let toolLogger = Logger(subsystem: "com.jalenedusei.otto", category: "Tools")
 
-    init(settings: AppSettings, makeClient: @escaping @MainActor () throws -> LLMClient) {
+    /// Shown when Undo is asked of a session that has no executor.
+    private static let undoUnavailableReason = "actions aren't available right now"
+
+    /// `tools` defaults to an empty registry. Swift 5 evaluates default arguments outside the main actor, and
+    /// callers of this main-actor initializer are on it, so the default is built with `assumeIsolated`.
+    init(
+        settings: AppSettings,
+        makeClient: @escaping @MainActor () throws -> LLMClient,
+        tools: ToolRegistry = MainActor.assumeIsolated { ToolRegistry() },
+        executor: ToolExecuting? = nil,
+        permissions: PermissionProviding? = nil,
+        isDemo: Bool = LaunchOptions.demo
+    ) {
         self.settings = settings
         self.makeClient = makeClient
+        self.registry = tools
+        self.executor = executor
+        self.permissions = permissions
+        self.isDemo = isDemo
         conversationID = UUID()
         conversationCreatedAt = Date()
         unavailableAttachmentIDs = []
+        executor?.onAttentionNeeded = { [weak self] approval in
+            self?.onAttentionNeeded?(approval)
+        }
     }
 
     // MARK: - Public API
@@ -131,17 +220,26 @@ import os
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty || !attachments.isEmpty else { return }
 
+        let config = makeTurnConfig()
         var content = attachments.flatMap { $0.contentBlocks() }
+        if !config.tools.isEmpty {
+            // Stored in the message, so history stays byte-stable on later turns.
+            content += registry.userContextBlocks(tools: config.tools, now: clock(), timeZone: .current)
+            content += (executor?.consumeContextNotes() ?? []).map(Self.textBlock)
+        }
         content.append(Self.textBlock(trimmed.isEmpty ? Self.attachmentsOnlyPrompt : trimmed))
+        lastTurnVersions = nil
         messages.append(ChatMessage(role: .user, text: trimmed, attachments: attachments, apiContent: content))
-        beginAssistantTurn(at: messages.endIndex)
+        beginAssistantTurn(at: messages.endIndex, config: config)
         onTranscriptChanged?(.userMessageAdded)
     }
 
-    /// Stops the in-flight reply. The message keeps whatever streamed so far and becomes `.cancelled`.
+    /// Stops the in-flight reply. The message keeps whatever streamed so far and becomes `.cancelled`; a
+    /// pending approval resolves as cancelled first.
     func cancel() {
         if let id = activeAssistantID {
             streamTask?.cancel()
+            executor?.cancelAll()
             finishTurn(id, outcome: .cancelled)
             return
         }
@@ -176,7 +274,7 @@ import os
         // Normally the retried turn is the last one, so this appends. For an older turn the new reply
         // takes its place and only the conversation up to that point is sent (see `requestHistory`);
         // appending it after later turns would make the request end on an assistant message.
-        beginAssistantTurn(at: index)
+        beginAssistantTurn(at: index, config: makeTurnConfig())
     }
 
     /// Cancels any reply and clears the conversation, which starts a new one with a new id. History hears
@@ -184,13 +282,18 @@ import os
     func reset() {
         flushPendingDeltas()
         if !messages.isEmpty { onTranscriptChanged?(.willReset) }
-        if let id = activeAssistantID { settleUsage(for: id) }
+        if let id = activeAssistantID {
+            executor?.cancelAll()
+            settleUsage(for: id)
+        }
         streamTask?.cancel()
         streamTask = nil
         activeAssistantID = nil
+        activeConfig = nil
         discardPendingDeltas()
         messages.removeAll()
         isStreaming = false
+        lastTurnVersions = nil
         updateSummary(recomputeCopyable: true)
         conversationID = UUID()
         conversationCreatedAt = Date()
@@ -199,6 +302,7 @@ import os
         restoredMessageIDs = []
         compactsRestoredContext = false
         refreshPhase()
+        refreshSystemUIToolWait()
     }
 
     /// Flushes pending deltas and returns the transcript (cheap: the arrays are copy-on-write).
@@ -219,6 +323,7 @@ import os
         streamTask?.cancel()
         streamTask = nil
         activeAssistantID = nil
+        activeConfig = nil
         discardPendingDeltas()
         inFlightUsage = nil
         inFlightRequestedModel = nil
@@ -231,9 +336,11 @@ import os
         textOnlyContextIDs = conversation.textOnlyContextMessageIDs
         restoredMessageIDs = Set(conversation.messages.map(\.id))
         compactsRestoredContext = false
+        lastTurnVersions = nil
         isStreaming = false
         updateSummary(recomputeCopyable: true)
         refreshPhase()
+        refreshSystemUIToolWait()
         Self.logger.info("Loaded conversation \(conversation.id.uuidString, privacy: .public) with \(conversation.messages.count, privacy: .public) messages")
         onTranscriptChanged?(.loaded)
     }
@@ -243,14 +350,139 @@ import os
         streamTask?.cancel()
         streamTask = nil
         activeAssistantID = nil
+        activeConfig = nil
         discardPendingDeltas()
         inFlightUsage = nil
         inFlightRequestedModel = nil
+        lastTurnVersions = nil
         self.messages = messages
         self.isStreaming = isStreaming
         updateSummary(recomputeCopyable: true)
         refreshPhase()
+        refreshSystemUIToolWait()
     }
+
+    // MARK: - Regenerate, versions, edit and resend
+
+    /// Re-answers the last user turn with the current settings. A reply that is streaming is cancelled first;
+    /// complete replies to that turn are kept as versions.
+    @discardableResult func regenerate() -> RegenerateOutcome {
+        guard messages.contains(where: { $0.role == .user }) else { return .nothingToRegenerate }
+        if isStreaming { cancel() }
+        guard let userIndex = messages.lastIndex(where: { $0.role == .user }) else { return .nothingToRegenerate }
+
+        let userID = messages[userIndex].id
+        var versions = ReplyVersions(userMessageID: userID, replies: [], currentIndex: 0)
+        if let existing = lastTurnVersions, existing.userMessageID == userID {
+            versions = existing
+        }
+        let stored = Set(versions.replies.map(\.id))
+        for message in messages[(userIndex + 1)...] where Self.isStorableVersion(message) && !stored.contains(message.id) {
+            versions.replies.append(message)
+        }
+
+        let removesMessages = userIndex + 1 < messages.endIndex
+        if removesMessages {
+            messages.removeSubrange((userIndex + 1)...)
+        }
+        messages[userIndex].includeInContext = true
+        versions.currentIndex = versions.replies.count
+        lastTurnVersions = versions
+        updateSummary(recomputeCopyable: true)
+        if removesMessages { onTranscriptChanged?(.messagesRemoved) }
+        beginAssistantTurn(at: messages.endIndex, config: makeTurnConfig())
+        return .started
+    }
+
+    /// Shows stored version `index` of the last turn's reply (not while streaming).
+    func showReplyVersion(_ index: Int) {
+        guard !isStreaming, var versions = lastTurnVersions, versions.replies.indices.contains(index),
+              let userIndex = messages.lastIndex(where: { $0.role == .user }),
+              messages[userIndex].id == versions.userMessageID else { return }
+        if userIndex + 1 < messages.endIndex {
+            messages.removeSubrange((userIndex + 1)...)
+        }
+        messages.append(versions.replies[index])
+        versions.currentIndex = index
+        lastTurnVersions = versions
+        updateSummary(recomputeCopyable: true)
+        refreshPhase()
+    }
+
+    /// Removes the last user turn and everything after it, then sends `text` and `attachments` in its place.
+    /// A running reply is cancelled first. Does nothing when there is nothing to send.
+    func replaceLastTurn(text: String, attachments: [Attachment]) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty || !attachments.isEmpty else { return }
+        if isStreaming { cancel() }
+        if let userIndex = messages.lastIndex(where: { $0.role == .user }) {
+            messages.removeSubrange(userIndex...)
+            lastTurnVersions = nil
+            updateSummary(recomputeCopyable: true)
+            onTranscriptChanged?(.messagesRemoved)
+        }
+        send(text: text, attachments: attachments)
+    }
+
+    private static func isStorableVersion(_ message: ChatMessage) -> Bool {
+        message.role == .assistant && message.state == .complete
+            && !message.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    // MARK: - Tool loop surface
+
+    /// Forwards the user's answer to the dock's current prompt to the executor.
+    func resolveApproval(_ decision: ApprovalDecision, hardwareConfirmed: Bool, visibleSince: Date?) {
+        guard let executor, let pending = executor.pendingApproval else { return }
+        executor.resolve(decision, callID: pending.callID, hardwareConfirmed: hardwareConfirmed,
+                         visibleSince: visibleSince)
+    }
+
+    /// Removes the item a call created. nil on success; else a short reason for the notice.
+    func undoToolCall(_ callID: String, in messageID: UUID) async -> String? {
+        guard let executor else { return Self.undoUnavailableReason }
+        return await executor.undo(callID: callID, messageID: messageID, store: self)
+    }
+
+    /// [Stop] on one running call.
+    func stopToolCall(_ callID: String) {
+        executor?.stop(callID: callID)
+    }
+
+    // MARK: ToolCallStore
+
+    func toolCall(_ id: String, in messageID: UUID) -> ToolCall? {
+        messages.last(where: { $0.id == messageID })?.toolCalls.first(where: { $0.id == id })
+    }
+
+    /// Applies an executor mutation. A settled reply only takes Undo's changes (status `.undone` of a call that
+    /// succeeded, its presentation and finish time, and the undo token).
+    func updateToolCall(_ id: String, in messageID: UUID, _ mutate: (inout ToolCall) -> Void) {
+        guard let index = messages.lastIndex(where: { $0.id == messageID }),
+              let callIndex = messages[index].toolCalls.firstIndex(where: { $0.id == id }) else { return }
+        let original = messages[index].toolCalls[callIndex]
+        var updated = original
+        mutate(&updated)
+        let isActiveTurn = isActive(messageID)
+        if !isActiveTurn {
+            var accepted = original
+            if updated.status == .undone, original.status == .succeeded || original.status == .undone {
+                accepted.status = .undone
+                accepted.presentation = updated.presentation
+                accepted.finishedAt = updated.finishedAt
+            }
+            accepted.undo = updated.undo
+            updated = accepted
+        }
+        guard updated != original else { return }
+        messages[index].toolCalls[callIndex] = updated
+        if isActiveTurn {
+            refreshPhase()
+            refreshSystemUIToolWait()
+        }
+    }
+
+    // MARK: - Summaries
 
     /// Re-derives `phase` from the in-flight assistant message (the last streaming assistant message of a
     /// seeded conversation when no turn runs), assigning only when it changed.
@@ -267,6 +499,43 @@ import os
         if phase != derived { phase = derived }
     }
 
+    /// Re-derives `systemUIToolWait` from the running turn's calls, assigning only when it changed.
+    private func refreshSystemUIToolWait() {
+        let wait = currentSystemUIToolWait()
+        if systemUIToolWait != wait { systemUIToolWait = wait }
+    }
+
+    private func currentSystemUIToolWait() -> SystemUIWait? {
+        guard let id = activeAssistantID, let config = activeConfig,
+              let message = messages.last(where: { $0.id == id }) else { return nil }
+        for call in message.toolCalls {
+            if case .waitingForSystem(let appName) = call.status { return .toolDialog(appName: appName) }
+        }
+        guard config.foldsForToolRuns else { return nil }
+        let foldDelay = ToolLimits.uiFoldDelay.timeInterval
+        let now = clock()
+        var nextCheck: TimeInterval?
+        for call in message.toolCalls where call.status == .running {
+            guard config.toolsByName[call.name]?.mayPresentUI == true, let startedAt = call.startedAt else { continue }
+            let elapsed = now.timeIntervalSince(startedAt)
+            if elapsed >= foldDelay { return .toolRun(title: call.presentation.activeTitle) }
+            nextCheck = min(nextCheck ?? .infinity, foldDelay - elapsed)
+        }
+        if let nextCheck { requestSystemUIRefresh(after: nextCheck) }
+        return nil
+    }
+
+    /// One pending re-evaluation at a time; a stale one only re-derives the same value.
+    private func requestSystemUIRefresh(after seconds: TimeInterval) {
+        guard !systemUIRefreshScheduled else { return }
+        systemUIRefreshScheduled = true
+        scheduleSystemUIRefresh(.milliseconds(Int64((seconds * 1000).rounded(.up)))) { [weak self] in
+            guard let self else { return }
+            self.systemUIRefreshScheduled = false
+            self.refreshSystemUIToolWait()
+        }
+    }
+
     /// Updates `messageCount`, `lastMessageState` and (when asked) `hasCopyableReply`, assigning only
     /// values that changed so observers aren't invalidated for nothing.
     private func updateSummary(recomputeCopyable: Bool) {
@@ -281,25 +550,50 @@ import os
 
     // MARK: - Turn lifecycle
 
+    /// Everything a turn needs, captured once so tool rounds and pause_turn continuations resend an identical
+    /// prefix (same model, tools and system prompt) even if settings change mid-turn.
     private struct TurnConfig {
         let model: ModelOption
         let effort: EffortLevel
         let webAccess: Bool
         let system: String
+        /// The client tools offered this turn, sorted by name.
+        let tools: [any OttoTool]
+        let clientToolDefinitions: [JSONValue]
+        let toolsByName: [String: any OttoTool]
+        let maxToolRounds: Int
+        let safetyMode: ActionSafetyMode
 
-        /// Names of the server tools whose blocks this request accepts in history.
-        var enabledServerTools: Set<String> {
-            ChatSession.serverToolNames(model: model, webAccess: webAccess)
+        var clientToolNames: Set<String> { Set(toolsByName.keys) }
+        /// "Safer" pauses web access once private data and fresh untrusted content meet.
+        var pausesWebAccess: Bool { safetyMode == .safer }
+        /// "Safer" folds the notch while a tool that may show its own UI runs.
+        var foldsForToolRuns: Bool { safetyMode == .safer }
+
+        /// Names of the server tools a request with these limits defines.
+        func enabledServerTools(limits: ServerToolLimits) -> Set<String> {
+            ChatSession.serverToolNames(model: model, webAccess: webAccess, limits: limits)
         }
     }
 
     /// Names of the server tools a request with this model and web setting defines. The 2026 web
     /// tools run dynamic filtering, which emits `code_execution` calls of its own.
     nonisolated static func serverToolNames(model: ModelOption, webAccess: Bool) -> Set<String> {
+        serverToolNames(model: model, webAccess: webAccess, limits: ServerToolLimits())
+    }
+
+    /// As above, leaving out a tool whose `max_uses` is 0 in this request (the reply's budget is spent, or web
+    /// access is paused), and `code_execution` when no web tool is left.
+    nonisolated private static func serverToolNames(
+        model: ModelOption,
+        webAccess: Bool,
+        limits: ServerToolLimits
+    ) -> Set<String> {
         guard webAccess else { return [] }
-        var names: Set<String> = ["web_search"]
-        if model.webFetchToolType != nil { names.insert("web_fetch") }
-        if model.webSearchToolType == "web_search_20260209" { names.insert("code_execution") }
+        var names: Set<String> = []
+        if limits.webSearch > 0 { names.insert("web_search") }
+        if model.webFetchToolType != nil, limits.webFetch > 0 { names.insert("web_fetch") }
+        if !names.isEmpty, model.webSearchToolType == "web_search_20260209" { names.insert("code_execution") }
         return names
     }
 
@@ -321,22 +615,44 @@ import os
         }
     }
 
-    private func beginAssistantTurn(at index: Int) {
+    /// The configuration a turn started now would use. No executor means no client tools.
+    private func makeTurnConfig() -> TurnConfig {
+        let model = settings.model
+        let offered: [any OttoTool]
+        if executor != nil {
+            let environment = ToolEnvironment(settings: settings, permissions: permissions, model: model, isDemo: isDemo)
+            offered = registry.availableTools(in: environment)
+        } else {
+            offered = []
+        }
+        var byName: [String: any OttoTool] = [:]
+        for tool in offered { byName[tool.name] = tool }
+        let actionsSection = offered.isEmpty
+            ? SystemPrompt.actionsOffLine
+            : SystemPrompt.actionsSection(groups: registry.enabledGroups(for: offered), timeZone: .current)
+        return TurnConfig(
+            model: model,
+            effort: settings.effort,
+            webAccess: settings.webAccess,
+            system: SystemPrompt.make(customInstructions: settings.customInstructions, actionsSection: actionsSection,
+                                      now: clock(), timeZone: .current),
+            tools: offered,
+            clientToolDefinitions: registry.definitions(for: offered),
+            toolsByName: byName,
+            maxToolRounds: settings.actions.maxToolRounds,
+            safetyMode: settings.actionSafetyMode
+        )
+    }
+
+    private func beginAssistantTurn(at index: Int, config: TurnConfig) {
         let assistant = ChatMessage(role: .assistant, state: .streaming)
         messages.insert(assistant, at: min(max(index, 0), messages.endIndex))
         activeAssistantID = assistant.id
+        activeConfig = config
         isStreaming = true
         discardPendingDeltas()
         updateSummary(recomputeCopyable: false)
 
-        // Captured once so pause_turn continuations resend an identical prefix (same model, tools and
-        // system prompt) even if settings change mid-turn.
-        let config = TurnConfig(
-            model: settings.model,
-            effort: settings.effort,
-            webAccess: settings.webAccess,
-            system: SystemPrompt.make(settings: settings)
-        )
         inFlightUsage = nil
         inFlightRequestedModel = config.model.rawValue
         refreshPhase()
@@ -344,6 +660,20 @@ import os
         streamTask = Task { [weak self] in
             await self?.runTurn(assistantID: assistantID, config: config)
         }
+    }
+
+    /// Mutable state of one turn's request loop.
+    private struct LoopState {
+        var pauseContinuations = 0
+        var toolRounds = 0
+        var resuming = false
+        var toolChoice: JSONValue?
+        var wrapUpSent = false
+        var searchesLeft = ToolLimits.webSearchesPerTurn
+        var fetchesLeft = ToolLimits.webFetchesPerTurn
+        var webPaused = false
+        /// The server-tool limits of the last fresh request (a pause_turn continuation reuses them).
+        var limits = ServerToolLimits()
     }
 
     private func runTurn(assistantID: UUID, config: TurnConfig) async {
@@ -357,19 +687,27 @@ import os
             return
         }
 
-        var continuations = 0
+        executor?.beginTurn()
+        var state = LoopState()
         do {
             while true {
                 try Task.checkCancellation()
-                let resuming = continuations > 0
                 flushPendingDeltas()
                 inFlightUsage = nil
+                if !state.resuming {
+                    // A pause_turn continuation resumes that response, so it keeps its server tools and limits.
+                    state.limits = state.webPaused
+                        ? .none
+                        : ServerToolLimits(webSearch: min(5, state.searchesLeft), webFetch: min(5, state.fetchesLeft))
+                }
                 let fullHistory = Self.requestHistory(
                     for: messages,
                     inFlight: assistantID,
-                    resumingInFlight: resuming,
-                    enabledServerTools: config.enabledServerTools,
-                    model: config.model
+                    resumingInFlight: state.resuming,
+                    enabledServerTools: config.enabledServerTools(limits: state.limits),
+                    clientToolNames: config.clientToolNames,
+                    model: config.model,
+                    compacting: compactingIDs()
                 )
                 // The whole request must stay under the API's size limit: earlier turns' attachments
                 // give way first; if the new message alone is too big it can't be sent at all.
@@ -379,7 +717,7 @@ import os
                 // A fresh request must end on a user turn; only a pause_turn continuation may end on
                 // the (partial) assistant turn.
                 guard let lastRole = history.last?["role"]?.stringValue,
-                      lastRole == (resuming ? "assistant" : "user") else {
+                      lastRole == (state.resuming ? "assistant" : "user") else {
                     throw TurnError.nothingToSend
                 }
 
@@ -389,18 +727,43 @@ import os
                     messages: history,
                     maxTokens: config.model.maxOutputTokens,
                     effort: config.effort,
-                    webAccess: config.webAccess
+                    webAccess: config.webAccess,
+                    clientTools: config.clientToolDefinitions,
+                    toolChoice: state.toolChoice,
+                    serverToolLimits: state.limits
                 )
-                let result = try await consume(client.stream(request), into: assistantID)
-                guard isActive(assistantID) else { return }
-                recordCompletedUsage(result, requestedModel: config.model.rawValue, assistantID: assistantID)
-
-                if result.stopReason == "pause_turn", continuations < Self.maxPauseContinuations {
-                    continuations += 1
+                let result: StreamResult
+                do {
+                    responseDeliveredEvent = false
+                    result = try await consume(client.stream(request), into: assistantID)
+                } catch where shouldCompactRestoredContext(after: error) {
+                    // A continued chat whose stored thinking or server-tool payload the API no longer accepts
+                    // degrades to text context instead of failing every turn.
+                    compactsRestoredContext = true
+                    Self.logger.info("Resending the restored conversation as text after the API rejected it")
                     continue
                 }
-                finishTurn(assistantID, outcome: .completed(stopReason: result.stopReason))
-                return
+                guard isActive(assistantID) else { return }
+                let usage = result.usage ?? inFlightUsage
+                recordCompletedUsage(result, requestedModel: config.model.rawValue, assistantID: assistantID)
+                let serverToolUse = usage?["server_tool_use"]
+                state.searchesLeft = max(0, state.searchesLeft - (serverToolUse?["web_search_requests"]?.intValue ?? 0))
+                state.fetchesLeft = max(0, state.fetchesLeft - (serverToolUse?["web_fetch_requests"]?.intValue ?? 0))
+
+                switch result.stopReason {
+                case "pause_turn" where state.pauseContinuations < Self.maxPauseContinuations:
+                    state.pauseContinuations += 1
+                    state.resuming = true
+                    continue
+                case "tool_use":
+                    state.resuming = false
+                    guard try await runToolRound(result, transcript: history, assistantID: assistantID,
+                                                 config: config, state: &state) else { return }
+                    continue
+                default:
+                    finishTurn(assistantID, outcome: .completed(stopReason: result.stopReason))
+                    return
+                }
             }
         } catch {
             if error is CancellationError || Task.isCancelled {
@@ -411,6 +774,154 @@ import os
         }
     }
 
+    /// Handles a response that stopped for `tool_use`: records the round and runs it (or answers it with the
+    /// action limit). Returns false when the turn finished instead.
+    private func runToolRound(
+        _ result: StreamResult,
+        transcript: [JSONValue],
+        assistantID: UUID,
+        config: TurnConfig,
+        state: inout LoopState
+    ) async throws -> Bool {
+        let calls = newClientCallIDs(in: result.content, of: assistantID)
+        guard !calls.isEmpty else {
+            finishTurn(assistantID, outcome: .completed(stopReason: "end_turn"))
+            return false
+        }
+        if state.wrapUpSent {
+            // Claude asked again after the wrap-up request: nothing runs, and without an exchange the orphaned
+            // tool_use blocks never reach history.
+            settle(calls, in: assistantID) { call in
+                call.status = .skipped("Action limit reached")
+            }
+            appendNote(Self.toolLimitNote, to: assistantID)
+            finishTurn(assistantID, outcome: .completed(stopReason: "end_turn"))
+            return false
+        }
+
+        recordExchange(calls, in: assistantID)
+        let totalCalls = messages.last(where: { $0.id == assistantID })?.toolCalls.count ?? 0
+        if state.toolRounds >= config.maxToolRounds || totalCalls > ToolLimits.maxCallsPerTurn {
+            let rounds = state.toolRounds
+            Self.toolLogger.info(
+                "Action limit reached after \(rounds, privacy: .public) rounds and \(totalCalls, privacy: .public) calls"
+            )
+            settle(calls, in: assistantID) { call in
+                call.status = .skipped("Action limit reached")
+                call.result = .error(ToolHistory.Copy.actionLimit)
+            }
+            state.toolChoice = ["type": "none"]
+            state.wrapUpSent = true
+            return true
+        }
+
+        state.toolRounds += 1
+        state.pauseContinuations = 0
+        guard let executor else {
+            // No tools were offered, so Claude can't have meant any of these.
+            settle(calls, in: assistantID) { call in
+                call.status = .failed("Unknown action")
+                call.result = .error(ToolHistory.Copy.unknownTool(call.name))
+            }
+            return true
+        }
+        let round = ToolRound(
+            messageID: assistantID,
+            callIDs: calls,
+            roundIndex: state.toolRounds - 1,
+            transcript: transcript + [Self.entry(role: .assistant, content: result.content)],
+            tools: config.toolsByName,
+            model: config.model
+        )
+        let roundNumber = state.toolRounds
+        Self.toolLogger.info("Running round \(roundNumber, privacy: .public) with \(calls.count, privacy: .public) calls")
+        let outcome = try await executor.execute(round, store: self)
+        guard isActive(assistantID) else { throw CancellationError() }
+        if let reason = outcome.webPause, config.webAccess, config.pausesWebAccess, !state.webPaused {
+            state.webPaused = true
+            appendWebPauseNote(reason, to: assistantID)
+        }
+        return true
+    }
+
+    /// Client tool_use ids of this response, in model order, that no earlier round of the turn recorded. A call
+    /// the stream never announced gets its row now.
+    private func newClientCallIDs(in content: [JSONValue], of assistantID: UUID) -> [String] {
+        guard let index = messages.lastIndex(where: { $0.id == assistantID }) else { return [] }
+        let recorded = Set(messages[index].toolExchanges.flatMap(\.callIDs))
+        let ids = ToolHistory.clientToolUseIDs(in: content).filter { !recorded.contains($0) }
+        var message = messages[index]
+        var changed = false
+        for block in content where ToolHistory.isClientToolUse(block) {
+            guard let id = block["id"]?.stringValue, ids.contains(id),
+                  !message.toolCalls.contains(where: { $0.id == id }) else { continue }
+            let name = block["name"]?.stringValue ?? ""
+            let input: JSONValue?
+            if case .object? = block["input"] { input = block["input"] } else { input = nil }
+            let presentation = activeConfig?.toolsByName[name]?.preparingPresentation ?? .generic(toolName: name)
+            message.toolCalls.append(ToolCall(id: id, name: name, input: input, presentation: presentation,
+                                              status: .queued))
+            changed = true
+        }
+        if changed { messages[index] = message }
+        return ids
+    }
+
+    private func recordExchange(_ callIDs: [String], in assistantID: UUID) {
+        guard let index = messages.lastIndex(where: { $0.id == assistantID }) else { return }
+        let exchange = ToolExchange(
+            contentEnd: messages[index].apiContent.count,
+            textEnd: messages[index].text.count,
+            callIDs: callIDs
+        )
+        messages[index].toolExchanges.append(exchange)
+    }
+
+    /// Applies `mutate` to the given calls (and stamps their finish time).
+    private func settle(_ callIDs: [String], in assistantID: UUID, _ mutate: (inout ToolCall) -> Void) {
+        guard let index = messages.lastIndex(where: { $0.id == assistantID }) else { return }
+        let now = clock()
+        var message = messages[index]
+        for callIndex in message.toolCalls.indices where callIDs.contains(message.toolCalls[callIndex].id) {
+            mutate(&message.toolCalls[callIndex])
+            message.toolCalls[callIndex].finishedAt = now
+        }
+        messages[index] = message
+        refreshPhase()
+    }
+
+    private func appendNote(_ note: String, to assistantID: UUID) {
+        flushPendingDeltas()
+        guard let index = messages.lastIndex(where: { $0.id == assistantID }) else { return }
+        messages[index].text += note
+    }
+
+    private func appendWebPauseNote(_ reason: WebPauseReason, to assistantID: UUID) {
+        guard let index = messages.lastIndex(where: { $0.id == assistantID }),
+              !messages[index].activities.contains(where: { $0.id == Self.webPausedActivityID }) else { return }
+        let privateSource = DisplayText.sanitized(reason.privateSource, maxLength: 80)
+        let untrustedSource = DisplayText.sanitized(reason.untrustedSource, maxLength: 80)
+        let label = "Web access paused for the rest of this reply: this chat now holds \(privateSource) "
+            + "and text from \(untrustedSource)."
+        messages[index].activities.append(ToolActivity(id: Self.webPausedActivityID, kind: .other, label: label,
+                                                       isDone: true))
+        Self.toolLogger.info("Web access paused for the rest of the reply")
+    }
+
+    /// Restored messages sent as text: the ones whose payload is gone, and every restored one after the API
+    /// rejected them as stored.
+    private func compactingIDs() -> Set<UUID> {
+        compactsRestoredContext ? textOnlyContextIDs.union(restoredMessageIDs) : textOnlyContextIDs
+    }
+
+    /// A request the API rejected for its content before anything streamed, in a restored conversation that
+    /// is not yet sent as text, is retried once with the restored turns as text.
+    private func shouldCompactRestoredContext(after error: Error) -> Bool {
+        guard !(error is CancellationError), !Task.isCancelled, !responseDeliveredEvent,
+              !restoredMessageIDs.isEmpty, !compactsRestoredContext else { return false }
+        return Self.isRejectedRequestContent(error)
+    }
+
     /// Folds one streamed response into the assistant message and returns its final result.
     private func consume(
         _ events: AsyncThrowingStream<StreamEvent, Error>,
@@ -418,6 +929,7 @@ import os
     ) async throws -> StreamResult {
         for try await event in events {
             guard isActive(assistantID) else { throw CancellationError() }
+            responseDeliveredEvent = true
             apply(event, to: assistantID)
             if case .completed(let result) = event {
                 return result
@@ -473,25 +985,23 @@ import os
             if message.model == nil { message.model = result.model }
         case .toolUseStarted(let id, let name):
             guard !message.toolCalls.contains(where: { $0.id == id }) else { return }
-            message.toolCalls.append(ToolCall(
-                id: id,
-                name: name,
-                presentation: .generic(toolName: name),
-                status: .preparing
-            ))
+            let presentation = activeConfig?.toolsByName[name]?.preparingPresentation ?? .generic(toolName: name)
+            message.toolCalls.append(ToolCall(id: id, name: name, presentation: presentation, status: .preparing))
         case .toolUseReady(let id, let name, let input, let rawInput):
+            // The executor writes the real presentation once the input has been validated.
             let invalidInput = input == nil ? String(rawInput.prefix(ToolLimits.maxInvalidInputEcho)) : nil
             if let existing = message.toolCalls.firstIndex(where: { $0.id == id }) {
                 message.toolCalls[existing].input = input
                 message.toolCalls[existing].invalidInput = invalidInput
                 message.toolCalls[existing].status = .queued
             } else {
+                let presentation = activeConfig?.toolsByName[name]?.preparingPresentation ?? .generic(toolName: name)
                 message.toolCalls.append(ToolCall(
                     id: id,
                     name: name,
                     input: input,
                     invalidInput: invalidInput,
-                    presentation: .generic(toolName: name),
+                    presentation: presentation,
                     status: .queued
                 ))
             }
@@ -600,6 +1110,9 @@ import os
         }
         messages[index] = message
         if movesPhase { refreshPhase() }
+        if !pending.text.isEmpty {
+            onAssistantTextProgress?(assistantID, message.text, false)
+        }
     }
 
     /// Drops queued deltas (the conversation was replaced or a new turn starts).
@@ -615,8 +1128,10 @@ import os
         flushPendingDeltas()
         discardPendingDeltas()
         activeAssistantID = nil
+        activeConfig = nil
         streamTask = nil
 
+        var completedText: String?
         if let index = messages.lastIndex(where: { $0.id == assistantID }) {
             var message = messages[index]
             message.isThinking = false
@@ -625,6 +1140,7 @@ import os
             for activityIndex in message.activities.indices {
                 message.activities[activityIndex].isDone = true
             }
+            settleOpenToolCalls(in: &message, outcome: outcome)
             let userIndex = messages[..<index].lastIndex(where: { $0.role == .user })
 
             switch outcome {
@@ -632,12 +1148,15 @@ import os
                 switch stopReason {
                 case "refusal":
                     // A mid-stream decline: discard the partial output so the refusal copy is all
-                    // that is shown (and nothing cut off can be copied).
+                    // that is shown (and nothing cut off can be copied). Actions that already ran stay
+                    // visible under "Done before Otto stopped".
                     message.text = ""
                     message.thinking = ""
                     message.activities = []
                     message.sources = []
                     message.apiContent = []
+                    message.toolExchanges = []
+                    message.toolCalls = message.toolCalls.filter(Self.hasRun)
                     message.state = .refused(Self.refusalMessage)
                     message.includeInContext = false
                     if let userIndex {
@@ -658,17 +1177,30 @@ import os
             case .failed(let error):
                 var description = error.localizedDescription
                 Self.logger.error("Reply failed: \(description, privacy: .public)")
-                message.includeInContext = false
+                let rejected = Self.isRejectedRequestContent(error)
+                // Actions that already ran must stay in the context, or Claude would repeat them; a request the
+                // API rejected for its content leaves it (its user message too, below).
+                message.includeInContext = !message.toolExchanges.isEmpty && !rejected
                 // When the request was rejected for its content (an attachment the API can't process,
                 // a request that is too large or too long), resending that user message would fail
                 // every later turn the same way, so it leaves the context too. Retry re-includes it.
-                if Self.isRejectedRequestContent(error), let userIndex, messages[userIndex].includeInContext {
+                if rejected, let userIndex, messages[userIndex].includeInContext {
                     messages[userIndex].includeInContext = false
                     description += " " + Self.excludedFromContextNote
                 }
                 message.state = .failed(description)
             }
             messages[index] = message
+
+            if message.state == .complete {
+                completedText = message.text
+                if let userIndex, var versions = lastTurnVersions, versions.userMessageID == messages[userIndex].id,
+                   Self.isStorableVersion(message) {
+                    versions.replies.append(message)
+                    versions.currentIndex = versions.replies.count - 1
+                    lastTurnVersions = versions
+                }
+            }
         }
 
         isStreaming = false
@@ -676,8 +1208,46 @@ import os
         settleUsage(for: assistantID)
         lastFinishedAssistantID = assistantID
         refreshPhase()
+        refreshSystemUIToolWait()
+        if let completedText {
+            onAssistantTextProgress?(assistantID, completedText, true)
+        }
         onTranscriptChanged?(.turnFinished)
         onReplyFinished?()
+    }
+
+    /// Gives every call that is not terminal yet its final status. A call inside an exchange also gets the
+    /// result sent back for it, so every exchange stays complete.
+    private func settleOpenToolCalls(in message: inout ChatMessage, outcome: TurnOutcome) {
+        let exchanged = Set(message.toolExchanges.flatMap(\.callIDs))
+        let now = clock()
+        for index in message.toolCalls.indices where !message.toolCalls[index].status.isTerminal {
+            let inExchange = exchanged.contains(message.toolCalls[index].id)
+            switch outcome {
+            case .cancelled:
+                let wasRunning: Bool
+                switch message.toolCalls[index].status {
+                case .running, .waitingForSystem: wasRunning = true
+                default: wasRunning = false
+                }
+                message.toolCalls[index].status = .cancelled
+                message.toolCalls[index].result = .error(
+                    wasRunning ? ToolHistory.Copy.cancelledWhileRunning : ToolHistory.Copy.cancelledBeforeRun
+                )
+            case .completed, .failed:
+                message.toolCalls[index].status = .skipped(inExchange ? "Reply ended early" : "Reply was cut off")
+                message.toolCalls[index].result = inExchange ? .error(ToolHistory.Copy.cancelledBeforeRun) : nil
+            }
+            message.toolCalls[index].finishedAt = now
+        }
+    }
+
+    /// Calls whose side effect may have happened: kept visible when a reply is refused.
+    private static func hasRun(_ call: ToolCall) -> Bool {
+        switch call.status {
+        case .succeeded, .failed, .undone: return true
+        default: return false
+        }
     }
 
     private func isActive(_ assistantID: UUID) -> Bool {
@@ -706,31 +1276,35 @@ import os
     /// The `messages` array for a request made on behalf of the assistant message `inFlight`.
     ///
     /// Only messages before `inFlight` are considered (all messages when it is nil or absent); the
-    /// in-flight message itself is appended only when resuming a `pause_turn`. Messages with
-    /// `includeInContext == false` are skipped; when `model` is given, earlier user turns holding a PDF
-    /// over that model's page limit send their attachments as notes; user turns send their `apiContent` (with attachments
-    /// of earlier turns replaced by a short note once the request budget is used up — see
-    /// `fittingAttachmentBudget`), and assistant turns are rendered by
-    /// `contextContent(forAssistant:enabledServerTools:)`. Consecutive same-role turns are left as
-    /// they are (the API merges them); leading assistant turns are dropped because a conversation
-    /// must start with the user.
+    /// in-flight message itself is included when resuming a `pause_turn` or once it has tool exchanges
+    /// (`ToolHistory.entries`). Messages with `includeInContext == false` are skipped; when `model` is given,
+    /// earlier user turns holding a PDF over that model's page limit send their attachments as notes; user
+    /// turns send their `apiContent` (with attachments of earlier turns replaced by a short note once the
+    /// request budget is used up — see `fittingAttachmentBudget`), and assistant turns are rendered by
+    /// `ToolHistory` (tool rounds of tools outside `clientToolNames` as `<earlier_action_result>` blocks).
+    /// Messages in `compacting` are restored turns sent as text only (a user message unchanged). Consecutive
+    /// same-role turns are left as they are (the API merges them); leading assistant turns are dropped
+    /// because a conversation must start with the user.
     static func requestHistory(
         for messages: [ChatMessage],
         inFlight: UUID?,
         resumingInFlight: Bool,
         enabledServerTools: Set<String>,
-        model: ModelOption? = nil
+        clientToolNames: Set<String> = [],
+        model: ModelOption? = nil,
+        compacting: Set<UUID> = []
     ) -> [JSONValue] {
         let inFlightIndex = inFlight.flatMap { id in messages.firstIndex(where: { $0.id == id }) }
         let prior = messages[..<(inFlightIndex ?? messages.endIndex)]
         // The user message being answered is sent as it is; see below for earlier ones.
         let answeredUserID = prior.last(where: { $0.role == .user && $0.includeInContext })?.id
 
-        var entries: [(role: ChatRole, content: [JSONValue])] = []
+        var entries: [ToolHistory.Entry] = []
+        var answeredUserEntry: Int?
         for message in prior where message.includeInContext {
-            let content: [JSONValue]
             switch message.role {
             case .user:
+                let content: [JSONValue]
                 // A PDF over the model's page limit (e.g. attached for Opus, then switched to Haiku
                 // 4.5) would get every later request rejected; earlier turns send a note instead.
                 if let model, message.id != answeredUserID,
@@ -739,81 +1313,60 @@ import os
                 } else {
                     content = userContent(message)
                 }
+                if !content.isEmpty {
+                    if message.id == answeredUserID { answeredUserEntry = entries.endIndex }
+                    entries.append((.user, content))
+                }
             case .assistant:
-                content = contextContent(forAssistant: message, enabledServerTools: enabledServerTools)
-            }
-            if !content.isEmpty {
-                entries.append((message.role, content))
+                if compacting.contains(message.id) {
+                    let content = ToolHistory.compactedContent(forAssistant: message)
+                    if !content.isEmpty { entries.append((.assistant, content)) }
+                } else {
+                    entries += ToolHistory.entries(
+                        for: message,
+                        enabledServerTools: enabledServerTools,
+                        clientToolNames: clientToolNames,
+                        isInFlight: false,
+                        resuming: false
+                    )
+                }
             }
         }
 
-        if resumingInFlight, let inFlightIndex {
-            let content = resumedContent(messages[inFlightIndex])
-            if !content.isEmpty {
-                entries.append((.assistant, content))
-            }
+        if let inFlightIndex {
+            entries += ToolHistory.entries(
+                for: messages[inFlightIndex],
+                enabledServerTools: enabledServerTools,
+                clientToolNames: clientToolNames,
+                isInFlight: true,
+                resuming: resumingInFlight
+            )
         }
 
+        var dropped = 0
         while let first = entries.first, first.role == .assistant {
             entries.removeFirst()
+            dropped += 1
         }
-        fittingAttachmentBudget(&entries)
+        let newestUser = answeredUserEntry.map { $0 - dropped }
+        fittingAttachmentBudget(&entries, newestUser: newestUser)
         return entries.map { entry(role: $0.role, content: $0.content) }
     }
 
-    /// Content sent for a finished assistant turn, or [] to leave the turn out.
-    ///
-    /// - `.complete`: the sanitized API content, with server-tool calls reduced to complete
-    ///   call/result pairs for tools this request defines (a call issued by a dropped call goes with
-    ///   it) and unsigned thinking dropped. A turn left with nothing but thinking is skipped.
-    /// - `.cancelled`: a single text block with the visible text, if there is any.
-    /// - `.refused` / `.failed` / `.streaming`: never sent.
+    /// Content sent for a finished assistant turn without tool exchanges, or [] to leave the turn out
+    /// (`ToolHistory.contextContent(forAssistant:enabledServerTools:)`).
     static func contextContent(forAssistant message: ChatMessage, enabledServerTools: Set<String>) -> [JSONValue] {
-        switch message.state {
-        case .complete:
-            let blocks = pairedServerToolBlocks(
-                withoutUnsignedThinking(sanitizedAssistantContent(message.apiContent)),
-                allowedTools: enabledServerTools
-            )
-            return blocks.contains(where: { !isThinkingBlock($0) }) ? blocks : []
-        case .cancelled:
-            let text = message.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            return text.isEmpty ? [] : [textBlock(text)]
-        case .streaming, .refused, .failed:
-            return []
-        }
+        ToolHistory.contextContent(forAssistant: message, enabledServerTools: enabledServerTools)
     }
 
-    /// Applies the fallback boundary and drops empty text blocks.
-    ///
-    /// If a `fallback` block exists, the content before the last one came from the model that was
-    /// replaced: of it only `text` blocks and complete server-tool call/result pairs are kept (the
-    /// text's citations point into those results); thinking, `tool_use`, unpaired `server_tool_use`
-    /// and anything unknown is dropped. All `fallback` blocks are dropped, and so are text blocks with
-    /// no non-whitespace text (the API rejects them).
+    /// `ToolHistory.sanitizedAssistantContent(_:)`.
     static func sanitizedAssistantContent(_ content: [JSONValue]) -> [JSONValue] {
-        var blocks = content
-        if let lastFallback = blocks.lastIndex(where: { $0.typeName == "fallback" }) {
-            let before = Array(blocks[..<lastFallback])
-            let pairedCalls = keptServerToolCalls(in: before, allowedTools: nil, keepPendingCalls: false)
-            let kept = before.filter { block in
-                if block.typeName == "text" { return true }
-                if let id = serverToolCallID(of: block) { return pairedCalls.contains(id) }
-                return false
-            }
-            blocks = kept + blocks[lastFallback...]
-        }
-        return blocks.filter { block in
-            switch block.typeName {
-            case "fallback":
-                return false
-            case "text":
-                let text = block["text"]?.stringValue ?? ""
-                return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            default:
-                return true
-            }
-        }
+        ToolHistory.sanitizedAssistantContent(content)
+    }
+
+    /// `ToolHistory.textBlock(_:)`.
+    static func textBlock(_ text: String) -> JSONValue {
+        ToolHistory.textBlock(text)
     }
 
     // MARK: History helpers
@@ -824,89 +1377,14 @@ import os
         return text.isEmpty ? [] : [textBlock(text)]
     }
 
-    /// Content for the partial in-flight assistant turn when continuing after `pause_turn`.
-    ///
-    /// The API only resumes a paused turn that is sent back as it came, ending in the pending
-    /// server-tool call, so no tool filtering happens here (the turn's tool set is fixed by its
-    /// `TurnConfig`). Unsigned thinking is still dropped, and trailing whitespace is trimmed from a
-    /// final text block because the API rejects a final assistant turn ending in whitespace.
-    private static func resumedContent(_ message: ChatMessage) -> [JSONValue] {
-        var blocks = withoutUnsignedThinking(sanitizedAssistantContent(message.apiContent))
-        if let last = blocks.last, last.typeName == "text", let text = last["text"]?.stringValue {
-            blocks.removeLast()
-            let trimmed = trimmingTrailingWhitespace(text)
-            if !trimmed.isEmpty {
-                blocks.append(last.setting("text", to: .string(trimmed)))
-            }
-        }
-        return blocks
-    }
-
-    /// Keeps only complete call/result pairs of tools the request defines (the API rejects history
-    /// that uses undefined tools, e.g. after web access was switched off or on Haiku). A call issued by
-    /// another call (`caller.tool_id`, e.g. a search run inside dynamic filtering) goes with it.
-    private static func pairedServerToolBlocks(_ blocks: [JSONValue], allowedTools: Set<String>) -> [JSONValue] {
-        let keptCalls = keptServerToolCalls(in: blocks, allowedTools: allowedTools, keepPendingCalls: false)
-        return blocks.filter { block in
-            guard let id = serverToolCallID(of: block) else {
-                // A server-tool block without an id can't be paired; drop it rather than send it.
-                return block.typeName != "server_tool_use" && !isServerToolResult(block)
-            }
-            return keptCalls.contains(id)
-        }
-    }
-
-    /// Ids of the `server_tool_use` calls in `blocks` worth keeping: the tool is in `allowedTools`
-    /// (any tool when nil), its `*_tool_result` is present unless `keepPendingCalls`, and the call
-    /// that issued it (`caller.tool_id`), if any, is itself kept.
-    private static func keptServerToolCalls(
-        in blocks: [JSONValue],
-        allowedTools: Set<String>?,
-        keepPendingCalls: Bool
-    ) -> Set<String> {
-        var calls: [String: (name: String, callerID: String?)] = [:]
-        var resultIDs: Set<String> = []
-        for block in blocks {
-            if block.typeName == "server_tool_use", let id = block["id"]?.stringValue {
-                calls[id] = (block["name"]?.stringValue ?? "", block["caller"]?["tool_id"]?.stringValue)
-            } else if isServerToolResult(block), let id = block["tool_use_id"]?.stringValue {
-                resultIDs.insert(id)
-            }
-        }
-
-        var kept = Set(calls.compactMap { id, call -> String? in
-            if let allowedTools, !allowedTools.contains(call.name) { return nil }
-            guard keepPendingCalls || resultIDs.contains(id) else { return nil }
-            return id
-        })
-        // Drop calls whose issuing call was dropped (or is missing), until nothing changes.
-        var changed = true
-        while changed {
-            changed = false
-            for id in kept {
-                if let callerID = calls[id]?.callerID, !kept.contains(callerID) {
-                    kept.remove(id)
-                    changed = true
-                }
-            }
-        }
-        return kept
-    }
-
-    /// The call id a server-tool block belongs to: `id` of a `server_tool_use`, `tool_use_id` of a
-    /// `*_tool_result`; nil for every other block.
-    private static func serverToolCallID(of block: JSONValue) -> String? {
-        if block.typeName == "server_tool_use" { return block["id"]?.stringValue }
-        if isServerToolResult(block) { return block["tool_use_id"]?.stringValue }
-        return nil
-    }
-
     /// Keeps the request inside `maxRequestAttachmentBytes`, and earlier turns' text documents
     /// inside `maxHistoryTextDocumentBytes`, by replacing attachment blocks of the oldest user turns
-    /// with a short text note. The newest user turn is never trimmed: if it alone is too big the API
-    /// says so, and `finishTurn` takes it out of the context.
-    private static func fittingAttachmentBudget(_ entries: inout [(role: ChatRole, content: [JSONValue])]) {
-        guard let newestUser = entries.lastIndex(where: { $0.role == .user }) else { return }
+    /// with a short text note. The newest user message (`newestUser`, else the last user entry) is never
+    /// trimmed: if it alone is too big the API says so, and `finishTurn` takes it out of the context. Tool
+    /// results that follow it in a tool loop are not user messages and are never trimmed here.
+    private static func fittingAttachmentBudget(_ entries: inout [ToolHistory.Entry], newestUser: Int?) {
+        guard let newestUser = newestUser ?? entries.lastIndex(where: { $0.role == .user }),
+              entries.indices.contains(newestUser) else { return }
         var totalBytes = entries[newestUser].content.reduce(0) { $0 + attachmentPayloadBytes($1) }
         var historyTextBytes = 0
 
@@ -937,37 +1415,7 @@ import os
         return textBlock("[Earlier attachment omitted to keep the conversation within limits: \(title)]")
     }
 
-    /// Thinking cut off before its signature arrived (e.g. max_tokens mid-thought) cannot be
-    /// verified by the API, so it is not sent back.
-    private static func withoutUnsignedThinking(_ blocks: [JSONValue]) -> [JSONValue] {
-        blocks.filter { block in
-            guard block.typeName == "thinking" else { return true }
-            return !(block["signature"]?.stringValue ?? "").isEmpty
-        }
-    }
-
-    private static func isServerToolResult(_ block: JSONValue) -> Bool {
-        guard let type = block.typeName else { return false }
-        return type.hasSuffix("_tool_result")
-    }
-
-    private static func isThinkingBlock(_ block: JSONValue) -> Bool {
-        block.typeName == "thinking" || block.typeName == "redacted_thinking"
-    }
-
-    private static func trimmingTrailingWhitespace(_ text: String) -> String {
-        var result = text
-        while let last = result.last, last.isWhitespace {
-            result.removeLast()
-        }
-        return result
-    }
-
     private static func entry(role: ChatRole, content: [JSONValue]) -> JSONValue {
         ["role": .string(role.rawValue), "content": .array(content)]
-    }
-
-    static func textBlock(_ text: String) -> JSONValue {
-        ["type": "text", "text": .string(text)]
     }
 }
