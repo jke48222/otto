@@ -6,9 +6,16 @@
 //  - pointer: event monitors gather a snapshot for every mouse event and feed it to
 //    `NotchPointerMachine`, which decides click-through (the panel only accepts mouse events over
 //    the drawn shape or the closed notch's hot zone), hover-open (the pointer resting on the notch),
-//    exit-close and drag-open; this class applies the machine's effects and runs its timers;
+//    exit-close, drag-open and soft focus; this class applies the machine's effects and runs its
+//    timers. Any mouse-down stops a reply being read aloud, and clicks on the panel are recorded for
+//    input provenance (approvals);
+//  - keyboard: while the panel is key, key-downs go through the three cross-cutting rules of
+//    SPEC-v2 §4.4 (speech stops, typing promotes soft focus, typing ends listening), then
+//    `NotchKeyCommands` maps them and the view model performs the command;
 //  - keyboard focus: the non-activating panel takes key status without activating Otto and hands
-//    focus back to the user's app when it closes.
+//    focus back to the user's app when it closes;
+//  - window size: tall reading mode grows the window before the content springs open and shrinks
+//    it once the content has folded back.
 //
 
 import AppKit
@@ -38,6 +45,14 @@ final class NotchWindowController {
     private var timerTasks: [NotchPointerMachine.Timer: Task<Void, Never>] = [:]
     /// The panel is ordered out while the user picks a screen region.
     private var isHiddenForCapture = false
+    /// Pointer-entry tracking for `pointerEnteredPanel()`: where the pointer was at the previous
+    /// event, and whether it was over the open shape then.
+    private var lastPointerLocation: CGPoint?
+    private var isPointerOverOpenShape = false
+    /// Shrinks the window after tall mode ends, once the content has folded back.
+    private var pendingShrink: Task<Void, Never>?
+    /// How long the window keeps its tall size after tall mode ends (the content's close spring).
+    private static let shrinkDelay: Duration = .milliseconds(500)
 
     init(viewModel: NotchViewModel, settings: AppSettings) {
         self.viewModel = viewModel
@@ -63,9 +78,14 @@ final class NotchWindowController {
         hostingView.frame = NSRect(origin: .zero, size: geometry.windowFrame.size)
         hostingView.autoresizingMask = [.width, .height]
         panel.contentView = hostingView
+        panel.quickLookController = viewModel.shelf.quickLook
 
         applyGeometryToViewModel()
         wireViewModelHooks()
+        let frame = geometry.windowFrame(openHeightLimit: viewModel.openHeightLimit)
+        if panel.frame != frame {
+            panel.setFrame(frame, display: false)
+        }
     }
 
     deinit {
@@ -73,6 +93,7 @@ final class NotchWindowController {
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         for entry in notificationTokens { entry.center.removeObserver(entry.token) }
         for task in timerTasks.values { task.cancel() }
+        pendingShrink?.cancel()
     }
 
     // MARK: - Public
@@ -87,7 +108,9 @@ final class NotchWindowController {
                     presentation: viewModel.presentation,
                     shouldStayOpen: viewModel.shouldStayOpen,
                     isMenuPresented: viewModel.isMenuPresented,
-                    renderedShapeSize: viewModel.renderedShapeSize
+                    renderedShapeSize: viewModel.renderedShapeSize,
+                    openHeightLimit: viewModel.openHeightLimit,
+                    isPinned: viewModel.isPinned
                 )
             }) { [weak self] state in
                 self?.observedStateDidChange(state)
@@ -110,10 +133,20 @@ final class NotchWindowController {
             Self.logger.info("Notch geometry: \(String(describing: newGeometry.notchRect), privacy: .public) physical: \(newGeometry.hasPhysicalNotch, privacy: .public)")
         }
         applyGeometryToViewModel()
-        if panel.frame != geometry.windowFrame {
-            panel.setFrame(geometry.windowFrame, display: true)
+        // The frame for the current height limit; a shrink still waiting on the close spring is moot.
+        pendingShrink?.cancel()
+        pendingShrink = nil
+        let frame = geometry.windowFrame(openHeightLimit: viewModel.openHeightLimit)
+        if panel.frame != frame {
+            panel.setFrame(frame, display: true)
         }
         refreshPointerState()
+    }
+
+    /// The screen hosting the notch (the display the geometry was made for).
+    var notchScreen: NSScreen? {
+        guard let displayID else { return nil }
+        return NSScreen.screens.first { NotchGeometry.displayID(of: $0) == displayID }
     }
 
     #if DEBUG || OTTO_TOOLS
@@ -142,6 +175,9 @@ final class NotchWindowController {
         if viewModel.hasPhysicalNotch != geometry.hasPhysicalNotch {
             viewModel.hasPhysicalNotch = geometry.hasPhysicalNotch
         }
+        if viewModel.tallOpenHeight != geometry.tallOpenHeight {
+            viewModel.tallOpenHeight = geometry.tallOpenHeight
+        }
     }
 
     private func wireViewModelHooks() {
@@ -156,6 +192,9 @@ final class NotchWindowController {
         }
         viewModel.onEndScreenCapture = { [weak self] in
             self?.endScreenCapture()
+        }
+        viewModel.onWillChangeOpenHeightLimit = { [weak self] limit in
+            self?.openHeightLimitWillChange(to: limit)
         }
     }
 
@@ -205,6 +244,9 @@ final class NotchWindowController {
             controller.reposition()
             controller.bringToFront()
         }
+        observe(center, NSWindow.didBecomeKeyNotification, object: panel) { controller in
+            controller.panelDidBecomeKey()
+        }
         observe(center, NSWindow.didResignKeyNotification, object: panel) { controller in
             controller.panelDidResignKey()
         }
@@ -235,9 +277,46 @@ final class NotchWindowController {
     }
 
     private func observedStateDidChange(_ state: ObservedState) {
+        // A taller limit that arrived without the hook (a snapshot seed, a new screen height) must
+        // never leave the content clipped by the window.
+        let needed = geometry.windowFrame(openHeightLimit: state.openHeightLimit)
+        if needed.height > panel.frame.height {
+            growWindow(to: needed)
+        }
         // Covers presentation changes made without the hook, and shouldStayOpen turning false while
-        // the pointer is already outside (menu dismissed, loads finished, panel lost focus).
+        // the pointer is already outside (menu dismissed, loads finished, panel lost focus, unpinned).
         refreshPointerState()
+    }
+
+    /// Tall mode is about to start or end. Growing happens now, before SwiftUI starts the spring, so
+    /// the first frames aren't clipped; shrinking waits for the content to fold back, and is
+    /// cancelled if tall mode comes back first. The root view is top-aligned and autoresizing, so
+    /// nothing visibly moves.
+    private func openHeightLimitWillChange(to limit: CGFloat) {
+        let frame = geometry.windowFrame(openHeightLimit: limit)
+        if frame.height >= panel.frame.height {
+            growWindow(to: frame)
+            return
+        }
+        pendingShrink?.cancel()
+        pendingShrink = Task { [weak self] in
+            try? await Task.sleep(for: Self.shrinkDelay)
+            guard !Task.isCancelled, let self else { return }
+            self.pendingShrink = nil
+            let current = self.geometry.windowFrame(openHeightLimit: self.viewModel.openHeightLimit)
+            if self.panel.frame != current {
+                self.panel.setFrame(current, display: false)
+            }
+            self.refreshPointerState()
+        }
+    }
+
+    private func growWindow(to frame: CGRect) {
+        pendingShrink?.cancel()
+        pendingShrink = nil
+        if panel.frame != frame {
+            panel.setFrame(frame, display: false)
+        }
     }
 
     private func setKeyFocus(_ focus: Bool) {
@@ -264,10 +343,20 @@ final class NotchWindowController {
         refreshPointerState()
     }
 
-    private func panelDidResignKey() {
-        if viewModel.isEngaged && !viewModel.isMenuPresented {
-            viewModel.isEngaged = false
+    private func panelDidBecomeKey() {
+        if !viewModel.isPanelKey {
+            viewModel.isPanelKey = true
         }
+        refreshPointerState()
+    }
+
+    /// Key is already gone: clear soft focus (and engagement, unless a menu or sheet took it) without
+    /// asking for key again.
+    private func panelDidResignKey() {
+        if viewModel.isPanelKey {
+            viewModel.isPanelKey = false
+        }
+        viewModel.panelDidLoseKey()
         refreshPointerState()
     }
 
@@ -295,12 +384,19 @@ final class NotchWindowController {
         let point = screenLocation(of: event)
         switch event.type {
         case .leftMouseDown, .rightMouseDown:
+            // A click anywhere, in any app, stops a reply being read aloud.
+            if viewModel.voice.isSpeaking {
+                viewModel.stopSpeaking()
+            }
             let button: NotchPointerMachine.Button = event.type == .leftMouseDown ? .left : .right
             let target: NotchPointerMachine.ClickTarget
             if !isLocal {
                 target = .elsewhere
             } else if event.window === panel {
                 target = .panel
+                // SwiftUI buttons act on mouse-up; approvals judge the click by this mouse-down.
+                let evidence = InputProvenance.evidence(for: event, mouseDown: nil)
+                viewModel.notePanelMouseDown(uptime: event.timestamp, isHardware: evidence.isHardware)
             } else {
                 target = .otherOttoWindow
             }
@@ -330,9 +426,33 @@ final class NotchWindowController {
             hasTransientError: viewModel.transientError != nil,
             renderedShapeSize: viewModel.renderedShapeSize,
             geometry: geometry,
-            now: Self.now()
+            now: Self.now(),
+            isPanelKey: panel.isKeyWindow,
+            isSoftFocused: viewModel.isSoftFocused,
+            softFocusEnabled: settings.notch.typeAfterHover,
+            secondsSinceLastKeyDown: {
+                CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .keyDown)
+            },
+            isSecureInputActive: { IsSecureEventInputEnabled() },
+            hoverOpenEnabled: settings.notch.hoverToOpen,
+            isPinned: viewModel.isPinned,
+            openShapeLimit: CGSize(width: NotchMetrics.openWidth, height: viewModel.openHeightLimit)
         )
+        trackPointerEntry(context)
         apply(pointerMachine.handle(event, context))
+    }
+
+    /// The pointer moved onto the open shape: a new enter/exit cycle (it ends a voice reply's hold).
+    /// A shape that opens or grows under a resting pointer is not an entry.
+    private func trackPointerEntry(_ context: NotchPointerMachine.Context) {
+        let over = context.isOpen && pointerMachine.openShapeContains(context.point, context)
+        let moved = lastPointerLocation.map { hypot($0.x - context.point.x, $0.y - context.point.y) > 0.5 } ?? false
+        let entered = over && !isPointerOverOpenShape && moved
+        lastPointerLocation = context.point
+        isPointerOverOpenShape = over
+        if entered {
+            viewModel.pointerEnteredPanel()
+        }
     }
 
     /// Applies effects in order. Presentation changes come last (the machine guarantees it); they
@@ -356,9 +476,13 @@ final class NotchWindowController {
             case .open(let reason, let focus):
                 viewModel.open(reason: reason, focus: focus)
             case .close:
-                viewModel.close()
+                viewModel.close(pointerMachine.lastCloseReason ?? .programmatic)
             case .engage:
                 viewModel.engage()
+            case .takeSoftFocus:
+                viewModel.softFocus()
+            case .releaseSoftFocus:
+                viewModel.releaseSoftFocus()
             }
         }
     }
@@ -381,40 +505,74 @@ final class NotchWindowController {
 
     // MARK: - Keyboard
 
-    /// Shortcuts while the panel is key. Returns true when the event was consumed.
+    /// Key-downs while the panel is key (SPEC-v2 §4.4). Returns true when the event was consumed.
     private func handleKeyDown(_ event: NSEvent) -> Bool {
         guard event.window === panel, panel.isKeyWindow else { return false }
         let flags = event.modifierFlags
             .intersection(.deviceIndependentFlagsMask)
             .subtracting([.capsLock, .numericPad, .function])
+        let keyCode = event.keyCode
 
-        if event.keyCode == UInt16(kVK_Escape), flags.isEmpty {
-            // Let an input method cancel its composition first.
-            if let textView = panel.firstResponder as? NSTextView, textView.hasMarkedText() {
-                return false
-            }
-            viewModel.close()
-            return true
+        // The context is captured before rule 1, so Esc or ⌘. while Otto speaks map to .stopSpeaking
+        // and do nothing else: the speech was the thing to stop.
+        let textView = panel.firstResponder as? NSTextView
+        let context = viewModel.keyContext(
+            hasMarkedText: textView?.hasMarkedText() ?? false,
+            composerIsFirstResponder: viewModel.route == .chat && textView?.isEditable == true,
+            clipboardWantsAttachmentPaste: Self.isPasteChord(event, flags: flags) && shouldPasteAsAttachment()
+        )
+
+        // Rule 1: any key stops speech; an unmapped key still passes through.
+        if context.isSpeaking {
+            viewModel.stopSpeaking()
         }
 
-        guard flags == .command, let key = event.charactersIgnoringModifiers?.lowercased() else { return false }
-        switch key {
-        case "n":
-            viewModel.newChat()
+        // Rule 2: a typing key promotes soft focus to engagement. The Return that promotes is
+        // consumed (it never sends, confirms or answers); every other typing key reaches the composer.
+        switch NotchKeyCommands.softFocusPromotion(keyCode: keyCode, flags: flags,
+                                                   isSoftFocused: viewModel.isSoftFocused,
+                                                   isEngaged: viewModel.isEngaged) {
+        case .engageAndConsume:
+            viewModel.engage()
             return true
-        case ",":
-            viewModel.openSettings()
-            return true
-        case "w":
-            viewModel.close()
-            return true
-        case "v":
-            guard shouldPasteAsAttachment() else { return false }
-            viewModel.pasteFromClipboard()
-            return true
-        default:
+        case .engageAndPassThrough:
+            viewModel.engage()
+            finishListeningIfTyping(keyCode: keyCode, flags: flags, isListening: context.isListening)
+            return false
+        case .none:
+            break
+        }
+
+        // Rule 3: typing while listening ends listening (the transcript goes to the composer) and
+        // the key goes on to the composer.
+        if finishListeningIfTyping(keyCode: keyCode, flags: flags, isListening: context.isListening) {
             return false
         }
+
+        guard let command = NotchKeyCommands.command(keyCode: keyCode, characters: event.charactersIgnoringModifiers,
+                                                     flags: flags, context: context) else { return false }
+        let input = InputProvenance.evidence(for: event, mouseDown: nil)
+        let consumed = viewModel.perform(command, input: input)
+        Self.logger.debug("key command \(String(describing: command), privacy: .public) consumed: \(consumed, privacy: .public)")
+        return consumed
+    }
+
+    /// Rule 3 of §4.4. Returns true when it finished listening.
+    @discardableResult
+    private func finishListeningIfTyping(keyCode: UInt16, flags: NSEvent.ModifierFlags, isListening: Bool) -> Bool {
+        guard isListening, NotchKeyCommands.isTypingKey(keyCode: keyCode, flags: flags),
+              !Self.returnAndEscapeKeyCodes.contains(Int(keyCode)) else { return false }
+        viewModel.finishVoice(send: false)
+        return true
+    }
+
+    private static let returnAndEscapeKeyCodes: Set<Int> = [kVK_Return, kVK_ANSI_KeypadEnter, kVK_Escape]
+
+    /// ⌘V on any layout (the mapper falls back to the key code, so this does too). Only then is the
+    /// clipboard worth reading.
+    private static func isPasteChord(_ event: NSEvent, flags: NSEvent.ModifierFlags) -> Bool {
+        guard flags == .command else { return false }
+        return event.charactersIgnoringModifiers?.lowercased() == "v" || Int(event.keyCode) == kVK_ANSI_V
     }
 
     /// ⌘V goes to Otto's clipboard import (files/images → chips, text → composer) unless the composer
@@ -439,6 +597,8 @@ private extension NotchWindowController {
         var shouldStayOpen: Bool
         var isMenuPresented: Bool
         var renderedShapeSize: CGSize
+        var openHeightLimit: CGFloat
+        var isPinned: Bool
     }
 }
 

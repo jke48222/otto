@@ -131,11 +131,24 @@ struct ScreenCandidate: Equatable {
 // MARK: - Window & hit-testing geometry
 
 extension NotchGeometry {
-    /// Frame of the fixed-size notch window: top edge flush with the top of the screen,
+    /// Frame of the notch window in normal mode: top edge flush with the top of the screen,
     /// horizontally centered on the notch.
     var windowFrame: CGRect {
-        let size = NotchMetrics.windowSize
-        return CGRect(x: notchRect.midX - size.width / 2, y: screenFrame.maxY - size.height, width: size.width, height: size.height)
+        windowFrame(openHeightLimit: NotchMetrics.maxOpenHeight)
+    }
+
+    /// Frame of the notch window when the open shape may be up to `openHeightLimit` tall: as wide as
+    /// the normal window, and tall enough for that shape plus the shadow margin below it.
+    func windowFrame(openHeightLimit: CGFloat) -> CGRect {
+        let width = NotchMetrics.windowSize.width
+        let height = openHeightLimit + NotchMetrics.shadowMargin
+        return CGRect(x: notchRect.midX - width / 2, y: screenFrame.maxY - height, width: width, height: height)
+    }
+
+    /// Open height in tall reading mode: 80 % of the screen, never less than the normal cap and never
+    /// closer than 24 pt to the bottom of the screen.
+    var tallOpenHeight: CGFloat {
+        min(max(floor(screenFrame.height * 0.8), NotchMetrics.maxOpenHeight), screenFrame.height - 24)
     }
 
     /// Global rect of a shape of `size` drawn top-centered on the notch.
@@ -162,13 +175,18 @@ extension NotchGeometry {
         notchRect.union(shapeRect(size: shapeSize))
     }
 
-    /// Upper bound for the closed shape (activity ears + hover grow, with slack). Clamps sizes that
-    /// the UI has not updated yet right after a close, so a stale open-size report never turns the
-    /// whole panel area into a hover zone.
+    /// Upper bound for the closed shape, with slack: the activity ears (+ hover grow), the listening
+    /// pill and the reply drop (SPEC-v2 §4.2). Clamps sizes the UI has not updated yet right after a
+    /// close, so a stale open-size report never turns the whole panel area into a hover zone, while
+    /// the hot zone and hit-testing still follow the pill and the drop.
     var maximumClosedShapeSize: CGSize {
-        CGSize(
-            width: notchRect.width + NotchMetrics.activityEarWidth * 2 + 24,
-            height: notchRect.height + 12
+        let slack: CGFloat = 24
+        let ears = notchRect.width + NotchMetrics.activityEarWidth * 2 + slack
+        let pill = max(notchRect.width + ClosedNotchLayout.pillSideExtension * 2, ClosedNotchLayout.pillMinimumWidth) + slack
+        let drop = ReplyPreviewMetrics.maxWidth + slack
+        return CGSize(
+            width: max(ears, pill, drop),
+            height: notchRect.height + ReplyPreviewMetrics.dropHeight + 12
         )
     }
 }

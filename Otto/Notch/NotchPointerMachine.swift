@@ -2,8 +2,9 @@
 //  NotchPointerMachine.swift
 //  Otto
 //
-//  The notch's pointer logic as a pure state machine: click-through, hover-open, exit-close and
-//  drag-open. It knows nothing about windows, NSEvent or wall-clock timers. The window controller
+//  The notch's pointer logic as a pure state machine: click-through, hover-open, exit-close,
+//  drag-open and soft focus (the keyboard offered to a pointer resting on the open panel). It knows
+//  nothing about windows, NSEvent or wall-clock timers. The window controller
 //  gathers a `Context` snapshot (pointer location, buttons, view-model flags, geometry, time) for
 //  every event, feeds it in, and applies the returned effects; timers come back in as
 //  `.timerFired` events. That keeps every decision unit-testable.
@@ -27,6 +28,18 @@ struct NotchPointerMachine {
         var dropSettle: TimeInterval = 0.25
         /// How far the pointer may stray outside the open shape before an exit-close is scheduled.
         var exitSlack: CGFloat = 14
+        /// How long the pointer must rest on the open, unfocused panel before it takes the keyboard.
+        var softFocusDwell: TimeInterval = 0.15
+        /// Soft focus waits until no key has been pressed anywhere for this long, so someone typing in
+        /// their editor with the pointer parked on the notch keeps their keystrokes.
+        var softFocusTypingQuiet: TimeInterval = 0.8
+        /// How far outside the open shape the pointer must go before soft focus is handed back.
+        var softFocusReleaseSlack: CGFloat = 6
+        /// How soon a soft focus deferred by secure input (a password field somewhere) checks again.
+        var softFocusSecureInputRetry: TimeInterval = 0.5
+        /// Shortest wait before a deferred check runs again, so rounding never re-arms a timer for
+        /// the instant it fired.
+        var minimumRetry: TimeInterval = 0.01
     }
 
     // MARK: Inputs
@@ -52,6 +65,23 @@ struct NotchPointerMachine {
         var geometry: NotchGeometry
         /// Monotonic time in seconds.
         var now: TimeInterval
+        /// The panel is the key window (for any reason, soft focus included).
+        var isPanelKey = false
+        /// The view model holds soft focus (authoritative: the machine never tracks it itself).
+        var isSoftFocused = false
+        /// Settings → "Type after hovering".
+        var softFocusEnabled = false
+        /// Seconds since the last key-down anywhere in the session, read lazily.
+        var secondsSinceLastKeyDown: () -> TimeInterval = { .infinity }
+        /// A secure text field (a password) has the keyboard somewhere, read lazily.
+        var isSecureInputActive: () -> Bool = { false }
+        /// Settings → "Open on hover". Off: the closed notch still grows under the pointer and takes
+        /// clicks and drags, but a resting pointer never opens it.
+        var hoverOpenEnabled = true
+        /// Pinned open: no exit-close and no outside-click close.
+        var isPinned = false
+        /// Largest open shape the UI may draw (tall mode raises the height).
+        var openShapeLimit = CGSize(width: NotchMetrics.openWidth, height: NotchMetrics.maxOpenHeight)
     }
 
     enum Button: Equatable { case left, right }
@@ -66,7 +96,7 @@ struct NotchPointerMachine {
         case elsewhere
     }
 
-    enum Timer: Hashable, CaseIterable { case hoverOpen, exitClose, dropSettle }
+    enum Timer: Hashable, CaseIterable { case hoverOpen, exitClose, dropSettle, softFocus }
 
     enum Event: Equatable {
         /// The pointer moved, or state the pointer logic depends on changed (presentation, shape
@@ -86,8 +116,13 @@ struct NotchPointerMachine {
         case scheduleTimer(Timer, at: TimeInterval)
         case cancelTimer(Timer)
         case open(NotchViewModel.OpenReason, focus: Bool)
+        /// Close the notch. Payload-free on purpose: why it closed is `lastCloseReason`.
         case close
         case engage
+        /// Give the resting pointer's panel the keyboard without engaging (`vm.softFocus()`).
+        case takeSoftFocus
+        /// Hand the keyboard back to the user's app (`vm.releaseSoftFocus()`).
+        case releaseSoftFocus
     }
 
     // MARK: State
@@ -107,6 +142,17 @@ struct NotchPointerMachine {
     /// Where and when the pointer last came to rest over the notch; the dwell counts from here.
     private var restAnchor: (point: CGPoint, time: TimeInterval)?
     private(set) var deadlines: [Timer: TimeInterval] = [:]
+    /// Why the most recent `.close` was emitted: `.pointerExit` for the exit timer, `.outsideClick`
+    /// for a mouse-down elsewhere, `.programmatic` when a drag-open folds up without a drop. The
+    /// window controller passes it to `vm.close(_:)`.
+    private(set) var lastCloseReason: CloseReason?
+    /// Where and when the pointer came to rest on the open panel; the soft-focus dwell counts from here.
+    private var softRestAnchor: (point: CGPoint, time: TimeInterval)?
+    /// The closed shape's size and the pointer location at the previous closed-notch event, so a
+    /// shape that grows under a stationary pointer (a reply drop) can be told from a pointer that
+    /// moved onto the notch.
+    private var lastClosedShapeSize: CGSize?
+    private var lastClosedPoint: CGPoint?
 
     init(configuration: Configuration = Configuration()) {
         self.configuration = configuration
@@ -114,9 +160,10 @@ struct NotchPointerMachine {
 
     // MARK: - Handling events
 
-    /// Processes one event. Effects are ordered so that a presentation change (`.open`, `.close`,
-    /// `.engage`) always comes last: applying it re-enters the machine with a `.refresh`, and no
-    /// stale effect from this call may run after that.
+    /// Processes one event. Effects are ordered so that an action (`.open`, `.close`, `.engage`,
+    /// `.takeSoftFocus`, `.releaseSoftFocus`) always comes last and there is at most one per call:
+    /// applying it changes presentation or key status, which re-enters the machine with a `.refresh`,
+    /// and no stale effect from this call may run after that.
     mutating func handle(_ event: Event, _ context: Context) -> [Effect] {
         var effects: [Effect] = []
         var action: Effect?
@@ -125,14 +172,16 @@ struct NotchPointerMachine {
 
         switch event {
         case .refresh:
-            updatePointer(context, &effects)
+            action = updatePointer(context, &effects)
 
         case .mouseDown(let button, let target):
             if button == .left {
                 dragChangeCountAtMouseDown = context.dragPasteboardChangeCount()
             }
-            action = mouseDownAction(button: button, target: target, context)
-            updatePointer(context, &effects)
+            let clickAction = mouseDownAction(button: button, target: target, context)
+            let pointerAction = updatePointer(context, &effects)
+            // A click's engage/close/open always wins over a soft-focus change in the same call.
+            action = clickAction ?? pointerAction
 
         case .dragged:
             if startsDragOpen(context) {
@@ -142,7 +191,7 @@ struct NotchPointerMachine {
                 effects.append(.setIgnoresMouseEvents(false))
                 action = .open(.drag, focus: false)
             } else {
-                updatePointer(context, &effects)
+                action = updatePointer(context, &effects)
             }
 
         case .mouseUp:
@@ -150,7 +199,7 @@ struct NotchPointerMachine {
                 isDragOpenActive = false
                 schedule(.dropSettle, at: context.now + configuration.dropSettle, &effects)
             }
-            updatePointer(context, &effects)
+            action = updatePointer(context, &effects)
 
         case .timerFired(let timer):
             action = timerFired(timer, context, &effects)
@@ -169,6 +218,7 @@ struct NotchPointerMachine {
             cancel(timer, &effects)
         }
         restAnchor = nil
+        softRestAnchor = nil
         return effects
     }
 
@@ -180,9 +230,15 @@ struct NotchPointerMachine {
         if context.isOpen {
             cancel(.hoverOpen, &effects)
             restAnchor = nil
+            // For a hover-open the pointer is already resting on the panel: the soft-focus dwell
+            // counts from the moment of opening.
+            softRestAnchor = (context.point, context.now)
+            lastClosedShapeSize = nil
+            lastClosedPoint = nil
         } else {
             cancel(.exitClose, &effects)
             cancel(.dropSettle, &effects)
+            stopSoftDwell(&effects)
             isDragOpenActive = false
             if closedHotZone(context).containsInclusive(context.point) {
                 hoverSuppressedUntilExit = true
@@ -192,8 +248,9 @@ struct NotchPointerMachine {
 
     // MARK: - Pointer
 
-    /// Recomputes click-through, hover and exit-close state for the pointer in `context`.
-    private mutating func updatePointer(_ context: Context, _ effects: inout [Effect]) {
+    /// Recomputes click-through, hover, exit-close and soft-focus state for the pointer in `context`.
+    /// Returns a soft-focus action (`.releaseSoftFocus`) when the pointer's position calls for one.
+    private mutating func updatePointer(_ context: Context, _ effects: inout [Effect]) -> Effect? {
         let point = context.point
 
         if context.isOpen {
@@ -207,15 +264,20 @@ struct NotchPointerMachine {
             let overDragZone = isDragOpenActive && closedHotZone(context).containsInclusive(point)
             effects.append(.setIgnoresMouseEvents(!(overShape || overDragZone)))
 
-            if context.shouldStayOpen || overDragZone || keepOpenZone(context).containsInclusive(point) {
+            if keepsOpen(context) || overDragZone || keepOpenZone(context).containsInclusive(point) {
                 cancel(.exitClose, &effects)
             } else if deadlines[.exitClose] == nil {
                 schedule(.exitClose, at: context.now + configuration.exitCloseDelay, &effects)
             }
-            return
+            return softFocusAction(context, overShape: overShape, &effects)
         }
 
         cancel(.exitClose, &effects)
+
+        let closedSize = closedShapeSize(context)
+        suppressHoverIfShapeGrewUnderPointer(context, closedSize: closedSize)
+        lastClosedShapeSize = closedSize
+        lastClosedPoint = point
 
         let inHotZone = closedHotZone(context).containsInclusive(point)
         effects.append(.setIgnoresMouseEvents(!inHotZone))
@@ -224,21 +286,26 @@ struct NotchPointerMachine {
             hoverSuppressedUntilExit = false
             stopHoverDwell(&effects)
             effects.append(.setHovering(false))
-            return
+            return nil
         }
         guard !hoverSuppressedUntilExit else {
             stopHoverDwell(&effects)
             effects.append(.setHovering(false))
-            return
+            return nil
         }
 
         effects.append(.setHovering(true))
+        // "Open on hover" off: the grow stays as the "this is clickable" cue, but resting never opens.
+        guard context.hoverOpenEnabled else {
+            stopHoverDwell(&effects)
+            return nil
+        }
         // With a button held this is a click (handled by the UI) or a drag (handled by the drag
         // logic), not a hover. The hot zone's margins react to clicks and drags but only the notch
         // itself opens on hover.
         guard !context.isButtonPressed, hoverTarget(context).containsInclusive(point) else {
             stopHoverDwell(&effects)
-            return
+            return nil
         }
 
         // Real rest check: the dwell restarts whenever the pointer moves more than `restTolerance`,
@@ -251,6 +318,71 @@ struct NotchPointerMachine {
         if deadlines[.hoverOpen] == nil, let anchor = restAnchor {
             schedule(.hoverOpen, at: anchor.time + configuration.hoverDwell, &effects)
         }
+        return nil
+    }
+
+    /// Hover-exit never closes while the view model wants the notch kept open or it is pinned.
+    private func keepsOpen(_ context: Context) -> Bool {
+        context.shouldStayOpen || context.isPinned
+    }
+
+    /// A closed shape that grows under a stationary pointer (a reply drop sliding out below the
+    /// camera, activity ears appearing) must not hover-open the notch: the pointer did not come to the
+    /// notch, the notch came to the pointer. Hover stays off until the pointer leaves the hot zone
+    /// once; clicks still work. The hover grow is the machine's own answer to the pointer, so growth
+    /// no larger than it never suppresses.
+    private mutating func suppressHoverIfShapeGrewUnderPointer(_ context: Context, closedSize: CGSize) {
+        guard let previousSize = lastClosedShapeSize, let previousPoint = lastClosedPoint,
+              previousPoint.distance(to: context.point) <= configuration.restTolerance
+        else { return }
+        let hoverGrowth = ClosedNotchLayout.hoverGrowth
+        let grewBeyondHover = closedSize.width - previousSize.width > hoverGrowth.width + 0.5
+            || closedSize.height - previousSize.height > hoverGrowth.height + 0.5
+        guard grewBeyondHover else { return }
+        let previousTarget = context.geometry.hoverTarget(shapeSize: previousSize)
+        let newTarget = context.geometry.hoverTarget(shapeSize: closedSize)
+        if !previousTarget.containsInclusive(context.point), newTarget.containsInclusive(context.point) {
+            hoverSuppressedUntilExit = true
+        }
+    }
+
+    /// Soft focus (SPEC-v2 §6.2): a pointer resting on the open, unengaged panel takes the keyboard
+    /// after `softFocusDwell`; leaving the shape (plus slack) while soft-focused hands it back.
+    private mutating func softFocusAction(_ context: Context, overShape: Bool, _ effects: inout [Effect]) -> Effect? {
+        guard context.softFocusEnabled, !context.isEngaged else {
+            stopSoftDwell(&effects)
+            return nil
+        }
+        if context.isSoftFocused {
+            stopSoftDwell(&effects)
+            let stillOver = NotchHitTest.shapeContains(
+                context.point,
+                rect: currentShapeRect(context),
+                topRadius: NotchMetrics.openTopRadius,
+                bottomRadius: NotchMetrics.openBottomRadius,
+                tolerance: configuration.softFocusReleaseSlack
+            )
+            return stillOver ? nil : .releaseSoftFocus
+        }
+        // Key for another reason (the file picker just closed, a click engaged and resigned…).
+        guard !context.isPanelKey, overShape, !context.isButtonPressed else {
+            stopSoftDwell(&effects)
+            return nil
+        }
+        if let anchor = softRestAnchor, anchor.point.distance(to: context.point) <= configuration.restTolerance {
+            // Still resting; the pending timer (or the one scheduled below) checks the dwell.
+        } else {
+            softRestAnchor = (context.point, context.now)
+        }
+        if deadlines[.softFocus] == nil, let anchor = softRestAnchor {
+            schedule(.softFocus, at: anchor.time + configuration.softFocusDwell, &effects)
+        }
+        return nil
+    }
+
+    private mutating func stopSoftDwell(_ effects: inout [Effect]) {
+        softRestAnchor = nil
+        cancel(.softFocus, &effects)
     }
 
     private mutating func stopHoverDwell(_ effects: inout [Effect]) {
@@ -263,8 +395,9 @@ struct NotchPointerMachine {
         case .elsewhere:
             // A click in another app (or on the menu bar) dismisses the notch. While a menu, the
             // file picker or another system sheet the view model reports is up, the click belongs
-            // to that UI instead.
-            guard context.isOpen, !context.isMenuPresented else { return nil }
+            // to that UI instead. A pinned notch stays: the click only moves the keyboard.
+            guard context.isOpen, !context.isMenuPresented, !context.isPinned else { return nil }
+            lastCloseReason = .outsideClick
             return .close
         case .otherOttoWindow:
             return nil
@@ -295,8 +428,7 @@ struct NotchPointerMachine {
     private mutating func timerFired(_ timer: Timer, _ context: Context, _ effects: inout [Effect]) -> Effect? {
         guard let deadline = deadlines[timer] else {
             // Cancelled after the task was already on its way.
-            updatePointer(context, &effects)
-            return nil
+            return updatePointer(context, &effects)
         }
         // Timers may fire a hair early relative to our clock; wait out the remainder.
         guard context.now + 0.001 >= deadline else {
@@ -309,13 +441,13 @@ struct NotchPointerMachine {
         case .hoverOpen:
             return hoverDwellElapsed(context, &effects)
         case .exitClose:
-            let keep = context.shouldStayOpen
+            let keep = keepsOpen(context)
                 || keepOpenZone(context).containsInclusive(context.point)
                 || (isDragOpenActive && closedHotZone(context).containsInclusive(context.point))
             guard context.isOpen, !keep else {
-                updatePointer(context, &effects)
-                return nil
+                return updatePointer(context, &effects)
             }
+            lastCloseReason = .pointerExit
             return .close
         case .dropSettle:
             // After a drag-open ends: if nothing was dropped (a drop engages the view model or starts
@@ -323,26 +455,62 @@ struct NotchPointerMachine {
             // attachment limit), which must stay visible. The regular exit-close takes over then.
             let foldUp = context.isOpen
                 && context.openReason == .drag
-                && !context.shouldStayOpen
+                && !keepsOpen(context)
                 && !context.hasTransientError
             guard foldUp else {
-                updatePointer(context, &effects)
-                return nil
+                return updatePointer(context, &effects)
             }
+            lastCloseReason = .programmatic
             return .close
+        case .softFocus:
+            return softFocusDwellElapsed(context, &effects)
         }
+    }
+
+    private mutating func softFocusDwellElapsed(_ context: Context, _ effects: inout [Effect]) -> Effect? {
+        guard context.isOpen, context.softFocusEnabled, !context.isEngaged, !context.isSoftFocused,
+              !context.isPanelKey, !context.isButtonPressed, openShapeContains(context.point, context),
+              let anchor = softRestAnchor
+        else {
+            return updatePointer(context, &effects)
+        }
+        // Moved since the last event we saw: restart the dwell from here.
+        guard anchor.point.distance(to: context.point) <= configuration.restTolerance else {
+            softRestAnchor = (context.point, context.now)
+            schedule(.softFocus, at: context.now + configuration.softFocusDwell, &effects)
+            return nil
+        }
+        let restDeadline = anchor.time + configuration.softFocusDwell
+        guard context.now + 0.001 >= restDeadline else {
+            schedule(.softFocus, at: restDeadline, &effects)
+            return nil
+        }
+        // Someone is typing in their own app with the pointer parked here: wait until they pause.
+        let idle = context.secondsSinceLastKeyDown()
+        if idle < configuration.softFocusTypingQuiet {
+            let wait = max(configuration.softFocusTypingQuiet - idle, configuration.minimumRetry)
+            schedule(.softFocus, at: context.now + wait, &effects)
+            return nil
+        }
+        // A password field has the keyboard somewhere: never pull keystrokes into the composer.
+        if context.isSecureInputActive() {
+            schedule(.softFocus, at: context.now + configuration.softFocusSecureInputRetry, &effects)
+            return nil
+        }
+        softRestAnchor = nil
+        return .takeSoftFocus
     }
 
     private mutating func hoverDwellElapsed(_ context: Context, _ effects: inout [Effect]) -> Effect? {
         let point = context.point
         guard !context.isOpen,
+              context.hoverOpenEnabled,
               !hoverSuppressedUntilExit,
               !context.isButtonPressed,
               hoverTarget(context).containsInclusive(point),
               let anchor = restAnchor
         else {
-            updatePointer(context, &effects)
-            return nil
+            return updatePointer(context, &effects)
         }
         // The pointer moved since the last event we saw: restart the dwell from here.
         guard anchor.point.distance(to: point) <= configuration.restTolerance else {
@@ -372,16 +540,16 @@ struct NotchPointerMachine {
 
     // MARK: - Geometry
 
-    /// Size of the shape as the UI reports it, sanitized: a missing report falls back to sensible
-    /// bounds for the current presentation, and sizes never exceed the window.
+    /// Size of the shape as the UI reports it, sanitized: a missing report falls back to the largest
+    /// open shape, and sizes never exceed `openShapeLimit` (tall mode raises its height).
     func currentShapeSize(_ context: Context) -> CGSize {
         guard context.isOpen else { return closedShapeSize(context) }
+        let limit = context.openShapeLimit
         let reported = context.renderedShapeSize
         guard reported.width >= 1, reported.height >= 1 else {
-            return CGSize(width: NotchMetrics.openWidth, height: NotchMetrics.maxOpenHeight)
+            return CGSize(width: min(NotchMetrics.openWidth, limit.width), height: limit.height)
         }
-        let window = NotchMetrics.windowSize
-        return CGSize(width: min(reported.width, window.width), height: min(reported.height, window.height))
+        return CGSize(width: min(reported.width, limit.width), height: min(reported.height, limit.height))
     }
 
     /// The closed shape's size, clamped so a stale open-size report never inflates the hot zone.

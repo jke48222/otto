@@ -92,6 +92,98 @@ final class NotchGeometryTests: XCTestCase {
         XCTAssertEqual(geometry.hoverTarget(shapeSize: withEars).width, withEars.width)
     }
 
+    // MARK: - Tall mode
+
+    func testTallOpenHeightIsEightyPercentWithinBounds() {
+        func tall(screenHeight: CGFloat) -> CGFloat {
+            NotchGeometry(
+                screenFrame: CGRect(x: 0, y: 0, width: 1512, height: screenHeight),
+                hasPhysicalNotch: true,
+                notchRect: CGRect(x: 663.5, y: screenHeight - 32, width: 185, height: 32)
+            ).tallOpenHeight
+        }
+        XCTAssertEqual(tall(screenHeight: 982), 785, "80 % of a 14-inch screen, floored")
+        XCTAssertEqual(tall(screenHeight: 2000), 1600)
+        XCTAssertEqual(tall(screenHeight: 640), NotchMetrics.maxOpenHeight, "never less than the normal cap")
+        XCTAssertEqual(tall(screenHeight: 570), 546, "never closer than 24 pt to the bottom of the screen")
+        for height in stride(from: CGFloat(500), through: 2400, by: 37) {
+            let value = tall(screenHeight: height)
+            XCTAssertLessThanOrEqual(value, height - 24)
+            XCTAssertGreaterThanOrEqual(value, min(NotchMetrics.maxOpenHeight, height - 24))
+        }
+    }
+
+    func testWindowFrameForAnOpenHeightLimit() {
+        let geometry = NotchGeometry(
+            screenFrame: screen,
+            hasPhysicalNotch: true,
+            notchRect: CGRect(x: 663.5, y: 950, width: 185, height: 32)
+        )
+        XCTAssertEqual(geometry.windowFrame, geometry.windowFrame(openHeightLimit: NotchMetrics.maxOpenHeight),
+                       "the normal frame is the frame for the normal cap")
+        XCTAssertEqual(geometry.windowFrame.size, NotchMetrics.windowSize)
+
+        let tall = geometry.windowFrame(openHeightLimit: geometry.tallOpenHeight)
+        XCTAssertEqual(tall.height, geometry.tallOpenHeight + NotchMetrics.shadowMargin)
+        XCTAssertEqual(tall.width, NotchMetrics.windowSize.width, "tall mode only grows downward")
+        XCTAssertEqual(tall.maxY, screen.maxY, "top stays flush with the screen")
+        XCTAssertEqual(tall.midX, geometry.notchRect.midX)
+        XCTAssertGreaterThanOrEqual(tall.minY, screen.minY, "the tall window stays on the screen")
+    }
+
+    // MARK: - Closed shape bound
+
+    func testMaximumClosedShapeSizeCoversEveryClosedLayout() {
+        for notchWidth in [CGFloat(185), 190, 240, 300] {
+            let notch = CGSize(width: notchWidth, height: 32)
+            let geometry = NotchGeometry(
+                screenFrame: screen,
+                hasPhysicalNotch: true,
+                notchRect: CGRect(origin: CGPoint(x: 756 - notchWidth / 2, y: 950), size: notch)
+            )
+            let limit = geometry.maximumClosedShapeSize
+            XCTAssertEqual(limit.height, notch.height + 40)
+            XCTAssertEqual(limit.width, max(notchWidth + 68 + 24, max(notchWidth + 112, 360) + 24, 380 + 24))
+
+            let longText = String(repeating: "A long answer preview that runs on ", count: 6)
+            let ears = ClosedGlance(left: .orb(active: true), right: .unreadDot)
+            let dropped = ClosedGlance(left: .orb(active: true), right: .systemWait, drop: .systemWait(longText))
+            let layouts = [
+                ClosedNotchLayout.make(notchSize: notch, glance: ears, isHovering: true, isListening: false,
+                                       dropText: nil),
+                ClosedNotchLayout.make(notchSize: notch, glance: dropped, isHovering: true, isListening: false,
+                                       dropText: longText),
+                ClosedNotchLayout.make(notchSize: notch, glance: ears, isHovering: true, isListening: true,
+                                       dropText: nil),
+            ]
+            for layout in layouts {
+                XCTAssertLessThanOrEqual(layout.size.width, limit.width, "\(layout) fits \(limit) for a \(notchWidth) pt notch")
+                XCTAssertLessThanOrEqual(layout.size.height, limit.height, "\(layout) fits \(limit) for a \(notchWidth) pt notch")
+            }
+        }
+    }
+
+    func testMaximumClosedShapeSizeForTheDropAndThePill() {
+        let geometry = NotchGeometry(
+            screenFrame: screen,
+            hasPhysicalNotch: true,
+            notchRect: CGRect(x: 663.5, y: 950, width: 185, height: 32)
+        )
+        let limit = geometry.maximumClosedShapeSize
+        // The drop (glance.md §5.3): notch + 28 + 12 tall, at least 380 + 24 wide.
+        XCTAssertEqual(limit.height, 32 + ReplyPreviewMetrics.dropHeight + 12)
+        XCTAssertGreaterThanOrEqual(limit.width, ReplyPreviewMetrics.maxWidth + 24)
+        // The listening pill: max(notch + 112, 360) wide, notch + 26 tall.
+        XCTAssertGreaterThanOrEqual(limit.width, max(185 + 112, 360))
+        XCTAssertGreaterThanOrEqual(limit.height, 32 + ClosedNotchLayout.pillExtraHeight)
+
+        // The hot zone follows a full-size drop instead of clamping it away.
+        let drop = CGSize(width: 380, height: 32 + ReplyPreviewMetrics.dropHeight)
+        let zone = geometry.closedHotZone(shapeSize: CGSize(width: min(drop.width, limit.width),
+                                                            height: min(drop.height, limit.height)))
+        XCTAssertTrue(NotchHitTest.contains(zone, CGPoint(x: geometry.notchRect.midX, y: 982 - drop.height + 2)))
+    }
+
     // MARK: - Screen choice
 
     func testPrefersScreenWithCameraHousing() {
