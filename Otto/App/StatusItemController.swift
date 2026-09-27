@@ -2,7 +2,9 @@
 //  StatusItemController.swift
 //  Otto
 //
-//  Menu bar icon with quick actions. Visibility follows `settings.showMenuBarIcon`.
+//  Menu bar icon with quick actions. Visibility follows `settings.showMenuBarIcon`; the menu lists the
+//  notch's pages (Recent Conversations, and the Shelf while it holds something) and shows the live global
+//  shortcut next to "Open Otto".
 //
 
 import AppKit
@@ -11,8 +13,10 @@ import AppKit
 final class StatusItemController: NSObject, NSMenuDelegate {
     private let viewModel: NotchViewModel
     private let settings: AppSettings
-    private let menu = NSMenu()
+    /// The status item's menu (built once; items refresh each time it opens).
+    let menu = NSMenu()
     private let openItem = NSMenuItem()
+    private let shelfItem = NSMenuItem()
     private var statusItem: NSStatusItem?
     private var visibilityObservation: ObservationLoop<Bool>?
 
@@ -63,6 +67,15 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         newChatItem.target = self
         menu.addItem(newChatItem)
 
+        let recentsItem = NSMenuItem(title: "Recent Conversations…", action: #selector(openRecents(_:)), keyEquivalent: "")
+        recentsItem.target = self
+        menu.addItem(recentsItem)
+
+        shelfItem.title = "Shelf…"
+        shelfItem.action = #selector(openShelf(_:))
+        shelfItem.target = self
+        menu.addItem(shelfItem)
+
         menu.addItem(.separator())
 
         let settingsItem = NSMenuItem(title: "Settings…", action: #selector(openSettings(_:)), keyEquivalent: ",")
@@ -77,23 +90,34 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         quitItem.target = self
         menu.addItem(quitItem)
 
-        updateOpenItemShortcut()
+        refreshItems()
     }
 
-    /// Shows ⌥Space next to "Open Otto" only while the global shortcut is enabled. The Carbon hot key
-    /// swallows the keystroke system-wide, so this key equivalent is informational and never double-fires.
-    private func updateOpenItemShortcut() {
-        if settings.hotKeyEnabled {
-            openItem.keyEquivalent = " "
-            openItem.keyEquivalentModifierMask = .option
+    /// Shows the global shortcut (whatever combo is set) next to "Open Otto" only while it is enabled. The Carbon
+    /// hot key swallows the keystroke system-wide, so this key equivalent is informational and never double-fires.
+    /// A combo a menu can't display (no printable key) shows nothing.
+    func updateOpenItemShortcut() {
+        if settings.hotKeyEnabled, let equivalent = settings.shortcuts.hotKey.menuKeyEquivalent {
+            openItem.keyEquivalent = equivalent.key
+            openItem.keyEquivalentModifierMask = equivalent.modifiers
         } else {
             openItem.keyEquivalent = ""
             openItem.keyEquivalentModifierMask = []
         }
     }
 
-    func menuNeedsUpdate(_ menu: NSMenu) {
+    /// "Shelf…" is listed only while the Shelf is on and holds something.
+    private func updateShelfItem() {
+        shelfItem.isHidden = !settings.shelf.enabled || viewModel.shelf.store.items.isEmpty
+    }
+
+    private func refreshItems() {
         updateOpenItemShortcut()
+        updateShelfItem()
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        refreshItems()
     }
 
     @objc private func openOtto(_ sender: Any?) {
@@ -103,6 +127,20 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     @objc private func newChat(_ sender: Any?) {
         viewModel.newChat()
         viewModel.open(reason: .click, focus: true)
+    }
+
+    @objc private func openRecents(_ sender: Any?) {
+        open(route: .history)
+    }
+
+    @objc private func openShelf(_ sender: Any?) {
+        open(route: .shelf)
+    }
+
+    /// Opens the notch focused on `route` (a page that is unavailable right now leaves it on Chat).
+    private func open(route: NotchRoute) {
+        viewModel.open(reason: .click, focus: true)
+        viewModel.navigate(to: route)
     }
 
     @objc private func openSettings(_ sender: Any?) {
