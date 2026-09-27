@@ -3,10 +3,12 @@
 //  Otto
 //
 //  Borderless, non-activating panel that floats above the menu bar. It can become key (so the
-//  composer receives typing) without activating Otto, which leaves the user's app frontmost.
+//  composer receives typing) without activating Otto, which leaves the user's app frontmost. It also
+//  answers the Quick Look panel's search for a controller, so Shelf previews open above the notch.
 //
 
 import AppKit
+import QuickLookUI
 
 final class NotchPanel: NSPanel {
     /// Where the notch floats: above the menu bar (and the menu bar's own windows).
@@ -42,6 +44,10 @@ final class NotchPanel: NSPanel {
         title = "Otto"
     }
 
+    /// The Shelf's preview controller (`vm.shelf.quickLook`), set by the window controller. While the
+    /// notch panel is key, the Quick Look panel finds it through this responder.
+    weak var quickLookController: ShelfQuickLookController?
+
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
 
@@ -49,5 +55,23 @@ final class NotchPanel: NSPanel {
     /// top edge of the screen.
     override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
         frameRect
+    }
+
+    // MARK: - Quick Look
+
+    override func acceptsPreviewPanelControl(_ panel: QLPreviewPanel!) -> Bool {
+        quickLookController != nil
+    }
+
+    /// The controller becomes the preview's data source and delegate and lifts it to
+    /// `auxiliaryWindowLevel`, one above the notch.
+    override func beginPreviewPanelControl(_ panel: QLPreviewPanel!) {
+        guard let panel else { return }
+        quickLookController?.beginControl(panel)
+    }
+
+    override func endPreviewPanelControl(_ panel: QLPreviewPanel!) {
+        guard let panel else { return }
+        quickLookController?.endControl(panel)
     }
 }
