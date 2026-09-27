@@ -1,19 +1,30 @@
-# Otto — the assistant notch (build spec)
+# Otto: architecture and design spec
 
-Otto is a native macOS app (Swift 5 language mode, SwiftUI + AppKit, macOS 14+) that **hides in the
-MacBook notch and shows up when you need it**. Hovering the notch expands it (spring animation) into a
-dark, finely textured "clay/foam" panel with context chips (files, images, the current browser tab) and a
-composer ("Hi otto|" + `+` + white ↑ send button). Messages go to Claude via the Anthropic Messages API
-(raw HTTPS + SSE — there is no official Swift SDK). Replies stream into the expanded notch.
+This is the architecture and design specification for contributors. It describes how Otto is put
+together: every module's interface and behavior, the request and streaming contract with the Anthropic
+API, the notch window and pointer logic, and the visual language. For what Otto is and how to use it,
+start with the [README](../README.md); for setup, workflow and the PR checklist, see
+[CONTRIBUTING.md](../CONTRIBUTING.md).
 
-Visual direction: near-black textured surface, soft raised
-chips, off-white circular send button, round ⋮ button top-right, big rounded bottom corners.
+Otto is a native macOS app (Swift 5 language mode, SwiftUI + AppKit, macOS 14+): the AI assistant that
+lives in your MacBook's notch. Hovering the notch expands it (spring animation) into a dark, finely
+textured "clay/foam" panel with context chips (files, images, the current browser tab) and a composer
+(text field + `+` + white ↑ send button). Messages go to Claude via the Anthropic Messages API (raw
+HTTPS + SSE; there is no official Swift SDK). Replies stream into the expanded notch.
 
-Project: `/Users/jalenedusei/notch`, generated with **xcodegen** from `project.yml` (already written).
-Sources live in `Otto/**` (auto-included by folder), tests in `OttoTests/**`.
-Build: `xcodegen generate && xcodebuild -project Otto.xcodeproj -scheme Otto -configuration Debug -derivedDataPath build build`.
-Shared contract types are in `Otto/Chat/Models.swift` (**already written — do not modify it**; if you
-believe it needs a change, work around it and mention it in your final report).
+Visual direction: near-black textured surface, soft raised chips, off-white circular send button, round
+⋮ button top-right, big rounded bottom corners.
+
+Project layout: the Xcode project is generated with **xcodegen** from `project.yml` (`Otto.xcodeproj` is
+not checked in). Sources live in `Otto/**` (auto-included by folder), tests in `OttoTests/**`.
+Build: `scripts/build.sh`, or `xcodegen generate && xcodebuild -project Otto.xcodeproj -scheme Otto -configuration Debug -derivedDataPath build build`.
+Test: `xcodebuild -project Otto.xcodeproj -scheme Otto -configuration Debug -derivedDataPath build test`.
+Shared contract types are in `Otto/Chat/Models.swift`. Many modules depend on them, so change them
+deliberately and update every caller and this spec in the same PR.
+
+The "owner" labels on the module sections below record how the original build was split into modules;
+treat them as module boundaries. Keep a change inside the module it belongs to where you can, and
+update the matching section here when you change a module's interface or behavior.
 
 Global conventions
 - Swift 5 mode, `SWIFT_STRICT_CONCURRENCY=minimal`. Mark UI/state classes `@MainActor`. Use `@Observable`
@@ -23,14 +34,14 @@ Global conventions
 - No force-unwraps on anything that can fail at runtime. No `print` spam (use `os.Logger`, subsystem
   `com.jalenedusei.otto`).
 - Every file begins with the standard header comment (`//  FileName.swift` / `//  Otto`).
-- Keep code idiomatic, commented where non-obvious, no placeholder/TODO stubs — everything must work.
-- Only create/edit the files your module owns (listed below). Never edit another module's files.
+- Keep code idiomatic, commented where non-obvious, no placeholder/TODO stubs; everything must work.
+- Respect module boundaries: interfaces between modules are the ones listed below.
 
 ---------------------------------------------------------------------------------------------------
 
 ## Module ownership & interfaces
 
-### 1. API module (owner: `api` agent) — `Otto/API/*`, `OttoTests/API*Tests.swift`
+### 1. API module (owner: `api` agent): `Otto/API/*`, `OttoTests/API*Tests.swift`
 
 Files: `AnthropicClient.swift`, `SSEParser.swift`, `StreamAccumulator.swift`, `MockLLMClient.swift`,
 `KeychainStore.swift`.
@@ -105,17 +116,17 @@ whole body, decode `{"type":"error","error":{"type":..,"message":..}}` and map: 
 been yielded**. `URLRequest.timeoutInterval = 300`. The returned `AsyncThrowingStream` must cancel its
 internal Task in `onTermination`.
 
-SSE: IMPORTANT — `AsyncBytes.lines` skips empty lines, so do **not** rely on blank-line dispatch. Every
+SSE: IMPORTANT: `AsyncBytes.lines` skips empty lines, so do **not** rely on blank-line dispatch. Every
 Anthropic event carries single-line JSON in a `data:` line with its own `"type"`; parse each `data:` line
 independently. Ignore `event:` lines, comments (`:`), and `ping` events.
 
 Event → accumulator behaviour (`content_block` objects are kept as JSONValue objects indexed by `index`):
 - `message_start`: remember `message.model`, `message.usage`; emit `.messageStart(model:)`.
 - `content_block_start`: store `content_block` verbatim at `index`. Then by `content_block.type`:
-  `thinking` → emit `.thinkingStarted`; `server_tool_use` → remember name/id (emit nothing yet — input
+  `thinking` → emit `.thinkingStarted`; `server_tool_use` → remember name/id (emit nothing yet; input
   arrives via deltas); `web_search_tool_result` → emit `.toolActivity(id: tool_use_id, isDone: true, …)`
   (reuse the kind/label recorded when the tool_use finished) and `.sources` for each `web_search_result`
-  item in `content` (title, url) when `content` is an array (an object means an error — still mark done);
+  item in `content` (title, url) when `content` is an array (an object means an error; still mark done);
   `web_fetch_tool_result` → mark done and emit a source for `content.url` with title `content.content.title`
   if present, else the URL host; `fallback` → emit `.fallback(fromModel: from.model, toModel: to.model)`;
   `text` with a non-empty initial `text` → emit `.textDelta`.
@@ -135,7 +146,7 @@ Event → accumulator behaviour (`content_block` objects are kept as JSONValue o
 - If the byte stream ends without `message_stop`, throw `.network("The connection closed before the reply finished.")`.
 `result().content` = blocks in index order (drop nil gaps).
 
-MockLLMClient (used by `--demo` and snapshot/tests): emits a realistic script — `messageStart(model:
+MockLLMClient (used by `--demo` and snapshot/tests): emits a realistic script: `messageStart(model:
 "claude-opus-5 (demo)")`, `thinkingStarted`, a few `thinkingDelta`s, a web-search `toolActivity`
 (start → done) + two `sources`, then a Markdown answer streamed word-by-word (25–45 ms per chunk ×
 latencyScale) that references the last user message text and the number of attachments (count `image`/
@@ -149,7 +160,7 @@ model (opus5 has thinking/effort/fallbacks, haiku45 has none of them and only we
 logic, SSE parsing of a recorded stream (text + thinking + signature + server tool + citations +
 message_delta), partial-JSON tool input assembly, `error` event → throws, fallback block event.
 
-### 2. Context module (owner: `context` agent) — `Otto/Context/*`, `OttoTests/Context*Tests.swift`
+### 2. Context module (owner: `context` agent): `Otto/Context/*`, `OttoTests/Context*Tests.swift`
 
 Files: `AttachmentLoader.swift`, `AttachmentBudget.swift`, `HTMLText.swift`, `BrowserContext.swift`,
 `ScreenCapture.swift`.
@@ -244,7 +255,7 @@ enum ScreenCapture {
 Tests: text file load (utf8 + badge), binary rejection, empty file, image downscale keeps limit + media
 type, pasteboard text short/long rules, web page attachment content block shape.
 
-### 3. State module (owner: `state` agent) — `Otto/Chat/ChatSession.swift`, `Otto/Chat/SystemPrompt.swift`, `Otto/Notch/NotchViewModel.swift`, `Otto/App/AppSettings.swift`, `OttoTests/ChatSessionTests.swift`
+### 3. State module (owner: `state` agent): `Otto/Chat/ChatSession.swift`, `Otto/Chat/SystemPrompt.swift`, `Otto/Notch/NotchViewModel.swift`, `Otto/App/AppSettings.swift`, `OttoTests/ChatSessionTests.swift`
 
 ```swift
 @MainActor @Observable final class AppSettings {
@@ -270,12 +281,12 @@ Persist every property except apiKey in UserDefaults (keys prefixed `otto.`) via
 ```swift
 enum SystemPrompt { static func make(settings: AppSettings, now: Date = Date()) -> String }
 ```
-System prompt content (keep it stable — date only, no time — for prompt caching):
+System prompt content (keep it stable (date only, no time) for prompt caching):
 "You are Otto, a friendly, sharp assistant that lives in the notch of the user's Mac. The user summons
 you for quick help while they work." Then guidance: lead with the answer; be concise (short paragraphs or
 tight lists, no preamble or sign-offs; expand only when the task needs it); the panel is narrow (~540 pt)
-so avoid wide tables and very long lines; use Markdown sparingly (bold, lists, fenced code with a
-language); a `<browser_tab>` block is the page the user is currently viewing — use web fetch to read it
+so avoid wide tables and long lines; use Markdown sparingly (bold, lists, fenced code with a
+language); a `<browser_tab>` block is the page the user is currently viewing; use web fetch to read it
 when the question depends on its contents; attached documents/images were dropped into the notch by the
 user; when you use web results, say so briefly. "Today's date is <EEEE, MMMM d, yyyy>." If custom
 instructions are non-empty, append "\n\n<user_instructions>\n…\n</user_instructions>".
@@ -285,8 +296,8 @@ instructions are non-empty, append "\n\n<user_instructions>\n…\n</user_instruc
     init(settings: AppSettings, makeClient: @escaping @MainActor () throws -> LLMClient)
     private(set) var messages: [ChatMessage]
     private(set) var isStreaming: Bool
-    private(set) var messageCount: Int              // cheap summaries, updated when turns start/settle —
-    private(set) var lastMessageState: MessageState? //   never per delta — so views needn't observe `messages`
+    private(set) var messageCount: Int              // cheap summaries, updated when turns start/settle ; 
+    private(set) var lastMessageState: MessageState? //   never per delta; so views needn't observe `messages`
     private(set) var hasCopyableReply: Bool
     var lastAssistantText: String? { get }          // text of last complete assistant message
     var onReplyFinished: (() -> Void)?              // called on the main actor when a turn ends (any state)
@@ -325,7 +336,7 @@ earlier user turns holding a PDF over the current model's page limit send notes 
 Assistant entries use `sanitizedAssistantContent(apiContent)`: if a `fallback` block exists,
 drop every non-`text` block before the last `fallback` block; drop all `fallback` blocks; drop empty
 `text` blocks. Assistant turns whose sanitized content is empty are skipped. A cancelled assistant turn is
-kept in context only if it has non-empty text — as a single text block with its visible text. Consecutive
+kept in context only if it has non-empty text, as a single text block with its visible text. Consecutive
 same-role turns are allowed (the API merges them).
 retry(messageID:): only when not streaming; removes that assistant message, re-includes its user message,
 appends a fresh streaming assistant message and re-runs.
@@ -342,9 +353,9 @@ appends a fresh streaming assistant message and re-runs.
     private(set) var presentation: Presentation      // .closed initially
     private(set) var openReason: OpenReason?
     var isOpen: Bool { get }
-    /// The panel is key and the user is interacting with the keyboard — hover-exit must not close it.
+    /// The panel is key and the user is interacting with the keyboard; hover-exit must not close it.
     var isEngaged: Bool
-    /// Pointer is over the closed notch (window controller sets it) — UI shows a subtle grow.
+    /// Pointer is over the closed notch (window controller sets it); UI shows a subtle grow.
     var isHovering: Bool
     var composerText: String
     private(set) var attachments: [Attachment]
@@ -354,7 +365,7 @@ appends a fresh streaming assistant message and re-runs.
     var transientError: String?                      // auto-clears after 4 s
     private(set) var focusRequest: Int               // increments when the composer should take focus
     var hasUnreadReply: Bool
-    var isMenuPresented: Bool                        // a +/⋮ menu is open — do not auto-close
+    var isMenuPresented: Bool                        // a +/⋮ menu is open; do not auto-close
     /// Hardware (or virtual) notch size; set by the window controller.
     var closedNotchSize: CGSize                      // default NotchMetrics.virtualNotchSize
     var hasPhysicalNotch: Bool
@@ -411,12 +422,12 @@ Tests (`OttoTests/ChatSessionTests.swift`, using MockLLMClient(latencyScale: 0) 
 send builds the right user blocks; stream folds into the assistant message; refusal excludes both turns
 from history; pause_turn resumes with the partial assistant content; fallback sanitization; cancel.
 
-### 4. Shell module (owner: `shell` agent) — `Otto/App/*` (except AppSettings.swift), `Otto/Notch/NotchPanel.swift`, `Otto/Notch/NotchWindowController.swift`, `Otto/Notch/NotchGeometry.swift`, `Otto/Assets.xcassets`, `scripts/*`, `README.md`
+### 4. Shell module (owner: `shell` agent): `Otto/App/*` (except AppSettings.swift), `Otto/Notch/NotchPanel.swift`, `Otto/Notch/NotchWindowController.swift`, `Otto/Notch/NotchGeometry.swift`, `Otto/Assets.xcassets`, `scripts/*`, `README.md`
 
 Files: `App/main.swift`, `App/AppDelegate.swift`, `App/LaunchOptions.swift`, `App/HotKeyManager.swift`,
 `App/StatusItemController.swift`, `App/SettingsWindowController.swift`, `Notch/NotchPanel.swift`,
 `Notch/NotchWindowController.swift`, `Notch/NotchGeometry.swift`, `Assets.xcassets/**` (AppIcon generated
-by `scripts/make_icon.swift` — render a 1024 px icon: near-black squircle, subtle grain, a soft charcoal
+by `scripts/make_icon.swift`; render a 1024 px icon: near-black squircle, subtle grain, a soft charcoal
 notch silhouette and a small warm-white orb; produce every macOS size + Contents.json), `scripts/build.sh`,
 `scripts/run.sh` (build then `open` the app; pass-through args e.g. `--demo`), `scripts/snapshot.sh`
 (build then run the binary with `--snapshot docs/snapshots`), `README.md` (what it is, requirements,
@@ -432,9 +443,9 @@ enum LaunchOptions {
     static var isRunningTests: Bool { get }      // env XCTestConfigurationFilePath != nil
 }
 ```
-`main.swift`: plain AppKit entry — `NSApplication.shared`, set `AppDelegate`, `setActivationPolicy(.accessory)`, `run()`.
+`main.swift`: plain AppKit entry; `NSApplication.shared`, set `AppDelegate`, `setActivationPolicy(.accessory)`, `run()`.
 
-AppDelegate: if `isRunningTests` → do nothing UI-related. If `snapshotDirectory` → `SnapshotRenderer.renderAll(to:)` (owned by the ui agent, `@MainActor static func renderAll(to directory: URL) async`) then `exit(0)`. Otherwise build `AppSettings.shared`, `ChatSession(settings:makeClient:)` (demo → `MockLLMClient()`; else `AnthropicClient(apiKey:)` using `settings.resolvedAPIKey`, throwing `LLMError.missingAPIKey` when nil), `NotchViewModel`, `NotchWindowController`, `StatusItemController`, `HotKeyManager` (⌥Space toggles the notch with focus; re-register when `settings.hotKeyEnabled` changes — use `withObservationTracking` re-armed on change), `SettingsWindowController`. `--open` → `vm.open(reason: .programmatic, focus: true)` shortly after launch. If there is no API key and not demo, open Settings on first launch (UserDefaults flag `otto.didShowOnboarding`).
+AppDelegate: if `isRunningTests` → do nothing UI-related. If `snapshotDirectory` → `SnapshotRenderer.renderAll(to:)` (owned by the ui agent, `@MainActor static func renderAll(to directory: URL) async`) then `exit(0)`. Otherwise build `AppSettings.shared`, `ChatSession(settings:makeClient:)` (demo → `MockLLMClient()`; else `AnthropicClient(apiKey:)` using `settings.resolvedAPIKey`, throwing `LLMError.missingAPIKey` when nil), `NotchViewModel`, `NotchWindowController`, `StatusItemController`, `HotKeyManager` (⌥Space toggles the notch with focus; re-register when `settings.hotKeyEnabled` changes; use `withObservationTracking` re-armed on change), `SettingsWindowController`. `--open` → `vm.open(reason: .programmatic, focus: true)` shortly after launch. If there is no API key and not demo, open Settings on first launch (UserDefaults flag `otto.didShowOnboarding`).
 
 ```swift
 struct NotchGeometry: Equatable {
@@ -475,7 +486,7 @@ Pointer logic (NSEvent global + local monitors for `.mouseMoved, .leftMouseDragg
 - `shapeRect` (global) = rect of width/height `vm.renderedShapeSize`, top-centered at (notchRect.midX,
   screenFrame.maxY). Hot zone when closed = `notchRect.insetBy(dx: -8, dy: 0)` extended 6 pt downward
   (union with shapeRect).
-- `panel.ignoresMouseEvents = !shapeRect(or hot zone when closed).contains(p)` — updated on every event, so
+- `panel.ignoresMouseEvents = !shapeRect(or hot zone when closed).contains(p)`; updated on every event, so
   clicks outside the drawn shape always pass through to apps / menu bar underneath.
 - Closed: pointer in hot zone → `vm.isHovering = true`; open with `.hover` (no focus) only after the pointer
   has *rested* (moved ≤ 3 pt) for 90 ms over the notch itself (`NotchGeometry.hoverTarget`). Left →
@@ -511,7 +522,7 @@ SettingsWindowController: `show()` creates (once) an `NSWindow` (titled, closabl
 Settings") hosting `SettingsView(settings:)` (ui agent), centers it, `NSApp.activate(ignoringOtherApps: true)`,
 `makeKeyAndOrderFront`. `isReleasedWhenClosed = false`.
 
-### 5. UI module (owner: `ui` agent) — `Otto/UI/*`, `Otto/Debug/SnapshotRenderer.swift`
+### 5. UI module (owner: `ui` agent): `Otto/UI/*`, `Otto/Debug/SnapshotRenderer.swift`
 
 Files: `Theme.swift` (colors, fonts, `NoiseTexture`, `ClaySurface`/`.clay(cornerRadius:)` modifier,
 `OttoOrb`), `NotchShape.swift`, `NotchRootView.swift`, `NotchHeaderView.swift`, `ContextChipsView.swift`
@@ -536,7 +547,7 @@ Look & feel:
   "Otto" in `.system(design: .serif)` semibold 15.
 - Send button: 30 pt circle filled warm off-white `#ECEAE6` with a black `arrow.up` (semibold 14);
   disabled → 35 % opacity; while streaming becomes a `stop.fill` button (same circle).
-- `OttoOrb(size:, isActive:)`: small sphere — radial gradient warm white `#F4F1EA` → `#8C8A86`, soft
+- `OttoOrb(size:, isActive:)`: small sphere; radial gradient warm white `#F4F1EA` → `#8C8A86`, soft
   glow; when active it breathes (scale/opacity pulse).
 
 NotchShape (`Shape`, animatable over topRadius & bottomRadius): top edge spans the full width; top
@@ -551,8 +562,8 @@ NotchRootView layout: the view fills the fixed window; the notch shape is pinned
   `hasUnreadReply`. Tapping the closed shape → `vm.open(reason: .click, focus: true)`.
 - Open: width `NotchMetrics.openWidth`, height = content height (≤ `NotchMetrics.maxOpenHeight`), radii
   `openTop/BottomRadius`. Content (padding 16 horizontal, 14 bottom):
-  1. Header row, height = `vm.closedNotchSize.height` (sits beside the camera): left — `OttoOrb` +
-     "Otto" wordmark + model short name in tertiary text; right — round ⋮ clay button (30 pt) with a
+  1. Header row, height = `vm.closedNotchSize.height` (sits beside the camera): left; `OttoOrb` +
+     "Otto" wordmark + model short name in tertiary text; right; round ⋮ clay button (30 pt) with a
      `Menu`: New Chat (⌘N), Copy Last Response, Settings… (⌘,), Quit Otto. Keep the center
      (`closedNotchSize.width + 20`) empty.
   2. Conversation (only when `chat.messages` non-empty): `ScrollView` with `ScrollViewReader`, max
@@ -561,8 +572,8 @@ NotchRootView layout: the view fills the fixed window; the notch shape is pinned
      2 rows then scroll. Chip = clay capsule (height 30, corner 11): leading icon (browser app icon via
      `NSWorkspace.shared.urlForApplication(withBundleIdentifier:)` + `icon(forFile:)`; image thumbnail
      18×18 r4; otherwise a tiny white badge with dark text like "TXT"), name (13 pt, max ~170 pt,
-     truncation `.middle`), hover-revealed ✕ (always visible for the most recently added chip, like the
-     reference). Suggested tab chip: dashed 1 px stroke, 55 % opacity, leading "+", click → accept, ✕ →
+     truncation `.middle`), hover-revealed remove button (×) (always visible for the most recently added chip, like the
+     reference). Suggested tab chip: dashed 1 px stroke, 55 % opacity, leading "+", click → accept, the remove button →
      dismiss. Pending loads: shimmering placeholder chip.
   4. Composer well (clay, corner 20, min height 50): multi-line `TextField("Ask Otto anything…", text:,
      axis: .vertical)`, `.textFieldStyle(.plain)`, 15 pt, lineLimit 1...6, `.focused` bound to a
