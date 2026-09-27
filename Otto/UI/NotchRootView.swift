@@ -2,76 +2,77 @@
 //  NotchRootView.swift
 //  Otto
 //
-//  Root of the notch window. Draws the notch shape top-centred in the fixed-size window and
-//  morphs it between the closed silhouette (hidden inside the camera housing, optionally with
-//  activity "ears") and the expanded clay panel.
+//  Root of the notch window. Draws the notch shape top-centred in the fixed-size window and morphs it
+//  between the closed notch (ClosedNotchView: pure black, sized by the view model's ClosedNotchLayout)
+//  and the expanded clay panel (NotchOpenContent, up to the view model's open height limit). It also
+//  routes drops over the shape through NotchDropDelegate, tracks open menus so an outside click can't
+//  close the notch under one, and reports the rendered shape size the window controller hit-tests.
 //
 
 import AppKit
 import SwiftUI
-import UniformTypeIdentifiers
 
 struct NotchRootView: View {
     @Bindable var viewModel: NotchViewModel
 
-    /// Menus currently tracking (⋮ / + / context menus) — keeps the notch open while shown.
+    /// Menus currently tracking (⋮ / + / model / context menus) — keeps the notch open while shown.
     @State private var trackingMenus: Set<ObjectIdentifier> = []
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// Subtle grow of the closed notch while the pointer rests on it.
-    static let hoverGrowth = CGSize(width: 8, height: 3)
-
-    private static let dropTypes: [UTType] = [.fileURL, .image, .url, .plainText]
+    static let hoverGrowth = ClosedNotchLayout.hoverGrowth
 
     init(viewModel: NotchViewModel) {
         self.viewModel = viewModel
     }
 
-    private var closedShapeSize: CGSize {
-        var size = viewModel.closedNotchSize
-        if viewModel.showsClosedActivity {
-            size.width += NotchMetrics.activityEarWidth * 2
-        }
-        if viewModel.isHovering {
-            size.width += Self.hoverGrowth.width
-            size.height += Self.hoverGrowth.height
-        }
-        return size
-    }
-
     /// Structural changes that resize the open panel and deserve a spring (streamed text does not).
     /// Only O(1) reads of `chat.messages` (count, last state), so re-evaluating it per delta is cheap.
     private var contentSignature: NotchContentSignature {
-        NotchContentSignature(
+        let glance = viewModel.settings.glance
+        let hasMedia = glance.nowPlayingEnabled && viewModel.nowPlaying.item != nil
+        let hasEvent = glance.calendarChipEnabled && viewModel.calendar.next != nil
+        let rowHeight = viewModel.route == .chat ? GlanceRow.height(hasMedia: hasMedia, hasEvent: hasEvent) : 0
+        let suggestions = viewModel.suggestions
+        return NotchContentSignature(
             messageCount: viewModel.chat.messageCount,
             lastMessageState: viewModel.chat.lastMessageState,
             attachmentIDs: viewModel.attachments.map(\.id),
             suggestionID: viewModel.suggestedTab?.id,
             pendingLoads: viewModel.pendingAttachmentLoads,
             hasError: viewModel.transientError != nil,
-            isDropTargeted: viewModel.isDropTargeted
+            isDropTargeted: viewModel.isDropTargeted,
+            route: viewModel.route,
+            overlay: viewModel.overlay,
+            promptID: viewModel.currentPrompt?.id,
+            glanceRowHeightBucket: NotchLayout.glanceRowHeightBucket(rowHeight),
+            continuationID: viewModel.chat.messageCount == 0 ? viewModel.history.continuation?.id : nil,
+            isEditing: viewModel.isEditing,
+            hasNotice: viewModel.transientNotice != nil,
+            isTallMode: viewModel.isTallMode,
+            voicePhase: viewModel.voice.phase,
+            dropZone: viewModel.dropSession?.zone,
+            insertActivity: viewModel.inserter.activity,
+            suggestionIDs: [suggestions.selection?.id, suggestions.window?.id].compactMap { $0 }
         )
     }
 
     var body: some View {
         let isOpen = viewModel.isOpen
-        let closedSize = closedShapeSize
+        let glance = viewModel.closedGlance
+        let closedLayout = viewModel.closedLayout
         let shape = NotchShape(
             topRadius: isOpen ? NotchMetrics.openTopRadius : NotchMetrics.closedTopRadius,
-            bottomRadius: isOpen ? NotchMetrics.openBottomRadius : NotchMetrics.closedBottomRadius
+            bottomRadius: isOpen ? NotchMetrics.openBottomRadius : closedLayout.bottomRadius
         )
 
-        NotchContainerLayout(isOpen: isOpen, closedSize: closedSize) {
+        NotchContainerLayout(isOpen: isOpen, closedSize: closedLayout.size, maxHeight: viewModel.openHeightLimit) {
             if isOpen {
                 NotchOpenContent(viewModel: viewModel)
                     .layoutValue(key: NotchLayerKey.self, value: .open)
-                    .transition(
-                        .asymmetric(
-                            insertion: .notchReveal.animation(Theme.Motion.open.delay(0.05)),
-                            removal: .notchConceal.animation(.easeOut(duration: 0.14))
-                        )
-                    )
+                    .transition(openTransition)
             } else {
-                ClosedNotchContent(viewModel: viewModel, size: closedSize)
+                ClosedNotchView(viewModel: viewModel, glance: glance, layout: closedLayout)
                     .layoutValue(key: NotchLayerKey.self, value: .closed)
                     .transition(.opacity.animation(.easeInOut(duration: 0.2)))
             }
@@ -81,13 +82,12 @@ struct NotchRootView: View {
             NotchBackground(isOpen: isOpen, shape: shape)
         }
         .contentShape(shape)
-        .onDrop(of: Self.dropTypes, isTargeted: $viewModel.isDropTargeted) { providers in
-            viewModel.handleDrop(providers)
-        }
+        .onDrop(of: NotchDropDelegate.acceptedTypes, delegate: NotchDropDelegate(viewModel: viewModel))
         .onGeometryChange(for: CGSize.self, of: { $0.size }, action: reportShapeSize)
         .animation(isOpen ? Theme.Motion.open : Theme.Motion.close, value: isOpen)
-        .animation(Theme.Motion.hover, value: closedSize)
+        .animation(closedAnimation(for: closedLayout, glance: glance), value: closedLayout)
         .animation(Theme.Motion.content, value: contentSignature)
+        .animation(Theme.Motion.content, value: viewModel.openHeightLimit)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .environment(\.colorScheme, .dark)
         .onReceive(NotificationCenter.default.publisher(for: NSMenu.didBeginTrackingNotification)) { note in
@@ -100,6 +100,24 @@ struct NotchRootView: View {
             trackingMenus.remove(ObjectIdentifier(menu))
             syncMenuPresentation()
         }
+    }
+
+    /// Open content un-blurs down out of the notch; Reduce Motion fades it (no blur, scale or offset).
+    private var openTransition: AnyTransition {
+        if reduceMotion { return .opacity.animation(.easeInOut(duration: 0.15)) }
+        return .asymmetric(
+            insertion: .notchReveal.animation(Theme.Motion.open.delay(0.05)),
+            removal: .notchConceal.animation(.easeOut(duration: 0.14))
+        )
+    }
+
+    /// The listening pill springs in; a drop line grows with the open spring (glance.md §1.3); the hover
+    /// grow keeps its own spring. Reduce Motion: 0.15 s fades.
+    private func closedAnimation(for layout: ClosedNotchLayout.Result, glance: ClosedGlance) -> Animation {
+        if reduceMotion { return .easeInOut(duration: 0.15) }
+        if layout.showsPill { return VoiceListeningPill.appearAnimation }
+        if glance.drop != nil { return Theme.Motion.open }
+        return Theme.Motion.hover
     }
 
     private func reportShapeSize(_ size: CGSize) {
@@ -115,6 +133,7 @@ struct NotchRootView: View {
     }
 }
 
+/// Structural facts about the open panel; when one changes, the panel's height springs (§4.3).
 private struct NotchContentSignature: Equatable {
     var messageCount: Int
     var lastMessageState: MessageState?
@@ -123,6 +142,18 @@ private struct NotchContentSignature: Equatable {
     var pendingLoads: Int
     var hasError: Bool
     var isDropTargeted: Bool
+    var route: NotchRoute
+    var overlay: NotchOverlay?
+    var promptID: String?
+    var glanceRowHeightBucket: Int
+    var continuationID: UUID?
+    var isEditing: Bool
+    var hasNotice: Bool
+    var isTallMode: Bool
+    var voicePhase: VoicePhase
+    var dropZone: DropZone?
+    var insertActivity: InsertActivity?
+    var suggestionIDs: [UUID]
 }
 
 // MARK: - Container layout
@@ -136,12 +167,14 @@ private struct NotchLayerKey: LayoutValueKey {
     static let defaultValue: NotchLayer = .closed
 }
 
-/// Sizes the notch from its *current* layer rather than the union of its children, so the shape
-/// can shrink immediately on close while the open content fades out inside it, and grow to the
-/// open content's exact height in the same pass that inserts it (no measurement round-trip).
+/// Sizes the notch from its *current* layer rather than the union of its children, so the shape can
+/// shrink immediately on close while the open content fades out inside it, and grow to the open
+/// content's exact height (capped at `maxHeight`, the view model's open height limit) in the same pass
+/// that inserts it (no measurement round-trip).
 private struct NotchContainerLayout: Layout {
     var isOpen: Bool
     var closedSize: CGSize
+    var maxHeight: CGFloat
 
     private static let openProposal = ProposedViewSize(width: NotchMetrics.openWidth, height: nil)
 
@@ -149,7 +182,8 @@ private struct NotchContainerLayout: Layout {
         guard isOpen else { return closedSize }
         guard let content = subviews.last(where: { $0[NotchLayerKey.self] == .open }) else { return closedSize }
         let contentHeight = content.sizeThatFits(Self.openProposal).height
-        let height = min(max(contentHeight, closedSize.height), NotchMetrics.maxOpenHeight)
+        let height = NotchLayout.openShapeHeight(contentHeight: contentHeight, closedHeight: closedSize.height,
+                                                 openHeightLimit: maxHeight)
         return CGSize(width: NotchMetrics.openWidth, height: height)
     }
 
@@ -223,144 +257,6 @@ private struct NotchBackground: View {
             .shadow(color: Color.black.opacity(isOpen ? 0.50 : 0), radius: 24, x: 0, y: 10)
             .shadow(color: Color.black.opacity(isOpen ? 0.30 : 0), radius: 4, x: 0, y: 2)
             .allowsHitTesting(false)
-    }
-}
-
-// MARK: - Closed
-
-private struct ClosedNotchContent: View {
-    let viewModel: NotchViewModel
-    let size: CGSize
-
-    private var earWidth: CGFloat { NotchMetrics.activityEarWidth - NotchMetrics.closedTopRadius }
-
-    var body: some View {
-        ZStack {
-            if viewModel.showsClosedActivity {
-                HStack(spacing: 0) {
-                    OttoOrb(size: 12, isActive: viewModel.chat.isStreaming)
-                        .frame(width: earWidth)
-                    Spacer(minLength: 0)
-                    rightEar
-                        .frame(width: earWidth)
-                }
-                .padding(.horizontal, NotchMetrics.closedTopRadius)
-                .transition(.opacity.combined(with: .scale(scale: 0.6)))
-            }
-        }
-        .frame(width: size.width, height: size.height)
-        .contentShape(Rectangle())
-        .onTapGesture {
-            viewModel.open(reason: .click, focus: true)
-        }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(accessibilityLabel)
-        .accessibilityAddTraits(.isButton)
-        .accessibilityAction { viewModel.open(reason: .click, focus: true) }
-    }
-
-    @ViewBuilder
-    private var rightEar: some View {
-        if viewModel.chat.isStreaming {
-            ActivityEqualizer()
-        } else if viewModel.hasUnreadReply {
-            Circle()
-                .fill(Theme.orbLight)
-                .frame(width: 6, height: 6)
-                .shadow(color: Theme.orbLight.opacity(0.7), radius: 4)
-        }
-    }
-
-    private var accessibilityLabel: String {
-        if viewModel.chat.isStreaming { return "Otto is replying. Open Otto" }
-        if viewModel.hasUnreadReply { return "Otto has a new reply. Open Otto" }
-        return "Open Otto"
-    }
-}
-
-// MARK: - Open
-
-private struct NotchOpenContent: View {
-    let viewModel: NotchViewModel
-    @State private var lowerSectionHeight: CGFloat = 0
-
-    private static let horizontalPadding: CGFloat = 16
-    /// One rhythm: header → tray (or composer) and tray → composer are both 10 pt.
-    private static let topGap: CGFloat = 10
-    private static let bottomPadding: CGFloat = 16
-    private static let sectionSpacing: CGFloat = 12
-    private static let preferredConversationHeight: CGFloat = 340
-    private static let minimumConversationHeight: CGFloat = 110
-
-    /// The header sits beside the camera housing (the closed notch's height), but never shorter
-    /// than the ⋮ pebble plus its clearance above and below.
-    private var headerHeight: CGFloat { max(viewModel.closedNotchSize.height, NotchHeaderView.minimumHeight) }
-
-    private var showsChips: Bool {
-        !viewModel.attachments.isEmpty || viewModel.suggestedTab != nil || viewModel.pendingAttachmentLoads > 0
-    }
-
-    /// Keeps the whole panel within `NotchMetrics.maxOpenHeight` when the composer grows or chips wrap.
-    private var conversationMaxHeight: CGFloat {
-        let chrome = headerHeight + Self.topGap + Self.bottomPadding + Self.sectionSpacing + lowerSectionHeight
-        let available = NotchMetrics.maxOpenHeight - chrome
-        return max(Self.minimumConversationHeight, min(Self.preferredConversationHeight, available))
-    }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            NotchHeaderView(viewModel: viewModel)
-                .frame(height: headerHeight)
-                .padding(.horizontal, NotchHeaderView.horizontalPadding)
-
-            VStack(spacing: Self.sectionSpacing) {
-                ConversationSection(viewModel: viewModel, maxHeight: conversationMaxHeight, headerGap: Self.topGap)
-                VStack(spacing: Self.topGap) {
-                    if showsChips {
-                        ContextChipsView(viewModel: viewModel)
-                            .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .bottom)))
-                    }
-                    ComposerView(viewModel: viewModel)
-                    if let error = viewModel.transientError {
-                        TransientErrorLine(message: error)
-                            .transition(.opacity.combined(with: .move(edge: .top)))
-                    }
-                }
-                .onGeometryChange(for: CGFloat.self, of: { $0.size.height }, action: { lowerSectionHeight = $0 })
-            }
-            .padding(.horizontal, Self.horizontalPadding)
-            .padding(.top, Self.topGap)
-            .padding(.bottom, Self.bottomPadding)
-            .overlay {
-                if viewModel.isDropTargeted {
-                    DropTargetOverlay()
-                        .padding(EdgeInsets(top: 0, leading: 8, bottom: 8, trailing: 8))
-                        .transition(.opacity.combined(with: .scale(scale: 0.98)))
-                }
-            }
-        }
-        .padding(.horizontal, NotchMetrics.openTopRadius)
-        .frame(width: NotchMetrics.openWidth)
-    }
-}
-
-/// The transcript, once there is one. It reads `chat.messages` here rather than in
-/// `NotchOpenContent`, so a streamed delta re-evaluates this small view and the conversation, not
-/// the header, chips and composer around them. With no messages it contributes no view (and so no
-/// stack spacing) at all.
-private struct ConversationSection: View {
-    let viewModel: NotchViewModel
-    let maxHeight: CGFloat
-    /// The gap the container leaves under the header. The transcript reaches up through it, so its
-    /// top fade starts right at the header's bottom edge, and insets its first message by as much.
-    let headerGap: CGFloat
-
-    var body: some View {
-        if !viewModel.chat.messages.isEmpty {
-            ConversationView(viewModel: viewModel, maxHeight: maxHeight + headerGap, topInset: headerGap)
-                .padding(.top, -headerGap)
-                .transition(.opacity)
-        }
     }
 }
 
