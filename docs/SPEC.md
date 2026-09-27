@@ -26,11 +26,18 @@ The "owner" labels on the module sections below record how the original build wa
 treat them as module boundaries. Keep a change inside the module it belongs to where you can, and
 update the matching section here when you change a module's interface or behavior.
 
+Sections 1 to 5 describe Otto 1.0. [Otto 1.1: modules added and changed](#otto-11-modules-added-and-changed),
+sections 6 to 18, adds actions, permissions, voice, history, usage, the closed-notch glance, Now Playing, the
+calendar chip, the File Shelf, selection and window context, paste-back and the tabbed Settings window, and
+lists what changed in the 1.0 modules. Where the two parts disagree, the 1.1 part is current.
+
 Global conventions
 - Swift 5 mode, `SWIFT_STRICT_CONCURRENCY=minimal`. Mark UI/state classes `@MainActor`. Use `@Observable`
   (Observation framework, macOS 14) for state objects; views take them as `@Bindable var` / `let`.
 - No third-party dependencies. Only Apple frameworks (AppKit, SwiftUI, Observation, Carbon, PDFKit,
-  UniformTypeIdentifiers, ServiceManagement, Security, ImageIO, CoreImage).
+  UniformTypeIdentifiers, ServiceManagement, Security, ImageIO, CoreImage, AVFoundation, AVFAudio, Speech,
+  NaturalLanguage, EventKit, UserNotifications, ScreenCaptureKit, ApplicationServices, QuickLookUI,
+  QuickLookThumbnailing, CryptoKit).
 - No force-unwraps on anything that can fail at runtime. No `print` spam (use `os.Logger`, subsystem
   `com.jalenedusei.otto`).
 - Every file begins with the standard header comment (`//  FileName.swift` / `//  Otto`).
@@ -620,3 +627,573 @@ UserDefaults(suiteName: "otto.snapshots")!)`, `ChatSession(settings:makeClient: 
 (ordered front at x = -10000), spinning the run loop ~0.4 s, then
 `bitmapImageRepForCachingDisplay(in:)` + `cacheDisplay(in:to:)`; if that yields an empty/transparent image,
 fall back to `ImageRenderer`. Create the directory if needed; print each written path.
+
+---------------------------------------------------------------------------------------------------
+
+## Otto 1.1: modules added and changed
+
+Otto 1.1 adds actions (Claude tools), permissions, voice, history, usage, the closed-notch glance, Now
+Playing, the calendar chip, the File Shelf, selection and window context, paste-back, a custom shortcut and a
+tabbed Settings window. This part describes those modules. Where it disagrees with sections 1 to 5 above,
+this part is current. The sections above stay accurate for the API client, attachment loading, the Markdown
+renderer, the notch shape and the look and feel.
+
+What changed in the v1.0 modules, in one place:
+
+- **Keyboard.** `NotchWindowController` no longer switches on keys itself. It maps every key through
+  `NotchKeyCommands` and `vm.perform(_:input:)` (section 13 below).
+- **Hot key.** `HotKeyManager` registers any `HotKeyCombo`, reports press and release, and is driven by
+  `GlobalShortcutRouter` (tap toggles the notch, hold talks to Otto). The combo is set in Settings.
+- **Settings.** `SettingsWindowController` hosts a non-activating `SettingsPanel` with seven tabs and opens on
+  the current Space without activating Otto (section 16).
+- **Closed notch.** The ears come from one resolver, `GlanceResolver`, with a fixed priority (section 12).
+- **App start.** `AppDelegate` builds everything through `AppComposition.live()` after the launch guard
+  (section 8). Tests, snapshots, the promo stage and the self-test build their own graphs.
+- **Data on disk.** v1.0 kept nothing on disk. 1.1 writes under `~/Library/Application Support/Otto`
+  (section 9).
+
+### 6. Conventions added in 1.1
+
+- Every `os.Logger` uses subsystem `com.jalenedusei.otto` and one of the categories `Tools`, `Actions`,
+  `Permissions`, `Voice`, `History`, `Usage`, `Glance`, `NowPlaying`, `Calendar`, `Context`, `Shelf`, `Input`,
+  `Settings`. User content (prompts, replies, tool inputs and outputs, file paths, selections, event titles) is
+  logged only with `privacy: .private`. Ids, counts, statuses and error codes may be `.public`.
+- State classes are `@MainActor @Observable final class`. Values that cross actors are `Sendable`. Persisted
+  stored properties of an `@Observable` class have no default value and are assigned in `init`, so `didSet`
+  never fires during init.
+- Text that comes from outside Otto and is only displayed (track titles, event titles, shelf and history
+  names, script chips) goes through `DisplayText.sanitized(_:maxLength:)`. Nothing re-implements it.
+- Otto writes its own files only through `SecureFile` into directories from `AppSupport` (section 9).
+- Top-level declarations that aren't part of a module's public surface are `private`, nested in their owning
+  type, or carry the module prefix (`Media…`, `Shelf…`, `Voice…`, `History…`, `Calendar…`, `Script…`,
+  `Glance…`, `Context…`, `Usage…`, `Permission…`, `Input…`).
+- Every seam that tests and snapshots rely on has a default, so no test touches TCC, Apple Events, real hot
+  keys, the network or the user's data. These stay compiling and behaving: `ChatSession(settings:makeClient:)`,
+  `ChatSession.debugSeed(messages:isStreaming:)`, `NotchViewModel(settings:chat:)`,
+  `NotchViewModel.debugSeed(presentation:composerText:attachments:suggestedTab:hasUnreadReply:)`,
+  `NotchWindowController(viewModel:settings:)`, `NotchRootView(viewModel:)`, `SettingsView(settings:)`,
+  `SettingsWindowController(settings:)`, `NotchPointerMachine()` and its `Context` initializer (every new field
+  is defaulted), `NotchPointerMachine.Effect.close` as a case with no payload, `MockLLMClient(latencyScale:)` and
+  `AppSettings(defaults:usesKeychain:)`.
+
+### 7. Module map and ownership
+
+Otto 1.1 was built in waves by parallel agents, each owning a disjoint set of files. The owner column records
+that split; treat it as the module boundary, like the owner labels in sections 1 to 5.
+
+| Folder | Responsibility | Owner |
+|---|---|---|
+| `Otto/Chat/` | Shared model contract (`Models.swift`), `ChatSession` (conversation and tool loop), `SystemPrompt` | contracts (models), loop (session, prompt) |
+| `Otto/API/` | HTTPS and SSE client, stream accumulator (now with `tool_use` and usage events), mock client with scripted tools | loop |
+| `Otto/Tools/` | `OttoTool` protocol, `ToolRegistry`, `ToolSchema`, `InputProvenance`; `ToolExecutor`, `JSONSchemaValidator`, `TrustLedger`, `EchoDetector`, `ToolRateLimiter`, `ApprovalStore`, `ActionLog`, `ProcessRunner`; `ToolHistory`; `ToolCatalog` | contracts, exec, loop, app |
+| `Otto/Actions/Calendar/` | `calendar_list_events`, `calendar_create_event`, `reminders_list`, `reminders_create`; `EventKitService` actor, `DemoEventKitService`, `DateInput` | actions-calendar |
+| `Otto/Actions/Scripting/` | `list_shortcuts`, `run_shortcut`, `run_applescript`, `open_url`; `ShortcutsService`, `AppleScriptRunner`, `AppleScriptAnalyzer` (with `ScriptLexer`), `AppleScriptHighlighter`, `URLGuard`, demo services | actions-scripting |
+| `Otto/Media/` | `NowPlayingMonitor`, `MediaScripting`, the `media_control` tool | media |
+| `Otto/Permissions/` | `PermissionsCenter` (the only code that checks or requests TCC), `PermissionCardContent`, `AppRelauncher` | contracts (types), perm |
+| `Otto/Voice/` | `SFSpeechEngine`, `AudioLevelMeter`, `SpeechChunker`, `ReplySpeaker`, `VoiceController`, `VoiceInterruptions` | contracts (types), voice |
+| `Otto/History/` | `ConversationStore`, codec, blobs, `ConversationTitler`, `HistorySearch`, `HistoryController`, `RecentsState` | contracts (types), history |
+| `Otto/Usage/` | `ModelPricing`, `UsageLedger`, `CostFormatter` | contracts (protocol), usage |
+| `Otto/Glance/` | `PhaseDebouncer`, `GlanceResolver`, `ClosedNotchLayout`, reply preview, `AttentionMonitor`, `NotificationPresenter`, `GlanceController`; `Calendar/` (`CalendarGlance`, `NextEventPicker`, `MeetingLinkDetector`) | contracts (types), glance |
+| `Otto/Context/` | v1.0 attachments and browser tab, plus `SelectionReader`, `WindowCapture`, `SensitiveApps`, `ContextSuggestions`, `InsertPolicy`, `PasteboardSnapshot`, `KeySender`, `AnswerInserter`, `InsertCoordinator`, `RichTextRenderer` | context |
+| `Otto/Shelf/` | `ShelfStore`, ingest, thumbnails, drag source, sharing, Quick Look, `ShelfController` | contracts (types), shelf |
+| `Otto/App/` | `Settings/*` groups and `PreferenceStore`, `AppSupport`, `ObservationLoop`; `HotKeyCombo`, `HotKeyManager`, `GlobalShortcutRouter`, `NotchNeighbors`; `ServicesProvider`; `SettingsPanel`, `SettingsWindowController`; `StatusItemController`, `AppComposition`; `AppDelegate` | contracts, input, context, settings, app, integration |
+| `Otto/Notch/` | `NotchContracts`, `NotchServices`, `NotchKeyCommands`, `ReadingRestore`; `NotchViewModel` and its `+Actions`, `+Commands`, `+Context`, `+Glance`, `+History`, `+Interaction`, `+Prompts`, `+Shelf`, `+Voice` extensions; window, pointer machine, geometry, panel, `NotchDropDelegate` | contracts, input, vm-core, vm-features, shell, ui-frame |
+| `Otto/UI/` | `Components/`, `Dock/`, `Glance/`, `Voice/`, `Pages/`, `Chat/`, `Settings/` components; `ClosedNotchView`, `NotchOpenContent`, `NotchRootView`, `NotchHeaderView`, `ComposerView`, `ConversationView`, `MessageView`, `MessageSegments` | ui-dock, ui-glance, ui-voice, ui-pages, ui-chat, settings, ui-frame |
+| `Otto/Debug/` | `SnapshotRenderer`, `SelfTest`, the promo stage | snapshots, integration |
+
+Frameworks: everything in the global conventions list above. 1.1 added AVFoundation (voice input and spoken
+replies), Speech, NaturalLanguage (spoken-reply chunks and conversation titles), EventKit (calendar and
+reminders), UserNotifications, ScreenCaptureKit (window chip), ApplicationServices (reading a selection and
+posting ⌘V), QuickLookUI and QuickLookThumbnailing (Shelf) and CryptoKit (activity-log fingerprints, selection
+fingerprints and blob hashes). They all link through `import`, so `project.yml` lists no frameworks.
+
+### 8. Object graph and app lifecycle
+
+`AppComposition` (in `Otto/App/AppComposition.swift`) builds the whole graph. `AppComposition.live()` is the
+running app, `AppComposition.selfTest(directory:)` is the self-test with demo services and temporary stores, and
+`AppComposition.inert(settings:)` builds the same graph with no side effects for tests.
+
+```
+AppSettings.shared ──┬─ groups: notch, shortcuts, voice, context, shelf, actions, glance, usage, history
+                     │
+PermissionsCenter ───┤                         ApprovalStore   ActionLog   ToolRateLimiter
+                     │                               └──────────┬────┘            │
+ToolCatalog.makeRegistry(settings:services:extraTools:) ─► ToolRegistry   ToolExecutor ◄──┘
+                     │                                 │            ▲ (PermissionProviding)
+                     ▼                                 ▼            │
+ChatSession(settings:makeClient:tools:executor:permissions:) ──usageRecorder──► UsageLedger
+      │ onTranscriptChanged ──► HistoryController ◄── ConversationStore(.directory(AppSupport/Otto))
+      │ phase / lastFinishedAssistantID ──► GlanceController (debounce, preview, notifications)
+      ▼
+NotchViewModel(settings:chat:services: NotchServices)
+      services = PermissionsCenter, VoiceController, HistoryController(+RecentsState), GlanceController,
+                 UsageLedger, NowPlayingMonitor, CalendarGlance, ShelfController(ShelfStore),
+                 ContextSuggestions, InsertCoordinator(AnswerInserter), NotificationPresenter
+      ▲                         ▲
+NotchWindowController      SettingsWindowController(settings:services: SettingsServices)
+StatusItemController       HotKeyManager ◄── GlobalShortcutRouter ── (tap/hold) ──► VM / voice
+ServicesProvider(handler: VM as ServicesHandling)      NotchNeighborMonitor ──► VM neighbor card
+```
+
+- There is exactly one `PermissionsCenter` (no `shared`); the composition passes it to every consumer.
+- History deletions reach the activity log and delivered notifications only through
+  `HistoryController.onDataRemoved`, which the composition wires. Engines never reference each other.
+- **Launch guard** (live and `--demo` only). If another process with bundle id `com.jalenedusei.otto` is running,
+  Otto waits up to 3 s for it to exit before it registers the hot key or opens a store. If it is still running,
+  live mode asks the running copy to open its notch and quits; `--demo` keeps running without the hot key.
+- `applicationWillTerminate` calls `composition.terminate()`: cancel the reply, flush history, shelf and the
+  ledger, stop the monitors, unregister the hot key.
+- Hot key tap (`AppComposition.tapAction(for:)`): speaking → stop speech; toggle-mode listening → finish and
+  send; pinned and engaged → give the keyboard back; pinned and not engaged → focus; open and engaged → close;
+  otherwise open focused. Holding for 300 ms or more talks to Otto when Voice and hold-to-talk are on.
+
+### 9. Persistence
+
+`AppSupport.rootURL()` is `~/Library/Application Support/Otto/` (`…/Otto/Demo/` with `--demo`). Every call
+`lstat`s the root and the data directory, refuses a symlink or a path not owned by the user, forces mode `0700`,
+and excludes the root from Time Machine. Every data directory's name ends in `.noindex`, the per-folder
+exclusion Spotlight honors anywhere on a volume. An empty `.metadata_never_index` at the root is a best-effort
+extra.
+
+| Data | Location | Owner |
+|---|---|---|
+| Conversations, index, damaged files | `Conversations.noindex/<UUID>.json`, `Conversations.noindex/index.json`, `Conversations.noindex/Damaged/` | History |
+| Attachment payload blobs | `Attachments.noindex/ab/<sha256>` | History |
+| Shelf index, owned copies, thumbnails | `Shelf.noindex/shelf.json`, `Shelf.noindex/Owned/<uuid>/<name>`, `Shelf.noindex/Thumbnails/<uuid>.png` | Shelf |
+| Usage ledger (token counts, models and costs, no content) | `usage-ledger.json` at the root | Usage |
+| Actions activity log | `Logs.noindex/actions.jsonl` and `actions.1.jsonl`, rotated at 1 MB, pruned to the History retention | Tools |
+| Preferences, consents, remembered approvals | `UserDefaults` (`otto.*`) | Settings, `ApprovalStore` |
+| API key | Keychain (unchanged) | API |
+
+`SecureFile.write(_:to:)` creates a temp file with `open(O_CREAT | O_EXCL | O_WRONLY, 0o600)` in the destination
+directory, writes it and `rename(2)`s it over the destination. Content-addressed blobs use
+`SecureFile.writeIfAbsent`. Window pictures, selections and Services text set
+`Attachment.retainsPayloadInHistory = false`: History keeps the chip and thumbnail, never the payload.
+
+### 10. Contracts by module
+
+These are the surfaces other modules call, trimmed to the members they use. Bodies and edge cases live in the
+code and its tests.
+
+**Models** (`Otto/Chat/Models.swift`, additive):
+
+```swift
+struct MessagesRequest {                     // three defaulted fields added
+    var clientTools: [JSONValue] = []        // sorted by name; strict, eager_input_streaming
+    var toolChoice: JSONValue? = nil         // only {"type":"none"}, and only when tools exist
+    var serverToolLimits = ServerToolLimits()  // max_uses per server tool; 0 omits the tool
+}
+enum StreamEvent {                           // three cases added
+    case toolUseStarted(id: String, name: String)
+    case toolUseReady(id: String, name: String, input: JSONValue?, rawInput: String)
+    case usage(JSONValue)
+}
+enum ToolCallStatus { case preparing, queued, needsPermission, awaitingApproval, waitingForSystem(String),
+                      running, succeeded, failed(String), denied, blocked(String), cancelled, skipped(String), undone }
+struct ToolCall: Identifiable, Codable { id, name, input, invalidInput, presentation, status, result, provenance,
+                                         caution, approvedVia, recovery, undo, progressNote, startedAt, finishedAt }
+struct ToolExchange: Codable { let contentEnd: Int; let textEnd: Int; let callIDs: [String] }
+struct ToolOutput: Codable { var parts: [Part]; var isError: Bool }   // 16,000 characters, 4 images
+// ChatMessage gains toolCalls and toolExchanges; Attachment gains retainsPayloadInHistory (default true).
+```
+
+**Tools** (`Otto/Tools/`):
+
+```swift
+enum ToolGroup: String, CaseIterable { case calendar, reminders, shortcuts, media, links, appleScript }
+enum ApprovalRequirement { case none, consentOnce(ConsentKey), everyCall(rememberScope: ApprovalScope?) }
+protocol OttoTool: Sendable {
+    var name: String { get }; var group: ToolGroup? { get }; var description: String { get }
+    var inputSchema: JSONValue { get }; var isStrict: Bool { get }; var isConcurrencySafe: Bool { get }
+    var producesUntrustedOutput: Bool { get }; var privateDataSource: String? { get }
+    var timeout: Duration { get }; var rateLimit: ToolRateLimit { get }; var minimumArmingDelay: Duration { get }
+    var mayPresentUI: Bool { get }; var inheritsOttoPermissions: Bool { get }
+    @MainActor func isAvailable(in environment: ToolEnvironment) -> Bool
+    func requiredPermissions(for input: JSONValue) -> [Permission]
+    func approvalRequirement(for input: JSONValue) -> ApprovalRequirement
+    func egressStrings(in input: JSONValue) -> [String]
+    func validate(_ input: JSONValue) -> ToolError?
+    func blockReason(for input: JSONValue) -> String?
+    func describe(_ input: JSONValue) -> ToolCallPresentation
+    func approvalBody(for input: JSONValue) async -> ApprovalBody
+    func run(_ input: JSONValue, context: ToolRunContext) async throws -> ToolRunResult
+    func undo(_ token: UndoToken) async throws
+}
+@MainActor protocol ToolExecuting: AnyObject {  // ToolExecutor implements it; tests use FakeToolExecutor
+    var pendingApproval: PendingApproval? { get }
+    func beginTurn()
+    func execute(_ round: ToolRound, store: ToolCallStore) async throws -> ToolRoundOutcome
+    func resolve(_ decision: ApprovalDecision, callID: String, hardwareConfirmed: Bool, visibleSince: Date?)
+    func cancelAll()
+    func undo(callID: String, messageID: UUID, store: ToolCallStore) async -> String?
+    func stop(callID: String)
+    // plus onAttentionNeeded and consumeContextNotes() (undo notes for the next user message)
+}
+@MainActor enum ToolCatalog {
+    static func makeRegistry(settings: AppSettings, services: ActionServices,
+                             extraTools: [any OttoTool] = []) -> ToolRegistry
+}
+struct ActionServices { static func live(processRunner: ProcessRunning) -> ActionServices; static let demo }
+enum InputProvenance {                            // who pressed the key or clicked
+    @MainActor static func evidence(for event: NSEvent?,
+                                    mouseDown: (uptime: TimeInterval, isHardware: Bool)?) -> InputEvidence
+}
+```
+
+**Permissions** (`Otto/Permissions/`):
+
+```swift
+enum Permission: Hashable, Codable { case accessibility, screenRecording, microphone, speechRecognition,
+    calendars, reminders, notifications, automation(bundleID: String, appName: String) }
+enum PermissionStatus { case granted, notDetermined, denied, restricted, limited, needsRelaunch, unavailable }
+@MainActor protocol PermissionProviding: AnyObject {
+    func status(_ permission: Permission) -> PermissionStatus
+    @discardableResult func request(_ permission: Permission) async -> PermissionStatus
+    func openSystemSettings(for permission: Permission)
+    func waitForGrant(_ permission: Permission, timeout: Duration) async -> Bool
+    var awaiting: PermissionWait? { get }
+    func grantedPermissions() -> [Permission]
+}
+@MainActor @Observable final class PermissionsCenter: PermissionProviding {
+    init(probe: PermissionProbe = SystemPermissionProbe(), defaults: UserDefaults = .standard,
+         openURL: @escaping @MainActor (URL) -> Void = { NSWorkspace.shared.open($0) },
+         pollInterval: Duration = .seconds(1), relauncher: AppRelaunching = AppRelauncher())
+    func relaunch()
+    func resetSystemPermissions(using runner: ProcessRunning) async -> Bool   // tccutil reset All <bundle id>
+}
+```
+
+Every transition to `.granted` posts `PermissionEvents.didGrant`; `EventKitService` and `CalendarGlance` reset
+their `EKEventStore` on it. `AppRelauncher` starts a detached waiter that opens Otto again only after this
+process has exited, so two copies never overlap.
+
+**ChatSession** (`Otto/Chat/ChatSession.swift`, additions):
+
+```swift
+init(settings: AppSettings, makeClient: @escaping @MainActor () throws -> LLMClient,
+     tools: ToolRegistry = ToolRegistry(), executor: ToolExecuting? = nil,
+     permissions: PermissionProviding? = nil, isDemo: Bool = LaunchOptions.demo)
+private(set) var conversationID: UUID
+var onTranscriptChanged: ((TranscriptChange) -> Void)?        // History's single observer
+func transcriptSnapshot() -> TranscriptSnapshot
+func load(_ conversation: LoadedConversation)
+private(set) var phase: ReplyPhase
+private(set) var lastFinishedAssistantID: UUID?
+weak var usageRecorder: UsageRecording?
+var pendingApproval: PendingApproval? { get }
+func resolveApproval(_ decision: ApprovalDecision, hardwareConfirmed: Bool, visibleSince: Date?)
+private(set) var systemUIToolWait: SystemUIWait?
+@discardableResult func regenerate() -> RegenerateOutcome
+func showReplyVersion(_ index: Int)
+func replaceLastTurn(text: String, attachments: [Attachment])
+var onAssistantTextProgress: ((_ assistantID: UUID, _ text: String, _ isFinal: Bool) -> Void)?
+```
+
+**Notch** (`Otto/Notch/`): `NotchRoute` (`chat`, `history` shown as "Recents", `shelf`), `NotchOverlay`
+(`shortcutSheet`), `NotchPrompt` (approval, permission or card; one at a time), `StayOpenHold`, `ModalHold`,
+`CloseReason` (`user`, `pointerExit`, `outsideClick`, `programmatic`, `systemUI`), `NotchKeyCommand`,
+`NotchKeyContext`, `SettingsTab`, `SettingsAnchor`. `NotchViewModel(settings:chat:services:)` takes a
+`NotchServices` bundle; `nil` means `NotchServices.inert(settings:chat:)`, which uses in-memory stores and
+monitors that never start. The view model adds holds, the fold, routes, the dock, approval visibility, the key
+dispatcher (`keyContext(…)`, `perform(_:input:)`), editing, pin, tall mode, reading position, voice, context,
+insert, drop, history, glance and action entry points. Snapshots seed all of it with
+`debugSeed(features: NotchDebugSeed)`.
+
+**The other modules**, by their entry types:
+
+| Module | Entry types |
+|---|---|
+| Usage | `UsageRecording` (ChatSession records each completed request and partial usage on cancel), `ModelPricing`, `UsageLedger`, `CostFormatter` |
+| History | `ConversationStore(.directory(URL) \| .inMemory)`, `HistoryController` (`start()`, `startFreshIfIdle`, `open/continue`, delete with undo, `onDataRemoved: HistoryRemoval`), `RecentsState`, `HistoryRetention` (7, 30, 90 days, forever), `IdleResetInterval` |
+| Glance | `ReplyPhase`, `PhaseDebouncer`, `GlanceInputs` → `GlanceResolver.resolve` → `ClosedGlance`, `ClosedNotchLayout.make`, `ReplyPreview`, `ReplyNotificationDecider`, `NotificationPresenter`, `GlanceController` |
+| Media | `MediaPlayer` (Music, Spotify), `NowPlayingMonitor`, `MediaScripting` (`LiveMediaScripting`, `DemoMediaScripting`), `MediaCommandOutcome`, `MediaControlTool(monitor:)` |
+| Calendar glance | `CalendarEventSource` (`EventKitCalendarSource`, `InertCalendarSource`), `NextEventPicker`, `MeetingLinkDetector`, `CalendarGlance` |
+| Shelf | `ShelfItem`, `DropZone`, `DropSession`, `ShelfStore` (directory or in-memory), `ShelfTileInteraction`, `ShelfTileHitArea`, `ShelfController` |
+| Context | `AppRef`, `InsertMode`, `ServicesHandling`, `SelectionReading`/`WindowCapturing` (live and inert), `SensitiveApps`, `ContextSuggestions`, `InsertCoordinator` |
+| Voice | `VoiceMode`, `VoicePhase`, `MicState`, `SpeechEngine` (`SFSpeechEngine`, `ScriptedSpeechEngine`), `VoiceInterruptionSource`, `SpeechChunker`, `ReplySpeaker`, `VoiceController` |
+| Input | `HotKeyCombo`, `HotKeyManager(combo:onPress:onRelease:registrar:)`, `HotKeyRegistering`, `HoldGestureMachine`, `GlobalShortcutRouter`, `NotchNeighborMonitor`, `NotchKeyCommands`, `ReadingRestore` |
+| Shared | `AppSupport`, `SecureFile`, `DisplayText`, `ObservationLoop`, `Theme.attention`, `Theme.recording`, `Theme.Motion.dock` |
+
+**Settings storage** (`Otto/App/Settings/`). One `PreferenceStore` over `UserDefaults`; one
+`@MainActor @Observable` group class per feature, reached as `settings.notch`, `.shortcuts`, `.voice`,
+`.context`, `.shelf`, `.actions`, `.glance`, `.usage` and `.history`. Existing keys keep their names.
+
+| Key | Default | Tab |
+|---|---|---|
+| `otto.notch.hoverToOpen`, `otto.notch.typeAfterHover` | on, on | Notch |
+| `otto.shortcuts.hotKey` | ⌥Space | General |
+| `otto.voice.enabled` | off | Voice |
+| `otto.voice.holdShortcutToTalk`, `otto.voice.autoSend` | on, on | Voice |
+| `otto.voice.locale`, `otto.voice.allowServerRecognition` | system, off | Voice |
+| `otto.voice.spokenReplies`, `otto.voice.voiceIdentifier`, `otto.voice.speakingRate` | off, best, 0.5 (0.35…0.65) | Voice |
+| `otto.context.offerSelection`, `otto.context.offerWindow`, `otto.context.restoreClipboard` | off, on, on | Context |
+| `otto.shelf.enabled`, `otto.shelf.keepAfterDragOut` | on, off | Context |
+| `otto.actions.enabled` | off | Actions |
+| `otto.actions.groups` | every group except AppleScript | Actions |
+| `otto.actions.maxToolRounds` | 10 (3…25) | Actions |
+| `otto.actions.logFullScripts` | off | Actions |
+| `otto.actions.safetyMode` | `safer` | Actions |
+| `otto.glance.replyPreviews` | on | Notch |
+| `otto.glance.notificationPolicy`, `otto.glance.notificationPreview` | never, on | Notch |
+| `otto.glance.nowPlaying`, `otto.glance.nowPlayingClosed` | off, on | Notch |
+| `otto.glance.calendarChip`, `otto.glance.calendarExcluded` | off, none | Notch |
+| `otto.usage.showCost` | on | Models |
+| `otto.history.enabled`, `otto.history.retention`, `otto.history.idleReset` | on, 30 days, 15 minutes | Privacy |
+| `otto.actions.consents`, `otto.actions.rememberedApprovals` | none | Actions |
+
+`otto.actions.safetyMode` picks how often Otto asks. `safer` is the behavior in sections 14 and 15. `fewerPrompts`
+lets an "Always allow" shortcut run even after the chat read a web page, drops the web pause and doesn't fold for
+tool runs; AppleScript still asks every time in both modes, and switching to it shows a confirmation that
+explains prompt injection.
+
+### 11. Open panel layout
+
+Width stays `NotchMetrics.openWidth` (580). Height is at most `vm.openHeightLimit`: 560, or 80 % of the screen
+in tall mode (suspended while the notch is folded for system UI). The pure helper `NotchLayout` computes the
+conversation and dock heights.
+
+```
+HEADER        [orb] Otto [Opus 5 ⌄]  (or [‹] Recents / Shelf)        [pin?] [shelf?] [history] [⋮]
+ATTENTION     "Otto needs your OK · View"   (a prompt is waiting and the page isn't Chat)
+GLANCE ROW    [Now Playing strip] [● Standup · 12m]                   (Chat only)
+PAGE  Chat:   conversation (or the ⌘/ sheet) · DOCK · Continue chip · edit banner · chips · composer · notice
+      Recents: search · list · undo bar          Shelf: grid · action bar
+```
+
+- The conversation is at least 110 pt tall and at most 340 pt; in tall mode it fills the space.
+- The dock is at most `min(300, openHeightLimit − chrome − 110)`; card bodies scroll inside it.
+- The calendar chip lives in the glance row, not the header, which has no room next to the pebbles.
+
+### 12. Closed notch
+
+The closed shape stays pure black. `GlanceResolver` picks the first matching row:
+
+| # | Condition | Left ear | Right ear | Below the camera |
+|---|---|---|---|---|
+| 1 | Voice listening or finishing | recording dot | live waveform | live caption pill |
+| 2 | Waiting on system UI (folded) | orb, active | hourglass | "Waiting for System Settings…" and similar |
+| 3 | Approval pending | orb, active | amber dot with a ring | "Needs your OK · ‹title›" |
+| 4 | Paste flash, 1.4 s | orb | checkmark | |
+| 5 | Reply preview, 4 s, pauses on hover | orb | speaking or unread dot | first line of the answer |
+| 6 | Reply in progress | orb, active | thinking, searching or writing glyph | |
+| 7 | Speaking after the reply | orb | three slow bars | |
+| 8 | Unread reply | orb | unread dot | |
+| 9 | Media playing, if shown in the closed notch | artwork | equalizer | |
+| 10 | Nothing | | | |
+
+`ClosedNotchLayout.make` sizes the shape: each ear adds 34 pt a side, a drop adds 28 pt of height (up to 380 pt
+wide), the listening pill is at least 360 pt wide. `NotchGeometry.maximumClosedShapeSize` covers the largest of
+these, so hit-testing follows the shape. A drop that grows under a resting pointer never hover-opens the notch.
+The calendar chip never appears in the closed notch, and chat always wins over media.
+
+### 13. Routes, the dock and the keyboard
+
+- Opening always lands on Chat, except the Shelf drop and "Add to Otto Shelf" (land on Shelf) and "Recent
+  Conversations…" (lands on Recents). `close()` and `newChat()` reset the route to Chat.
+- The dock shows one `NotchPrompt`: a tool approval before a permission prompt before the head of the card
+  queue. It renders only on Chat; on another page the attention capsule points back to it.
+- While an approval is up the composer dims and reads "Waiting for your OK…"; typing still works.
+
+The panel's key monitor applies three rules before mapping a key: any key stops speech; typing while
+soft-focused engages the notch (a Return that engages is consumed and sends nothing); typing while listening
+moves the transcript to the composer. Then `NotchKeyCommands.command(…)` maps the key, first matching row wins,
+and `vm.perform(command, input: InputProvenance.evidence(…))` runs it.
+
+| Key | Condition | Command |
+|---|---|---|
+| ⌘↩ ⌥⌘↩ ⌘R ⌘N ⌘1–3 ⌘⇧C ⌘. ⌥⌘J ⌘⌫ | soft focus only (not engaged) | give the keyboard back, do nothing else |
+| Esc | in order: IME, listening, speaking, ⌘/ sheet, prompt, paste confirmation, editing, not on Chat | cancel voice, stop speech, close the sheet, decline or dismiss, cancel, cancel editing, back to Chat |
+| Esc | otherwise | close (also unpins) |
+| ↩ | listening · Recents · a non-approval card with an empty composer · a paste confirmation | send voice · open selected · card's primary button · confirm paste |
+| ⌘↩ | a prompt is up | primary (an approval only when visible, armed and pressed on hardware) |
+| ⌘↩ | Shelf · Chat with an empty composer and an answer to paste | ask about Shelf files · paste the last answer |
+| ⌥⌘↩ | Chat, empty composer, an answer to paste | paste as plain text |
+| ↑ / ↓ | Recents · Chat with an empty composer and a sent message | move selection · edit your last message |
+| ⌘⇧↑ / ⌘⇧↓ | not while the composer has text | tall reading mode on / off |
+| ⌘⌫, ⌫ | Recents | delete the conversation (⌫ only with an empty search) |
+| ⌘. | | stop the reply, else stop listening, else stop speech |
+| ⌘R · ⌘⇧C · ⌘/ · ⌘P | | regenerate · copy last reply · shortcut sheet · pin |
+| ⌘1 ⌘2 ⌘3 | | Opus 5 · Sonnet 5 · Haiku 4.5 |
+| ⌘Y · ⌘D · ⌘F · ⌘Z | Recents available · Shelf on · on Recents · on Recents after a delete | Recents · Shelf · search · undo the delete |
+| ⌘N · ⌘, · ⌘W | | new chat · Settings · close |
+| ⌘V | Shelf · Chat with a file on the clipboard | paste onto the Shelf · attach |
+| ⌥⌘P ⌥⌘] ⌥⌘[ · ⌥⌘J · ⌥⌘U | Now Playing · a meeting chip · | play/pause, next, previous · join · usage details |
+
+The Shelf grid handles its own arrows, Space (Quick Look), ⌘A, ⌘C, ⌥⌘R (Reveal in Finder), ⌫ and Return. The
+global shortcut can never be one of these chords (`HotKeyProblem.conflictsWithOtto`).
+
+### 14. Holds, the fold and approval visibility
+
+```swift
+var shouldStayOpen: Bool {   // hover-exit never closes while true
+    isEngaged || isMenuPresented || isDropTargeted || pendingAttachmentLoads > 0 || isPinned || !stayOpenHolds.isEmpty
+}
+var isMenuPresented: Bool {  // outside clicks never close while true
+    menuFlag || isPickingFiles || isCapturingScreen || !modalHolds.isEmpty
+}
+```
+
+Hold sources: a voice session, the reply hold after a spoken question, dragging out of the Shelf, 1.5 s after a
+Shelf drop, a paste in progress, a prompt that needs a decision, and the Share and Quick Look windows.
+
+**The fold.** The open notch sits at `mainMenu + 3` and covers the top center of the screen, where System
+Settings, macOS permission alerts and dialogs from an approved script open. So while Otto waits on system UI it
+started (`systemUIWait`: a permission prompt, System Settings, an Automation prompt, or a script or shortcut that
+has run for 1 s), the view model closes the notch with `.systemUI`. The closed notch shows row 2 of section 12.
+When the wait ends and the notch is still closed, it reopens without taking the keyboard. Toggles in the Settings
+window never fold the notch.
+
+**Approval visibility.** `approvalVisibility` is stamped when the notch is open, not folded, on Chat, not hidden
+for a capture, the approval is the current prompt, and its body was reviewed (it fits, or a long script was
+scrolled to its end). The arming ring starts from that stamp. The executor accepts `.run` only when the input is
+hardware (`InputProvenance.mayApprove`: event source pid 0, not an auto-repeat, pressed after the card armed),
+`visibleSince` is set, and its own clock says the arming delay has passed. A ⌘↩ held down from pasting the last
+answer can't approve a card that appears under it.
+
+### 15. The tool loop and approvals
+
+**Tools** (all `strict: true` and `eager_input_streaming: true` on the wire; the full schemas validate locally):
+
+| Tool | Group | Asks | Permissions | Arming | Timeout |
+|---|---|---|---|---|---|
+| `calendar_list_events` | calendar | once ("Read your calendar") | Calendars | | 15 s |
+| `calendar_create_event` | calendar | every call | Calendars | 0.35 s | 15 s |
+| `reminders_list` | reminders | once ("Read your reminders") | Reminders | | 15 s |
+| `reminders_create` | reminders | every call | Reminders | 0.35 s | 15 s |
+| `list_shortcuts` | shortcuts | once ("See your shortcut names") | | | 15 s |
+| `run_shortcut` | shortcuts | every call; "Always allow" per shortcut UUID | | 0.35 s | 60 s |
+| `run_applescript` | appleScript | every call, never remembered | Automation for each running target | 1 s | 10 s |
+| `open_url` | links | every call | | 0.35 s | 10 s |
+| `media_control` | media | no card | Automation for the player | | 5 s |
+
+**One turn.** `send` stores attachment blocks, then (only when tools are offered) a `<context>` block with the
+local time and any undo notes, then the typed text. `beginAssistantTurn` captures a `TurnConfig`: model, effort,
+web access, the available tools and their definitions, the system prompt with its Actions section, and the round
+limit. Each response that stops with `tool_use` becomes a `ToolExchange`; the executor runs the round; every call
+gets exactly one `tool_result`, all in one user message; the loop requests again and streams the final text into
+the same assistant message. `max_tokens` and `refusal` never run tools. After the round limit the next request
+sends `tool_choice: {"type":"none"}` and the reply ends with a short note.
+
+**Web budget.** Web search and fetch run on Anthropic's side with no card, so each reply gets at most 10
+searches and 10 fetches (`max_uses` at most 5 per request, the tool omitted at 0). Once the chat holds private
+data and fresh untrusted content, the rest of that reply carries no server tools, and a row says why.
+
+**Executor** (`ToolExecutor.execute(round, store:)`):
+
+1. Assess trust (`TrustLedger`: which untrusted sources are in context, and how fresh) and collect private
+   strings (`EchoDetector`).
+2. Pre-check each call in model order: unknown tool, turned off, invalid JSON, schema, the tool's own
+   `validate`, rate limit, decline fatigue (two declines in earlier rounds), `blockReason`. The first failure
+   settles the call with a result.
+3. Plan: missing permissions; a consent card the first time; an approval card every call, unless an "Always
+   allow" scope may be honored. That needs all of: no fresh medium or high content, no echo of private data, no
+   web page or search result anywhere in the chat, and every egress string of the input inside the user's latest
+   message.
+4. Phase A runs concurrency-safe calls that need no card or permission in parallel. Phase B runs the rest in
+   order: permission card, then (for side effects) a fresh approval card, re-check availability, run with a
+   timeout, normalize the output.
+5. Every call is appended to the `ActionLog`, including blocked, limited and declined ones.
+
+Arming: 0.35 s, or 1 s for scripts; under caution the delay doubles (at least 1 s) and the card shows a banner
+("Otto read ‹source› just before asking."). An unanswered card expires after 10 minutes.
+
+**History echo** (`ToolHistory`). Each exchange is split at `contentEnd`, signed thinking is kept verbatim, and
+results go in their own user entry. Calls to tools not offered in this turn are downgraded to fenced data:
+`<earlier_action_result tool="…" title="…" untrusted="true">…</earlier_action_result>`, with `&`, `<`, `>` and `"`
+escaped so the result can't close its fence.
+
+**Results Claude sees** start with a code: `declined:`, `timeout:`, `cancelled:`, `limit:`, `disabled:`,
+`permission_denied:`, `invalid_input:`, `unknown_tool:`, `blocked:`. Successes are compact JSON with sorted keys
+and a `"status"` field.
+
+**Limits**
+
+| Scope | Limit |
+|---|---|
+| Rounds per reply | 10 by default, 3…25 in Settings |
+| Client tool calls per reply | 25 |
+| Per tool, per reply and per rolling hour | `run_applescript` 3 / 20 · `run_shortcut` 5 / 30 · `open_url` 3 / 20 · create event or reminder 5 · reads 10 · `media_control` 6 / 60 |
+| Approval wait | 10 minutes |
+| Tool output | 16,000 characters, 4 images |
+| Server tools per reply | 10 searches and 10 fetches |
+
+**Scripts and links.** `AppleScriptAnalyzer` lexes the source (strings, comments, chevrons, continuations) and
+joins concatenated string literals before it matches anything. It blocks administrator privileges, `run`/`load`/
+`store script`, raw `«event»` syntax, AppleScriptObjC, `with hidden answer`, browser JavaScript, `sudo`, hidden or
+bidi characters, more than 400 lines, lines over 300 characters and runs of hidden whitespace. It labels shell,
+UI scripting and screen capture as danger. The card lists what the script inherits from Otto ("Runs with Otto's
+access to: … macOS won't ask again"). `URLGuard` allows http and https only, parses numeric hosts the way browsers
+do, blocks loopback, private, link-local, CGNAT and ULA ranges and local names, and opens the default browser
+explicitly so a universal link can't hand the URL to another app.
+
+**Demo tools.** With `--demo`, `--selftest` and `--snapshot`, `ActionServices.demo` fakes EventKit, Shortcuts,
+osascript and the URL opener. `MockLLMClient` calls a tool only for exact phrases: "run my shortcut", "add … to my
+calendar", "run a script".
+
+### 16. Settings window
+
+`SettingsPanel` is a non-activating `NSPanel` (`[.moveToActiveSpace, .fullScreenAuxiliary]`, floating) hosting an
+`NSTabViewController` with one `SettingsView(settings:tab:services:)` per tab, 560 pt wide. `show(tab:anchor:)`
+never activates Otto: it moves the panel to the pointer's screen and Space and scrolls to the anchor.
+`openExternal(_:)` drops the panel to normal level before it opens System Settings or Finder, so the panel never
+covers the switch it sent the user to.
+
+| Tab | Contents |
+|---|---|
+| General | Keyboard shortcut recorder, launch at login, menu bar icon, custom instructions |
+| Notch | Open on hover, type after hovering, reply previews, notifications, Now Playing, next event and calendars |
+| Models | API key, model, response style, web search, cost on replies, usage totals |
+| Context | Browser tab, selected text, the window you're using, clipboard restore, Services, Shelf |
+| Actions | Master switch, one row per tool group, step limit, how Otto asks, approvals, activity log |
+| Voice | Talk to Otto, hold to talk, send when I let go, language, spoken replies, voice and speed |
+| Privacy | History, retention, idle reset, delete all, permissions, reset approvals, reset macOS permissions |
+
+### 17. Security and privacy rules
+
+- Every side effect is approved per call with an armed button and hardware input, except one named shortcut
+  the user marked "Always allow", under the conditions in section 15. Scripts and links are never remembered.
+- The card shows exactly what runs; the executor runs the validated input captured before the card appeared.
+- Outside content (pages, search results, files, the browser tab, calendar text, tool output) is data. The
+  system prompt says so, cards show where Otto read it, and fresh untrusted content raises the arming delay.
+- `ProcessRunner` uses absolute paths, no shell, its own process group, a minimal environment without
+  `ANTHROPIC_API_KEY`, capped output and a private temp directory.
+- Paste-back posts ⌘V only for the user's own ⌘↩ or click, never under secure input, after re-checking the
+  frontmost app; it strips control and escape characters, confirms multi-line pastes into terminals, and clears
+  (never restores) a clipboard that held a password-manager item.
+- Selection reading and window capture skip secure input, password fields and password managers.
+- The microphone runs only inside a hold or toggle session, stops on lock, sleep or user switch, and a session
+  ended by the watchdog never sends.
+- Lock-screen notifications say only "Tap to open Otto."
+- The activity log keeps titles, hosts and script fingerprints (first 200 characters and a SHA-256; full scripts
+  only by opt-in), follows the History retention, and is cleared with History.
+
+### 18. Tests, self-test and snapshots
+
+Unit tests live in `OttoTests/` and use the fakes in `OttoTests/Support/` (`FakePermissionProvider`,
+`FakeToolExecutor`, fake tools, `FakeProcessRunner`, `ScriptedLLMClient`, `ImageDiff`). No test touches the
+user's data, TCC, Apple Events, real key events or hot keys, or the network.
+`InputProvenanceProbeTests` is interactive and runs only with `OTTO_PROVENANCE_PROBE=1`.
+
+`--selftest <dir>` keeps the eleven v1.0 steps and adds tool approval, deny, stop during approval, arming that
+follows visibility, the calendar action with Undo, the fold, routes and the ⌘/ sheet, soft focus, key commands,
+regenerate, pinned outside clicks, Settings on the current Space, scripted voice, Services, Shelf drops, drop
+zones, a dry-run paste, the permission card, the glance, history, and real probes (signed builds only). The
+watchdog is 420 s.
+
+`--snapshot docs/snapshots` renders every scene through `NotchServices.inert` and `debugSeed(features:)` with
+animations off. The committed scenes are `closed.png`, `closed-activity.png`, `open-empty.png`,
+`open-chips.png`, `conversation.png`, `streaming.png`, `settings.png`, `closed-thinking.png`,
+`closed-searching.png`, `closed-writing.png`, `closed-preview.png`, `closed-preview-failed.png`,
+`closed-approval.png`, `closed-waiting.png`, `closed-media.png`, `closed-listening.png`, `open-glance.png`,
+`open-anchored.png`, `conversation-cost.png`, `approval.png`, `approval-event.png`, `approval-applescript.png`,
+`approval-applescript-long.png`, `approval-caution.png`, `permission.png`, `tool-cards.png`,
+`open-shortcuts.png`, `open-editing.png`, `open-tall.png`, `open-listening.png`, `open-pinned.png`,
+`card-voice.png`, `card-dictation.png`, `card-neighbor.png`, `open-selection.png`, `open-window-chip.png`,
+`answer-insert.png`, `drop-zones.png`, `shelf.png`, `shelf-empty.png`, `recents.png`, `recents-search.png`,
+`recents-empty.png`, `open-continue.png`, `open-history-notice.png`, and one per Settings tab:
+`settings-general.png`, `settings-notch.png`, `settings-models.png`, `settings-context.png`,
+`settings-actions.png`, `settings-voice.png`, `settings-privacy.png`. `SnapshotRegressionTests` diffs the scenes named in
+`OTTO_SNAPSHOT_BASELINE` against `docs/snapshots` (at most 0.5 % of pixels may differ by more than 8/255).
+
+The checks a person has to run on a signed build are the "v1.1 release gate" in
+[`RELEASING.md`](RELEASING.md#v11-release-gate).
