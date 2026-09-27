@@ -2,8 +2,9 @@
 //  ComposerView.swift
 //  Otto
 //
-//  The composer well: a multi-line prompt field, the "+" attach menu and the off-white
-//  send / stop button.
+//  The composer well: a multi-line prompt field (or, while Otto listens, the live transcript over it), the mic,
+//  the "+" attach menu and the off-white send / stop button. It glows while the keyboard goes to it and dims
+//  while an approval waits in the dock. Esc belongs to the panel's key monitor, never to the field.
 //
 
 import AppKit
@@ -11,6 +12,11 @@ import SwiftUI
 
 struct ComposerView: View {
     @Bindable var viewModel: NotchViewModel
+
+    init(viewModel: NotchViewModel) {
+        self.viewModel = viewModel
+    }
+
     @FocusState private var isFieldFocused: Bool
     @State private var focusTask: Task<Void, Never>?
 
@@ -22,41 +28,85 @@ struct ComposerView: View {
     /// Inset of the send button from the well's trailing and bottom edges.
     private static let trailingInset: CGFloat = 10
     private static let verticalInset: CGFloat = (minHeight - sendSize) / 2
+    /// The whole well while an approval waits in the dock: still usable for a draft, but clearly not the focus.
+    private static let dimmedOpacity: Double = 0.55
+    /// Between the mic and the +, and from the + to send.
+    private static let accessorySpacing: CGFloat = 8
+    private static let sendSpacing: CGFloat = 12
+
+    /// A voice session owns the well: the transcript shows over the (hidden) field.
+    private var isVoiceActive: Bool { viewModel.voice.isActive }
+
+    /// "Where do my keys go?": the panel is key and the field has focus (soft or hard focus alike).
+    private var showsFocusGlow: Bool { viewModel.isPanelKey && isFieldFocused && !isVoiceActive }
 
     var body: some View {
+        let placeholder = viewModel.composerPlaceholder
         HStack(alignment: .bottom, spacing: 0) {
-            TextField(
-                "Ask Otto anything…",
-                text: $viewModel.composerText,
-                prompt: Text("Ask Otto anything…").foregroundStyle(Theme.rgb(0x76767B)),
-                axis: .vertical
-            )
-            .textFieldStyle(.plain)
-            .font(Theme.font(15))
-            .foregroundStyle(Color.white.opacity(0.92))
-            .tint(Theme.sendFill)
-            .lineLimit(1...6)
-            .focused($isFieldFocused)
-            .onSubmit(submit)
-            .onExitCommand { viewModel.close() }
+            ZStack(alignment: .topLeading) {
+                TextField(
+                    placeholder,
+                    text: $viewModel.composerText,
+                    prompt: Text(placeholder).foregroundStyle(Theme.rgb(0x76767B)),
+                    axis: .vertical
+                )
+                .textFieldStyle(.plain)
+                .font(Theme.font(15))
+                .foregroundStyle(Color.white.opacity(0.92))
+                .tint(Theme.sendFill)
+                .lineLimit(1...6)
+                .focused($isFieldFocused)
+                .onSubmit(submit)
+                .opacity(isVoiceActive ? 0 : 1)
+                .allowsHitTesting(!isVoiceActive)
+                .accessibilityHidden(isVoiceActive)
+                .accessibilityLabel("Message Otto")
+
+                if isVoiceActive {
+                    LiveTranscriptView(
+                        finalizedText: viewModel.voice.finalizedText,
+                        volatileText: viewModel.voice.volatileText,
+                        meter: viewModel.voice.meter,
+                        isFinishing: viewModel.voice.phase == .finishing
+                    )
+                    .transition(.opacity)
+                }
+            }
             // Center one line of 15 pt text on the 32 pt send button; extra lines grow upward.
             .padding(.vertical, 7)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .accessibilityLabel("Message Otto")
+            .animation(.easeOut(duration: 0.18), value: isVoiceActive)
 
-            HStack(spacing: 12) {
+            HStack(spacing: Self.accessorySpacing) {
+                MicButton(
+                    state: viewModel.micState,
+                    meter: viewModel.voice.meter,
+                    onTap: tapMic,
+                    onHoldBegan: { viewModel.beginVoice(.hold(.micButton)) },
+                    onHoldEnded: {
+                        if viewModel.voice.isActive { viewModel.finishVoice(send: true) }
+                    },
+                    onOpenVoiceSettings: { viewModel.openSettings(tab: .voice) }
+                )
                 AttachMenuButton(viewModel: viewModel)
-                SendButton(viewModel: viewModel)
             }
+            // Sit on the send button's vertical center (the row is bottom-aligned).
+            .padding(.bottom, (Self.sendSize - Self.attachSize) / 2)
             .padding(.leading, 8)
+
+            SendButton(viewModel: viewModel)
+                .padding(.leading, Self.sendSpacing)
         }
         .padding(.leading, 18)
         .padding(.trailing, Self.trailingInset)
         .padding(.vertical, Self.verticalInset)
         .frame(minHeight: Self.minHeight)
         .clay(cornerRadius: Self.cornerRadius)
+        .overlay { FocusGlow(isVisible: showsFocusGlow) }
         .contentShape(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous))
         .onTapGesture { isFieldFocused = true }
+        .opacity(viewModel.needsAttention ? Self.dimmedOpacity : 1)
+        .animation(.easeOut(duration: 0.2), value: viewModel.needsAttention)
         .onChange(of: viewModel.focusRequest) { requestFocus() }
         .onAppear {
             if viewModel.isEngaged { requestFocus() }
@@ -64,10 +114,28 @@ struct ComposerView: View {
         .onDisappear { focusTask?.cancel() }
     }
 
+    /// Return in the field sends; while Otto listens it finishes and sends what was said instead.
     private func submit() {
+        if viewModel.voice.isActive {
+            viewModel.finishVoice(send: true)
+            return
+        }
         guard viewModel.canSend else { return }
         viewModel.send()
         requestFocus()
+    }
+
+    /// A click on the mic: starts listening (or asks for consent, or shows why it can't), and while listening
+    /// finishes and sends.
+    private func tapMic() {
+        switch viewModel.micState {
+        case .listening:
+            viewModel.finishVoice(send: true)
+        case .finishing:
+            break
+        case .off, .ready, .unavailable:
+            viewModel.beginVoice(.toggle(.micButton))
+        }
     }
 
     /// The panel may only just be becoming key when focus is requested, so focus on the next
@@ -85,16 +153,64 @@ struct ComposerView: View {
     }
 }
 
+// MARK: - Focus glow
+
+/// The well's top light brightens (the rim's white 0.10 reads as 0.18) and a 1 pt `orbLight` ring appears just
+/// outside it, while the keyboard goes to the composer.
+private struct FocusGlow: View {
+    let isVisible: Bool
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: ComposerView.cornerRadius, style: .continuous)
+        ZStack {
+            shape
+                .strokeBorder(Color.white.opacity(0.08), lineWidth: 1)
+                .mask(alignment: .top) {
+                    LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)
+                        .frame(height: 18)
+                }
+            shape
+                .inset(by: -1)
+                .strokeBorder(Theme.orbLight.opacity(0.22), lineWidth: 1)
+        }
+        .opacity(isVisible ? 1 : 0)
+        .animation(.easeOut(duration: 0.18), value: isVisible)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+}
+
 // MARK: - Attach menu
 
 private struct AttachMenuButton: View {
     let viewModel: NotchViewModel
 
+    /// Whether the app the notch opened from has a window Otto may capture (checked on each open).
+    private enum WindowAvailability: Equatable {
+        case unknown, available, none, passwordManager
+    }
+
+    @State private var windowAvailability: WindowAvailability = .unknown
+
+    static let passwordManagerCaption = "Otto doesn't capture password managers"
+
     var body: some View {
+        // Reading the presentation re-evaluates the menu on every open, when the app it names is captured.
+        let isOpen = viewModel.presentation == .open
         Menu {
             Button("Attach Files…", systemImage: "paperclip") { viewModel.pickFiles() }
             Button("Capture Screen Region", systemImage: "camera.viewfinder") { viewModel.captureScreenshot() }
             Button("Paste from Clipboard", systemImage: "doc.on.clipboard") { viewModel.pasteFromClipboard() }
+            if isOpen, let selectionTitle = viewModel.selectionMenuTitle {
+                Button(selectionTitle, systemImage: "text.quote") { viewModel.attachSelectionFromMenu() }
+            }
+            if isOpen, let windowTitle = viewModel.windowMenuTitle {
+                Button(windowTitle, systemImage: "macwindow") { viewModel.attachWindowFromMenu() }
+                    .disabled(windowAvailability != .available)
+                if windowAvailability == .passwordManager {
+                    Text(Self.passwordManagerCaption)
+                }
+            }
             if let suggestion = viewModel.suggestedTab {
                 Divider()
                 Button("Attach Current Tab", systemImage: "globe") { viewModel.acceptSuggestedTab() }
@@ -112,10 +228,28 @@ private struct AttachMenuButton: View {
         .menuIndicator(.hidden)
         .fixedSize()
         .ghostMenuButton(isMenuPresented: viewModel.isMenuPresented)
-        // Sit on the send button's vertical center (the row is bottom-aligned).
-        .padding(.bottom, (ComposerView.sendSize - ComposerView.attachSize) / 2)
         .help("Attach files, a screenshot or the clipboard")
         .accessibilityLabel("Attach")
+        .task(id: isOpen) { await refreshWindowAvailability(isOpen: isOpen) }
+    }
+
+    /// A window the chip already offers is capturable; a password manager never is; otherwise ask the window list.
+    private func refreshWindowAvailability(isOpen: Bool) async {
+        guard isOpen, let app = viewModel.openContextApp else {
+            windowAvailability = .unknown
+            return
+        }
+        if SensitiveApps.contains(app) {
+            windowAvailability = .passwordManager
+            return
+        }
+        if viewModel.suggestions.window?.app == app {
+            windowAvailability = .available
+            return
+        }
+        let hasWindow = await viewModel.suggestions.hasCapturableWindow(app)
+        guard !Task.isCancelled else { return }
+        windowAvailability = hasWindow ? .available : .none
     }
 }
 
@@ -140,37 +274,81 @@ private struct PlusGlyph: Shape {
 private struct SendButton: View {
     let viewModel: NotchViewModel
 
-    private var isStreaming: Bool { viewModel.chat.isStreaming }
-    private var isEnabled: Bool { isStreaming || viewModel.canSend }
+    /// What the button does right now.
+    private enum Role: Equatable {
+        /// Finish listening and send what was said.
+        case finishVoice
+        /// The last words are landing; nothing to do.
+        case finishing
+        case stop
+        case send
+    }
+
+    private var role: Role {
+        switch viewModel.voice.phase {
+        case .preparing, .listening: return .finishVoice
+        case .finishing: return .finishing
+        case .idle: break
+        }
+        return viewModel.chat.isStreaming ? .stop : .send
+    }
+
+    private var isEnabled: Bool {
+        switch role {
+        case .finishVoice, .stop: return true
+        case .finishing: return false
+        case .send: return viewModel.canSend
+        }
+    }
+
+    private var help: String {
+        switch role {
+        case .finishVoice, .finishing: return "Send what you said (Return)"
+        case .stop: return "Stop (⌘.)"
+        case .send: return "Send (Return)"
+        }
+    }
+
+    private var accessibilityLabel: String {
+        switch role {
+        case .finishVoice, .finishing: return "Send what you said"
+        case .stop: return "Stop reply"
+        case .send: return "Send"
+        }
+    }
 
     var body: some View {
+        let role = self.role
+        let isEnabled = self.isEnabled
+        let isStop = role == .stop
         Button {
-            if isStreaming {
-                viewModel.stop()
-            } else if viewModel.canSend {
-                viewModel.send()
+            switch role {
+            case .finishVoice: viewModel.finishVoice(send: true)
+            case .stop: viewModel.stop()
+            case .send: if viewModel.canSend { viewModel.send() }
+            case .finishing: break
             }
         } label: {
-            Image(systemName: isStreaming ? "stop.fill" : "arrow.up")
+            Image(systemName: isStop ? "stop.fill" : "arrow.up")
                 // 13 pt medium draws a thin arrow (≈1.5 pt stroke), as in the reference.
-                .font(.system(size: isStreaming ? 11 : 13, weight: isStreaming ? .semibold : .medium))
+                .font(.system(size: isStop ? 11 : 13, weight: isStop ? .semibold : .medium))
                 .foregroundStyle(isEnabled ? Theme.sendGlyph : Theme.sendDisabledGlyph)
                 .contentTransition(.symbolEffect(.replace))
                 .frame(width: ComposerView.sendSize, height: ComposerView.sendSize)
-                .background { disc }
+                .background { disc(isEnabled: isEnabled) }
                 .contentShape(Circle())
         }
         .buttonStyle(PressableButtonStyle())
         .disabled(!isEnabled)
         .animation(.easeOut(duration: 0.15), value: isEnabled)
-        .help(isStreaming ? "Stop" : "Send (Return)")
-        .accessibilityLabel(isStreaming ? "Stop reply" : "Send")
+        .help(help)
+        .accessibilityLabel(accessibilityLabel)
     }
 
     /// Enabled: a cool light-grey disc, gently domed (#E2E3E5 → #C9CACC), with a line of light
     /// across its top and a soft shadow. Disabled: a dark clay disc on the pebble gradient (rather
     /// than a faded pearl, which reads as a muddy gray blob, or a flat grey hole).
-    private var disc: some View {
+    private func disc(isEnabled: Bool) -> some View {
         ZStack {
             Circle()
                 .fill(
