@@ -83,7 +83,12 @@ final class InputProvenanceProbeTests: XCTestCase {
         let deadline = Date().addingTimeInterval(Self.stepTimeout)
         while Date() < deadline {
             if let event = view.events.dropFirst(start).first(where: predicate) { return event }
-            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            // Spinning the run loop alone never dispatches window-server events, so the app would
+            // beachball and the probe window would never see the click. Pull and send them here.
+            if let event = NSApp.nextEvent(matching: .any, until: Date().addingTimeInterval(0.05),
+                                           inMode: .default, dequeue: true) {
+                NSApp.sendEvent(event)
+            }
         }
         XCTFail("No matching input within \(Int(Self.stepTimeout)) seconds")
         throw XCTSkip("The probe step timed out.")
