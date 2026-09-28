@@ -1,0 +1,22 @@
+<?xml version="1.0" standalone="yes"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+    <channel>
+        <title>Otto</title>
+        <item>
+            <title>1.1.0</title>
+            <pubDate>Mon, 05 Oct 2026 16:00:00 +0000</pubDate>
+            <link>https://otto-fixture.test/</link>
+            <sparkle:version>2</sparkle:version>
+            <sparkle:shortVersionString>1.1.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <description><![CDATA[<ul>
+<li>A fixture release for the script tests.</li>
+</ul>]]></description>
+            <enclosure url="https://otto-fixture-downloads.public.blob.vercel-storage.com/releases/Otto-1.1.0.dmg" length="5161143" type="application/octet-stream" sparkle:edSignature="Zml4dHVyZS1pdGVtLXNpZ25hdHVyZQ=="/>
+        </item>
+    </channel>
+</rss>
+<!-- sparkle-signatures:
+edSignature: Zml4dHVyZS1mZWVkLXNpZ25hdHVyZQ==
+length: 1024
+-->

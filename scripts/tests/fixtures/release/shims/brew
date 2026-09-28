@@ -1,0 +1,5 @@
+#!/bin/bash
+# brew shim: publish.sh's brew style step, without Homebrew's network or gems. The real brew style runs once, on the
+# golden cask, in release_script_test.sh.
+echo "brew $*" >>"${SHIM_LOG:?}"
+exit 0

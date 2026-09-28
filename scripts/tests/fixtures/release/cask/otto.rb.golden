@@ -1,0 +1,30 @@
+cask "otto" do
+  version "1.1.0"
+  sha256 "3f2b8c1d9e0a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"
+
+  url "https://otto-fixture-downloads.public.blob.vercel-storage.com/releases/Otto-#{version}.dmg",
+      verified: "otto-fixture-downloads.public.blob.vercel-storage.com/releases/"
+  name "Otto"
+  desc "AI assistant that lives in the notch"
+  homepage "https://otto-fixture.test/"
+
+  livecheck do
+    url "https://otto-fixture.test/appcast.xml"
+    strategy :sparkle, &:short_version
+  end
+
+  auto_updates true
+  depends_on macos: :sonoma
+
+  app "Otto.app"
+
+  uninstall quit: "com.jalenedusei.otto"
+
+  zap login_item: "Otto",
+      trash:      [
+        "~/Library/Application Support/Otto",
+        "~/Library/Caches/com.jalenedusei.otto",
+        "~/Library/HTTPStorages/com.jalenedusei.otto",
+        "~/Library/Preferences/com.jalenedusei.otto.plist",
+      ]
+end

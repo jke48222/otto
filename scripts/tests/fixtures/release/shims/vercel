@@ -1,0 +1,9 @@
+#!/bin/bash
+# vercel shim: logged in, and the Blob store answers. An upload fails, because a script test must never reach one.
+echo "vercel $*" >>"${SHIM_LOG:?}"
+case "$1 ${2:-}" in
+    "whoami "*) echo "otto-fixture"; exit 0 ;;
+    "blob list") echo "No blobs found"; exit 0 ;;
+esac
+echo "vercel shim: $1 ${2:-} is not allowed in a script test" >&2
+exit 1

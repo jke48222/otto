@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "siteHost": "JALEN_MUST_SET_SITE_HOST",
+  "downloadsHost": "JALEN_MUST_SET_BLOB_HOST",
+  "seller": {
+    "legalName": "JALEN_MUST_SET_LEGAL_NAME",
+    "supportEmail": "JALEN_MUST_SET_SUPPORT_EMAIL",
+    "governingLaw": "JALEN_MUST_SET_US_STATE"
+  },
+  "price": {"usd": 19, "seats": 3, "trialDays": 14, "refundDays": 30, "studentDiscountPercent": 30, "minMacOS": "14"},
+  "polar": {
+    "checkoutURL": "JALEN_MUST_SET_POLAR_CHECKOUT_LINK",
+    "portalURL": "JALEN_MUST_SET_POLAR_PORTAL_URL"
+  },
+  "launch": {
+    "usd": 14,
+    "startsAt": "JALEN_MUST_SET_ISO8601",
+    "endsAt": "JALEN_MUST_SET_ISO8601",
+    "timeZone": "JALEN_MUST_SET_IANA_TIME_ZONE",
+    "checkoutURL": "JALEN_MUST_SET_POLAR_LAUNCH_CHECKOUT_LINK"
+  },
+  "legal": {"approved": false, "effectiveDate": "JALEN_MUST_SET_DATE"}
+}

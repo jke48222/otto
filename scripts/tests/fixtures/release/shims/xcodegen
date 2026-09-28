@@ -1,0 +1,4 @@
+#!/bin/bash
+# xcodegen shim: logs the call and succeeds without generating anything.
+echo "xcodegen $*" >>"${SHIM_LOG:?}"
+exit 0

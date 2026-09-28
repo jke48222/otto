@@ -1,0 +1,84 @@
+#!/bin/bash
+# curl shim: answers Polar, Gumroad and the site from fixtures; nothing leaves the Mac. Logs the URL, each -H header
+# (curl-header) and the body read from stdin (curl-body).
+#   SHIM_PROBE     the Polar version probe: ok (versioned 404, the default) | bare404
+#   SHIM_CANARY    the Polar canary (a validate whose key is SHIM_POLAR_CANARY_KEY): granted (default) | 404 |
+#                  limit5 | revoked
+#   SHIM_GUMROAD   the Gumroad canary: ok (default) | 404 | refunded
+#   SHIM_BUY_STATUS  the status of a HEAD request for https://<site>/buy (default 404)
+url=""
+request_headers=()
+headers_file=""
+body_file=""
+head=0
+reads_stdin=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -D) headers_file=$2; shift 2 ;;
+        -o) body_file=$2; shift 2 ;;
+        -H) request_headers+=("$2"); shift 2 ;;
+        -X | --max-time) shift 2 ;;
+        --data-binary)
+            [ "$2" = "@-" ] && reads_stdin=1
+            shift 2
+            ;;
+        -sfI | -I | -sI) head=1; shift ;;
+        -*) shift ;;
+        *) url=$1; shift ;;
+    esac
+done
+echo "curl $url" >>"${SHIM_LOG:?}"
+for header in ${request_headers[@]+"${request_headers[@]}"}; do
+    echo "curl-header $header" >>"$SHIM_LOG"
+done
+body=""
+if [ $reads_stdin = 1 ]; then
+    body=$(cat)
+    echo "curl-body $body" >>"$SHIM_LOG"
+fi
+
+# answer STATUS HEADER_LINES BODY: writes the response where curl was told to.
+answer() {
+    local status=$1 extra=$2 content=$3
+    local head_text
+    head_text=$(printf 'HTTP/2 %s\r\ncontent-type: application/json\r\n%s\r\n' "$status" "$extra")
+    if [ -n "$headers_file" ]; then printf '%s\n' "$head_text" >"$headers_file"; fi
+    if [ -n "$body_file" ]; then printf '%s' "$content" >"$body_file"; else printf '%s' "$content"; fi
+}
+
+benefit=c4e6a8b0-2d4f-4b6d-8f0a-6c8e0a2c4e6f
+case "$url" in
+    https://api.polar.sh/v1/customer-portal/license-keys/validate)
+        if [ -n "${SHIM_POLAR_CANARY_KEY:-}" ] && [[ "$body" == *"\"key\":\"$SHIM_POLAR_CANARY_KEY\""* ]]; then
+            case "${SHIM_CANARY:-granted}" in
+                granted) answer 200 "polar-version: 2026-10" "{\"id\":\"lk_fixture\",\"benefit_id\":\"$benefit\",\"status\":\"granted\",\"display_key\":\"****-E304DA\",\"limit_activations\":3,\"customer\":{\"email\":\"canary@otto-fixture.test\"}}" ;;
+                limit5) answer 200 "polar-version: 2026-10" "{\"id\":\"lk_fixture\",\"benefit_id\":\"$benefit\",\"status\":\"granted\",\"display_key\":\"****-E304DA\",\"limit_activations\":5}" ;;
+                revoked) answer 200 "polar-version: 2026-10" "{\"id\":\"lk_fixture\",\"benefit_id\":\"$benefit\",\"status\":\"revoked\",\"display_key\":\"****-E304DA\",\"limit_activations\":3}" ;;
+                404) answer 404 "polar-version: 2026-10" '{"error":"ResourceNotFound","detail":"Not found"}' ;;
+            esac
+        else
+            case "${SHIM_PROBE:-ok}" in
+                ok) answer 404 "polar-version: 2026-10" '{"error":"ResourceNotFound","detail":"Not found"}' ;;
+                bare404) answer 404 "" '{"detail":"Not Found"}' ;;
+            esac
+        fi
+        exit 0
+        ;;
+    https://api.gumroad.com/v2/licenses/verify)
+        case "${SHIM_GUMROAD:-ok}" in
+            ok) answer 200 "" '{"success":true,"uses":1,"purchase":{"refunded":false,"chargebacked":false,"disputed":false,"dispute_won":false,"quantity":1,"email":"canary@otto-fixture.test"}}' ;;
+            refunded) answer 200 "" '{"success":true,"uses":1,"purchase":{"refunded":true,"chargebacked":false,"disputed":false,"dispute_won":false,"quantity":1}}' ;;
+            404) answer 404 "" '{"success":false,"message":"That license does not exist for the provided product."}' ;;
+        esac
+        exit 0
+        ;;
+    https://*/buy)
+        status=${SHIM_BUY_STATUS:-404}
+        if [ "$status" != 200 ]; then exit 22; fi
+        printf 'HTTP/2 200\r\ncontent-type: text/html; charset=utf-8\r\n\r\n'
+        exit 0
+        ;;
+esac
+if [ $head = 1 ]; then exit 22; fi
+echo "curl shim: no fixture answer for $url" >&2
+exit 7
