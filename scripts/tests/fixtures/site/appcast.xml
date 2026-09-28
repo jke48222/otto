@@ -1,0 +1,19 @@
+<?xml version="1.0" standalone="yes"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+    <channel>
+        <title>Otto</title>
+        <item>
+            <title>1.1.0</title>
+            <pubDate>Mon, 12 Oct 2026 17:00:00 +0000</pubDate>
+            <link>https://otto.example.com/</link>
+            <sparkle:version>12</sparkle:version>
+            <sparkle:shortVersionString>1.1.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://fixture.public.blob.vercel-storage.com/releases/Otto-1.1.0.dmg" length="5234567" type="application/octet-stream" sparkle:edSignature="Zml4dHVyZSBzaWduYXR1cmUsIG5vdCBhIHJlYWwgb25lLg=="/>
+        </item>
+    </channel>
+</rss>
+<!-- sparkle-signatures:
+edSignature: Zml4dHVyZSBmZWVkIHNpZ25hdHVyZSwgbm90IGEgcmVhbCBvbmUu
+length: 842
+-->

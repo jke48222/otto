@@ -700,6 +700,89 @@ code {
   color: var(--text-3);
 }
 
+/* ---------- Pricing band, the buy page, the thank-you and download pages, legal pages ---------- */
+
+[hidden] { display: none !important; }
+
+.faq__body + .faq__body { margin-top: -10px; }
+
+.hero--page { padding-bottom: 96px; }
+.hero--page .lede { max-width: 40ch; }
+.hero--page .cta-row { margin-top: 30px; }
+
+.launch-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin: 26px 0 0;
+  padding: 8px 18px 8px 14px;
+  font-size: 0.92rem;
+  font-weight: 500;
+  color: var(--text);
+  background: linear-gradient(180deg, #1d1e21, #0f1012);
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  box-shadow: inset 0 1px 0 var(--clay-hi), 0 8px 24px rgba(0, 0, 0, 0.45);
+  text-wrap: balance;
+}
+.launch-line::before {
+  content: "";
+  flex: none;
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--warm);
+  box-shadow: 0 0 10px rgba(244, 241, 234, 0.6);
+}
+
+.pricing-band { padding: 24px 0 40px; }
+.pricing-band__inner {
+  padding: 64px 24px 68px;
+  text-align: center;
+  border-radius: 36px;
+  background:
+    var(--grain) 0 0 / 180px 180px,
+    radial-gradient(70% 90% at 50% 0%, rgba(244, 241, 234, 0.07), transparent 70%),
+    linear-gradient(180deg, #151618, #0a0a0b);
+  background-blend-mode: soft-light, normal, normal;
+  border: 1px solid var(--line);
+  box-shadow: inset 0 1px 0 var(--clay-hi), 0 40px 100px rgba(0, 0, 0, 0.55);
+}
+.pricing-band__inner .cta-row { margin-top: 30px; }
+
+.plan-grid {
+  display: grid;
+  grid-template-columns: 1.15fr 1fr;
+  gap: 20px;
+  align-items: stretch;
+}
+.plan { padding: 36px 34px 34px; }
+.plan .h3 { margin-bottom: 24px; }
+.plan-notes { display: grid; gap: 20px; }
+.plan-note { padding: 30px 30px 28px; }
+.plan-note p { margin: 0; font-size: 0.98rem; color: var(--text-2); text-wrap: pretty; }
+
+.steps--short .step { padding: 28px 26px 30px; }
+.steps--short .step p { color: var(--text); font-size: 1.04rem; }
+
+.page-note {
+  max-width: 60ch;
+  margin: 40px auto 0;
+  text-align: center;
+  color: var(--text-2);
+  text-wrap: pretty;
+}
+.page-note + .page-note { margin-top: 12px; }
+
+.checksum code { word-break: break-all; }
+
+.doc { padding: 150px 0 72px; }
+.doc__head { margin-bottom: 44px; }
+.doc__meta { margin: 16px 0 0; font-size: 0.92rem; color: var(--text-3); }
+.doc__intro { margin: 20px 0 0; max-width: 64ch; font-size: 1.12rem; color: var(--text-2); text-wrap: pretty; }
+.doc__section { padding: 26px 0; border-top: 1px solid var(--line); }
+.doc__section p { margin: 0; max-width: 68ch; color: var(--text-body); text-wrap: pretty; }
+.doc__section p + p { margin-top: 12px; }
+
 /* ---------- Reveal on scroll (only when JS is running and motion is welcome) ---------- */
 
 .js .reveal {
@@ -725,6 +808,7 @@ code {
   .pillar__copy { max-width: 620px; }
   .steps { grid-template-columns: 1fr; }
   .notchbar__links { display: none; }
+  .plan-grid { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 720px) {
@@ -751,6 +835,12 @@ code {
   .faq__item summary { padding: 18px 54px 18px 20px; }
   .faq__body { padding: 0 20px 20px; }
   .notchbar__inner { height: 50px; gap: 18px; padding: 0 8px 0 18px; --notch-r: 18px; }
+  .hero--page { padding-bottom: 64px; }
+  .launch-line { border-radius: 16px; font-size: 0.86rem; text-align: left; }
+  .pricing-band__inner { padding: 52px 20px 52px; border-radius: 28px; }
+  .plan { padding: 28px 22px 26px; }
+  .plan-note { padding: 26px 22px 24px; }
+  .doc { padding: 116px 0 56px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

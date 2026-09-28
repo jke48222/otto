@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta http-equiv="refresh" content="1; url={{DMG_URL}}">
+  <title>Download Otto</title>
+  <meta name="description" content="Download Otto {{VERSION}} for macOS {{MIN_MACOS}} or later. The first {{TRIAL_DAYS}} days are a free trial with every feature.">
+  <meta name="robots" content="noindex">
+  <meta name="theme-color" content="#060607">
+  <meta name="color-scheme" content="dark">
+  <link rel="canonical" href="__SITE_URL__/download">
+
+  <link rel="icon" type="image/png" href="media/icon.png">
+  <link rel="apple-touch-icon" href="media/icon.png">
+  <link rel="stylesheet" href="styles.css">
+  <script>document.documentElement.classList.add("js");</script>
+  <script src="script.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="notchbar" id="top">
+    <nav class="notchbar__inner" aria-label="Primary">
+      <a class="brand" href="/" aria-label="Otto, home">
+        <span class="orb" aria-hidden="true"></span>
+        <span class="brand__name">Otto</span>
+      </a>
+      <ul class="notchbar__links">
+        <li><a href="/#features">Features</a></li>
+        <li><a href="/buy">Pricing</a></li>
+        <li><a href="/privacy">Privacy</a></li>
+        <li><a href="/#faq">FAQ</a></li>
+      </ul>
+      <a class="notchbar__cta" href="/buy">Buy Otto</a>
+    </nav>
+  </header>
+
+  <main id="main">
+    <section class="hero hero--page" aria-labelledby="download-title">
+      <div class="hero__glow" aria-hidden="true"></div>
+      <div class="wrap hero__copy">
+        <img class="hero__icon" src="media/icon.png" width="512" height="512" alt="" decoding="async">
+        <h1 id="download-title" class="h2 reveal">Downloading Otto {{VERSION}}</h1>
+        <p class="lede reveal">The download starts in a moment. If it doesn't, use the button below.</p>
+        <div class="cta-row reveal">
+          <a class="btn btn--primary" href="{{DMG_URL}}">
+            <svg class="btn__icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false"><path d="M10 3.5v9m-3.6-3.6L10 12.5l3.6-3.6M4.5 16h11" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            Download Otto {{VERSION}} ({{DMG_SIZE}})
+          </a>
+        </div>
+        <p class="page-note reveal">Open the disk image and drag Otto to Applications. The first {{TRIAL_DAYS}} days are a free trial with every feature, and you don't need a card. Otto needs macOS {{MIN_MACOS}} or later and an Anthropic API key.</p>
+        <p class="page-note reveal"><a href="/buy">See pricing</a></p>
+        <p class="fineprint checksum reveal">SHA-256: <code>{{DMG_SHA256}}</code></p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap footer__inner">
+      <div class="footer__brand">
+        <span class="orb" aria-hidden="true"></span>
+        <span class="brand__name">Otto</span>
+      </div>
+      <nav class="footer__links" aria-label="Footer">
+        <a href="/terms">Terms</a>
+        <a href="/privacy">Privacy</a>
+        <a href="/refunds">Refunds</a>
+        <a href="mailto:{{SUPPORT_EMAIL}}">{{SUPPORT_EMAIL}}</a>
+      </nav>
+      <p class="footer__legal">© 2026 Jalen Edusei. Released under the MIT License.<br>
+        Otto is an independent project and is not affiliated with, endorsed by or sponsored by Anthropic. Claude and Anthropic are trademarks of Anthropic, PBC.</p>
+    </div>
+  </footer>
+</body>
+</html>

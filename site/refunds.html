@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Otto refund policy</title>
+  <meta name="description" content="Otto's refund policy: {{REFUND_DAYS}} days, full refund, no questions.">
+  <meta name="theme-color" content="#060607">
+  <meta name="color-scheme" content="dark">
+  <link rel="canonical" href="__SITE_URL__/refunds">
+
+  <link rel="icon" type="image/png" href="media/icon.png">
+  <link rel="apple-touch-icon" href="media/icon.png">
+  <link rel="stylesheet" href="styles.css">
+  <script>document.documentElement.classList.add("js");</script>
+  <script src="script.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="notchbar" id="top">
+    <nav class="notchbar__inner" aria-label="Primary">
+      <a class="brand" href="/" aria-label="Otto, home">
+        <span class="orb" aria-hidden="true"></span>
+        <span class="brand__name">Otto</span>
+      </a>
+      <ul class="notchbar__links">
+        <li><a href="/#features">Features</a></li>
+        <li><a href="/buy">Pricing</a></li>
+        <li><a href="/privacy">Privacy</a></li>
+        <li><a href="/#faq">FAQ</a></li>
+      </ul>
+      <a class="notchbar__cta" href="/buy">Buy Otto</a>
+    </nav>
+  </header>
+
+  <main id="main" class="doc">
+    <div class="wrap wrap--narrow">
+      <header class="doc__head">
+        <h1 class="h2">Refund policy</h1>
+        <p class="doc__intro">If Otto isn't right for you, I'll refund it: {{REFUND_DAYS}} days, full refund, no questions.</p>
+      </header>
+
+      <section class="doc__section" aria-labelledby="refunds-how">
+        <h2 id="refunds-how" class="h4">How</h2>
+        <p>Email <a href="mailto:{{SUPPORT_EMAIL}}">{{SUPPORT_EMAIL}}</a> from the address you bought with, or reply to your Polar receipt, within {{REFUND_DAYS}} days of your purchase. I refund through Polar, usually within 2 business days. Your bank can take 5 to 10 more days to show it.</p>
+      </section>
+
+      <section class="doc__section" aria-labelledby="refunds-license">
+        <h2 id="refunds-license" class="h4">What happens to the license</h2>
+        <p>A refund turns the license off. The app confirms it over two checks, usually within 2 days, and then asks for a license before it sends messages. Your settings, history and files stay on your Mac, and the source build stays free.</p>
+      </section>
+
+      <section class="doc__section" aria-labelledby="refunds-stores">
+        <h2 id="refunds-stores" class="h4">Other stores</h2>
+        <p>Bought on Gumroad: the same {{REFUND_DAYS}} days, through Gumroad or by emailing me. Using Otto through Setapp: Setapp handles billing and refunds under its own policy.</p>
+      </section>
+
+      <section class="doc__section" aria-labelledby="refunds-chargebacks">
+        <h2 id="refunds-chargebacks" class="h4">Chargebacks</h2>
+        <p>Polar can refund an order on its own within 60 days of purchase to prevent a chargeback. The license turns off then too.</p>
+      </section>
+    </div>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap footer__inner">
+      <div class="footer__brand">
+        <span class="orb" aria-hidden="true"></span>
+        <span class="brand__name">Otto</span>
+      </div>
+      <nav class="footer__links" aria-label="Footer">
+        <a href="/terms">Terms</a>
+        <a href="/privacy">Privacy</a>
+        <a href="/refunds" aria-current="page">Refunds</a>
+        <a href="mailto:{{SUPPORT_EMAIL}}">{{SUPPORT_EMAIL}}</a>
+      </nav>
+      <p class="footer__legal">© 2026 Jalen Edusei. Released under the MIT License.<br>
+        Otto is an independent project and is not affiliated with, endorsed by or sponsored by Anthropic. Claude and Anthropic are trademarks of Anthropic, PBC.</p>
+    </div>
+  </footer>
+</body>
+</html>

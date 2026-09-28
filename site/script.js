@@ -34,6 +34,38 @@
     revealables.forEach(function (el) { revealObserver.observe(el); });
   }
 
+  /* Launch week: at the instant in data-ends-at, each buy button takes its regular label and link
+     together, and each data-launch-only line hides. Checked once now and once by a single timeout for
+     that instant; no countdown. A page without [data-ends-at] does nothing here. */
+  function endLaunch(el) {
+    if (el.hasAttribute("data-launch-only")) {
+      el.hidden = true;
+      return;
+    }
+    var href = el.getAttribute("data-href-regular");
+    var label = el.getAttribute("data-label-regular");
+    if (href) el.setAttribute("href", href);
+    if (label) (el.querySelector(".btn__label") || el).textContent = label;
+  }
+
+  var launchGroups = {};
+  Array.prototype.forEach.call(document.querySelectorAll("[data-ends-at]"), function (el) {
+    var endsAt = Date.parse(el.getAttribute("data-ends-at"));
+    if (isNaN(endsAt)) return;
+    (launchGroups[endsAt] = launchGroups[endsAt] || []).push(el);
+  });
+  Object.keys(launchGroups).forEach(function (key) {
+    var els = launchGroups[key];
+    var wait = Number(key) - Date.now();
+    var finish = function () { els.forEach(endLaunch); };
+    if (wait <= 0) {
+      finish();
+    } else if (wait <= 2147483647) {
+      // Longer waits would overflow setTimeout's 32-bit delay; a launch week never needs one.
+      window.setTimeout(finish, wait);
+    }
+  });
+
   /* Promo video: honour reduced motion, offer pause/play, and pause while off screen. */
   var video = document.getElementById("promo");
   var toggle = document.getElementById("promo-toggle");
