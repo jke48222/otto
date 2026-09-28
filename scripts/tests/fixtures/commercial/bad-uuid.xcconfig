@@ -1,0 +1,17 @@
+// Fixture for scripts/tests/check_commercial_config_test.sh: valid.xcconfig with one change.
+// An uppercase Polar benefit id (an error: IDs are lowercase UUID v4).
+
+OTTO_SITE_HOST = otto-fixture.test
+OTTO_SUPPORT_EMAIL = help@otto-fixture.test
+
+OTTO_POLAR_API_HOST = api.polar.sh
+OTTO_POLAR_API_HOST[config=Debug] = sandbox-api.polar.sh
+OTTO_POLAR_ORGANIZATION_ID = 3b0d8c2e-5f1a-4e6b-9c7d-2a4f6e8b0c1d
+OTTO_POLAR_ORGANIZATION_ID[config=Debug] = 9e7c5a3b-1d2f-4a6c-8e0b-4d6f8a0c2e4b
+OTTO_POLAR_BENEFIT_ID = C4E6A8B0-2D4F-4B6D-8F0A-6C8E0A2C4E6F
+OTTO_POLAR_BENEFIT_ID[config=Debug] = 5a7c9e1b-3d5f-4c7e-a9b1-8d0f2b4d6f8a
+OTTO_POLAR_PORTAL_SLUG = otto-fixture
+
+OTTO_GUMROAD_PRODUCT_ID = OttoFixtureProduct==
+
+OTTO_SPARKLE_PUBLIC_ED_KEY = KOMFi2KJbii7Uyn/YoVI+QwuGpI/0F20G0ZuYb+1F4I=

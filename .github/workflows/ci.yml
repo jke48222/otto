@@ -72,3 +72,223 @@ jobs:
           name: TestResults
           path: build/TestResults.xcresult
           retention-days: 7
+
+  # The license and flavor machinery (SPEC-v2 §14.17.3): script tests found by glob, the licensing-check build's
+  # full test suite, and a source Release build audited for anything a flavor adds. No packages are resolved here.
+  licensing:
+    name: Licensing check
+    runs-on: macos-26
+    timeout-minutes: 45
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_INSTALL_CLEANUP: "1"
+      HOMEBREW_NO_ENV_HINTS: "1"
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+
+      - name: Select newest stable Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Otto.xcodeproj
+        run: xcodegen generate --spec project.yml
+
+      - name: Script tests
+        run: |
+          for t in scripts/tests/*_test.sh; do bash "$t" || exit 1; done
+
+      - name: Node tests
+        run: |
+          if compgen -G 'scripts/tests/*.test.mjs' > /dev/null; then node --test scripts/tests/*.test.mjs; fi
+
+      # Ad hoc signing, as in the build-and-test job.
+      - name: Licensing-check build and test
+        run: |
+          set -o pipefail
+          mkdir -p build
+          xcodebuild \
+            -project Otto.xcodeproj \
+            -scheme Otto \
+            -configuration Debug \
+            -destination 'platform=macOS' \
+            -derivedDataPath build/licensing \
+            CODE_SIGN_IDENTITY=- \
+            CODE_SIGN_STYLE=Manual \
+            DEVELOPMENT_TEAM= \
+            CODE_SIGNING_REQUIRED=NO \
+            'SWIFT_ACTIVE_COMPILATION_CONDITIONS=DEBUG OTTO_LICENSING' \
+            test 2>&1 | tee build/licensing-test.log
+          grep -q "Test Suite 'LicensePolicyTests' passed" build/licensing-test.log
+
+      - name: Source Release build and flavor audit
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project Otto.xcodeproj \
+            -scheme Otto \
+            -configuration Release \
+            -destination 'generic/platform=macOS' \
+            -derivedDataPath build/release-source \
+            CODE_SIGN_IDENTITY=- \
+            CODE_SIGN_STYLE=Manual \
+            DEVELOPMENT_TEAM= \
+            build
+          scripts/audit_flavor.sh --flavor source build/release-source/Build/Products/Release/Otto.app
+
+  # The paid and Setapp builds, each generated from its own spec with its one pinned package.
+  flavors:
+    name: Flavor ${{ matrix.flavor }}
+    runs-on: macos-26
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        flavor: [paid, setapp]
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_INSTALL_CLEANUP: "1"
+      HOMEBREW_NO_ENV_HINTS: "1"
+      FLAVOR: ${{ matrix.flavor }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+
+      - name: Select newest stable Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate every project and check the tree stays clean
+        run: |
+          xcodegen generate
+          xcodegen generate --spec project-paid.yml
+          xcodegen generate --spec project-setapp.yml
+          test -z "$(git status --porcelain)" || { git status --porcelain; exit 1; }
+
+      - name: Cache Swift packages
+        uses: actions/cache@v4
+        with:
+          path: build/spm
+          key: spm-${{ runner.os }}-${{ hashFiles('project-paid.yml', 'project-setapp.yml') }}
+
+      - name: Name the project
+        run: |
+          case "$FLAVOR" in
+            paid) echo "PROJECT=OttoPaid.xcodeproj" >> "$GITHUB_ENV" ;;
+            setapp) echo "PROJECT=OttoSetapp.xcodeproj" >> "$GITHUB_ENV" ;;
+          esac
+
+      # An ad hoc, hardened test host can refuse to load the ad hoc Sparkle.framework under library validation, so
+      # this step alone turns the hardened runtime off. Release builds keep it.
+      - name: Paid Debug test
+        if: matrix.flavor == 'paid'
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project "$PROJECT" \
+            -scheme Otto \
+            -configuration Debug \
+            -destination 'platform=macOS' \
+            -derivedDataPath build/paid \
+            -clonedSourcePackagesDirPath build/spm \
+            CODE_SIGN_IDENTITY=- \
+            CODE_SIGN_STYLE=Manual \
+            DEVELOPMENT_TEAM= \
+            CODE_SIGNING_REQUIRED=NO \
+            ENABLE_HARDENED_RUNTIME=NO \
+            test
+
+      - name: Setapp Debug build
+        if: matrix.flavor == 'setapp'
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project "$PROJECT" \
+            -scheme Otto \
+            -configuration Debug \
+            -destination 'platform=macOS' \
+            -derivedDataPath build/setapp \
+            -clonedSourcePackagesDirPath build/spm \
+            CODE_SIGN_IDENTITY=- \
+            CODE_SIGN_STYLE=Manual \
+            DEVELOPMENT_TEAM= \
+            CODE_SIGNING_REQUIRED=NO \
+            build
+
+      # (a) With the committed configuration, the Release build fails if and only if the checker reports a problem,
+      # and a failing build's log carries every error line the checker printed.
+      - name: Loud failure with the committed configuration
+        run: |
+          checker_status=0
+          scripts/check_commercial_config.sh --flavor "$FLAVOR" --configuration Release \
+            --xcconfig Config/Commercial.xcconfig > build/checker.log || checker_status=$?
+          cat build/checker.log
+          build_status=0
+          xcodebuild \
+            -project "$PROJECT" \
+            -scheme Otto \
+            -configuration Release \
+            -destination 'generic/platform=macOS' \
+            -derivedDataPath "build/release-committed-$FLAVOR" \
+            -clonedSourcePackagesDirPath build/spm \
+            CODE_SIGN_IDENTITY=- \
+            CODE_SIGN_STYLE=Manual \
+            DEVELOPMENT_TEAM= \
+            build > build/release-committed.log 2>&1 || build_status=$?
+          tail -n 40 build/release-committed.log
+          if [ "$checker_status" -eq 1 ]; then
+            test "$build_status" -ne 0 || { echo "The checker reported problems but the Release build succeeded."; exit 1; }
+            grep '^error: ' build/checker.log | while IFS= read -r line; do
+              grep -qF -- "$line" build/release-committed.log || { echo "Missing from the build log: $line"; exit 1; }
+            done
+          else
+            test "$checker_status" -eq 0 || exit 1
+            test "$build_status" -eq 0 || { echo "The checker passed but the Release build failed."; exit 1; }
+          fi
+
+      # (b) With the fixture configuration the checker passes and the Release build succeeds. Until Jalen commits the
+      # real Setapp key (J14), the fixture key is copied in before generation and deleted afterwards.
+      - name: Fixture Release build
+        run: |
+          set -o pipefail
+          fixture=scripts/tests/fixtures/commercial/valid.xcconfig
+          pem=Config/Setapp/setappPublicKey.pem
+          copied=0
+          if [ "$FLAVOR" = "setapp" ] && [ ! -f "$pem" ]; then
+            cp scripts/tests/fixtures/commercial/setappPublicKey.pem "$pem"
+            copied=1
+          fi
+          xcodegen generate --spec "project-$FLAVOR.yml"
+          build_status=0
+          scripts/check_commercial_config.sh --flavor "$FLAVOR" --configuration Release --xcconfig "$fixture" &&
+          xcodebuild \
+            -project "$PROJECT" \
+            -scheme Otto \
+            -configuration Release \
+            -destination 'generic/platform=macOS' \
+            -derivedDataPath "build/release-fixture-$FLAVOR" \
+            -clonedSourcePackagesDirPath build/spm \
+            -xcconfig "$fixture" \
+            CODE_SIGN_IDENTITY=- \
+            CODE_SIGN_STYLE=Manual \
+            DEVELOPMENT_TEAM= \
+            build || build_status=$?
+          if [ "$copied" -eq 1 ]; then
+            rm -f "$pem"
+            xcodegen generate --spec "project-$FLAVOR.yml"
+          fi
+          exit "$build_status"
+
+      - name: Audit the fixture Release product
+        run: scripts/audit_flavor.sh --flavor "$FLAVOR" "build/release-fixture-$FLAVOR/Build/Products/Release/Otto.app"
+
+      - name: The tree is still clean
+        run: test -z "$(git status --porcelain)" || { git status --porcelain; exit 1; }

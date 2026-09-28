@@ -161,6 +161,9 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         case .actions: height = 720
         case .voice: height = 680
         case .privacy: height = 700
+        #if OTTO_LICENSING
+        case .license: height = 480
+        #endif
         }
         return min(max(height, heightRange.lowerBound), heightRange.upperBound)
     }

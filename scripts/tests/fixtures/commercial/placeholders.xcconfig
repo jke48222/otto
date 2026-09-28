@@ -1,0 +1,19 @@
+// Fixture: a copy of the committed Config/Commercial.xcconfig template, every value still a placeholder.
+// xcconfig treats // as a comment: write // inside a value as /$()/ (for example in a base64 key).
+// A placeholder fails Release builds and warns in Debug (scripts/check_commercial_config.sh, §14.3).
+
+OTTO_SITE_HOST = JALEN_MUST_SET_SITE_HOST
+OTTO_SUPPORT_EMAIL = JALEN_MUST_SET_SUPPORT_EMAIL
+
+OTTO_POLAR_API_HOST = api.polar.sh
+OTTO_POLAR_API_HOST[config=Debug] = sandbox-api.polar.sh
+OTTO_POLAR_ORGANIZATION_ID = JALEN_MUST_SET_POLAR_ORGANIZATION_ID
+OTTO_POLAR_ORGANIZATION_ID[config=Debug] = JALEN_MUST_SET_POLAR_SANDBOX_ORGANIZATION_ID
+OTTO_POLAR_BENEFIT_ID = JALEN_MUST_SET_POLAR_BENEFIT_ID
+OTTO_POLAR_BENEFIT_ID[config=Debug] = JALEN_MUST_SET_POLAR_SANDBOX_BENEFIT_ID
+OTTO_POLAR_PORTAL_SLUG = JALEN_MUST_SET_POLAR_ORGANIZATION_SLUG
+
+// A Gumroad product id, or the word none to refuse Gumroad keys in this build (an explicit choice, never a default).
+OTTO_GUMROAD_PRODUCT_ID = JALEN_MUST_SET_GUMROAD_PRODUCT_ID_OR_none
+
+OTTO_SPARKLE_PUBLIC_ED_KEY = JALEN_MUST_SET_SPARKLE_PUBLIC_ED_KEY

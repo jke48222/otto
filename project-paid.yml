@@ -1,0 +1,51 @@
+include:
+  - path: project.yml
+name: OttoPaid
+configFiles:
+  Debug: Config/Paid.xcconfig
+  Release: Config/Paid.xcconfig
+packages:
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    exactVersion: 2.10.0
+settings:
+  configs:
+    Debug:
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS: "DEBUG OTTO_LICENSING OTTO_SPARKLE"
+    Release:
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS: "OTTO_LICENSING OTTO_SPARKLE"
+targets:
+  Otto:
+    dependencies:
+      - package: Sparkle
+        product: Sparkle
+    info:
+      path: build/flavors/paid/Info.plist
+      properties:
+        SUFeedURL: "https://$(OTTO_SITE_HOST)/appcast.xml"
+        SUPublicEDKey: "$(OTTO_SPARKLE_PUBLIC_ED_KEY)"
+        SUEnableAutomaticChecks: true
+        SUAllowsAutomaticUpdates: true
+        SUAutomaticallyUpdate: true
+        SUScheduledCheckInterval: 86400
+        SUEnableSystemProfiling: false
+        SUVerifyUpdateBeforeExtraction: true
+        SURequireSignedFeed: true
+        SUShowReleaseNotes: true
+        SUEnableJavaScript: false
+        OttoSiteHost: "$(OTTO_SITE_HOST)"
+        OttoSupportEmail: "$(OTTO_SUPPORT_EMAIL)"
+        OttoPolarAPIHost: "$(OTTO_POLAR_API_HOST)"
+        OttoPolarOrganizationID: "$(OTTO_POLAR_ORGANIZATION_ID)"
+        OttoPolarBenefitID: "$(OTTO_POLAR_BENEFIT_ID)"
+        OttoPolarPortalSlug: "$(OTTO_POLAR_PORTAL_SLUG)"
+        OttoGumroadProductID: "$(OTTO_GUMROAD_PRODUCT_ID)"
+    entitlements:
+      path: build/flavors/paid/Otto.entitlements
+    settings:
+      base:
+        ENABLE_USER_SCRIPT_SANDBOXING: NO   # the pre-build check reads scripts/ and Config/
+    preBuildScripts:
+      - name: Check commercial configuration
+        script: bash "$SRCROOT/scripts/check_commercial_config.sh" --flavor paid --from-build-env
+        basedOnDependencyAnalysis: false

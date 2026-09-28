@@ -24,6 +24,9 @@ import Foundation
     var suggestions: ContextSuggestions
     var inserter: InsertCoordinator
     var notifications: NotificationPresenter?
+    /// Pauses sending while it has a gate up (§14.10.1). Only the paid build's live graph sets one; `inert`, the
+    /// source and the Setapp builds keep nil, so sending is never gated there.
+    var sendGate: ComposerGating? = nil
 
     /// Tests, snapshots, promo: in-memory stores, monitors never started, never touches the user's data or the
     /// system. PermissionsCenter(probe: StaticPermissionProbe([:], default: .notDetermined), openURL: { _ in },
