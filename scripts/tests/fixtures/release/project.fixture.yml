@@ -1,0 +1,7 @@
+# The two version lines release.sh and publish.sh read from project.yml. release_script_test.sh copies this file to
+# project.yml in its scratch copy of the repository, so the tests don't depend on the real version.
+name: Otto
+settings:
+  base:
+    MARKETING_VERSION: "1.1.0"
+    CURRENT_PROJECT_VERSION: "2"

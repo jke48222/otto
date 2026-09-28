@@ -1,0 +1,6 @@
+#!/bin/bash
+# spctl shim: Gatekeeper accepts the fixture DMG.
+echo "spctl $*" >>"${SHIM_LOG:?}"
+echo "${*: -1}: accepted"
+echo "source=Notarized Developer ID"
+exit 0

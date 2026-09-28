@@ -1,0 +1,13 @@
+#!/bin/bash
+# xcodebuild shim: logs the call. Package resolution succeeds; anything else (a build) fails, because no script test
+# may build.
+echo "xcodebuild $*" >>"${SHIM_LOG:?}"
+for argument in "$@"; do
+    if [ "$argument" = "-resolvePackageDependencies" ]; then
+        echo "Resolved source packages:"
+        echo "  Sparkle: https://github.com/sparkle-project/Sparkle @ 2.10.0"
+        exit 0
+    fi
+done
+echo "xcodebuild shim: script tests never build" >&2
+exit 1

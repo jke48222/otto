@@ -1,0 +1,61 @@
+#!/bin/bash
+# generate_appcast shim (SPARKLE_BIN): writes the -o appcast the way Sparkle 2.10.0 does for one new DMG in the
+# archives directory: the new item first, every older item kept, a trailing sparkle-signatures comment. No key is read.
+#   SHIM_APPCAST_BUILD   the new item's sparkle:version (default 2)
+#   SHIM_APPCAST_PRUNE=1 drop the older items, the way a --maximum-versions limit would
+echo "generate_appcast $*" >>"${SHIM_LOG:?}"
+prefix=""
+link=""
+output=""
+archives=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --download-url-prefix) prefix=$2; shift 2 ;;
+        --link) link=$2; shift 2 ;;
+        -o) output=$2; shift 2 ;;
+        --maximum-deltas | --maximum-versions | --account) shift 2 ;;
+        --embed-release-notes) shift ;;
+        -*) echo "generate_appcast shim: unexpected option $1" >&2; exit 1 ;;
+        *) archives=$1; shift ;;
+    esac
+done
+[ -n "$output" ] && [ -d "$archives" ] || { echo "generate_appcast shim: needs -o and an archives directory" >&2; exit 1; }
+dmg=$(find "$archives" -maxdepth 1 -name 'Otto-*.dmg' | head -n 1)
+[ -n "$dmg" ] || { echo "generate_appcast shim: no DMG in $archives" >&2; exit 1; }
+name=$(basename "$dmg")
+version=${name#Otto-}
+version=${version%.dmg}
+build=${SHIM_APPCAST_BUILD:-2}
+length=$(stat -f %z "$dmg")
+notes=""
+[ -f "$archives/Otto-$version.html" ] && notes=$(cat "$archives/Otto-$version.html")
+
+old_items=""
+if [ -f "$output" ] && [ "${SHIM_APPCAST_PRUNE:-0}" != 1 ]; then
+    old_items=$(awk '/<item>/ { keep = 1 } keep { print } /<\/item>/ { keep = 0 }' "$output")
+fi
+{
+    echo '<?xml version="1.0" standalone="yes"?>'
+    echo '<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">'
+    echo '    <channel>'
+    echo '        <title>Otto</title>'
+    echo '        <item>'
+    echo "            <title>$version</title>"
+    echo "            <pubDate>Mon, 12 Oct 2026 16:00:00 +0000</pubDate>"
+    echo "            <link>$link</link>"
+    echo "            <sparkle:version>$build</sparkle:version>"
+    echo "            <sparkle:shortVersionString>$version</sparkle:shortVersionString>"
+    echo "            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>"
+    echo "            <description><![CDATA[$notes]]></description>"
+    echo "            <enclosure url=\"$prefix$name\" length=\"$length\" type=\"application/octet-stream\" sparkle:edSignature=\"c2hpbS1zaWduYXR1cmUtZm9yLXRlc3RzLW9ubHk=\"/>"
+    echo '        </item>'
+    [ -n "$old_items" ] && printf '%s\n' "$old_items"
+    echo '    </channel>'
+    echo '</rss>'
+    echo '<!-- sparkle-signatures:'
+    echo 'edSignature: c2hpbS1mZWVkLXNpZ25hdHVyZQ=='
+    echo 'length: 0'
+    echo '-->'
+} >"$output.tmp"
+mv "$output.tmp" "$output"
+echo "Wrote 1 new update, updated 0 existing updates, and removed 0 old updates in $(basename "$output")"

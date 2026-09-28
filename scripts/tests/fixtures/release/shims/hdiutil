@@ -1,0 +1,28 @@
+#!/bin/bash
+# hdiutil shim: "attaches" the fixture DMG by answering with SHIM_MOUNT_POINT, a directory that holds Otto.app.
+echo "hdiutil $*" >>"${SHIM_LOG:?}"
+case "$1" in
+    attach)
+        cat <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>system-entities</key>
+    <array>
+        <dict>
+            <key>dev-entry</key>
+            <string>/dev/disk99s1</string>
+            <key>mount-point</key>
+            <string>${SHIM_MOUNT_POINT:?}</string>
+        </dict>
+    </array>
+</dict>
+</plist>
+PLIST
+        exit 0
+        ;;
+    detach) exit 0 ;;
+esac
+echo "hdiutil shim: unexpected command $1" >&2
+exit 1

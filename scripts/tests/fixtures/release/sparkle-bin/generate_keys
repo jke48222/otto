@@ -1,0 +1,10 @@
+#!/bin/bash
+# generate_keys shim (SPARKLE_BIN): -p prints SHIM_SPARKLE_PUBLIC_KEY, the public key "in the login Keychain"; unset =
+# no key (exit 1). Never reads or writes a Keychain.
+echo "generate_keys $*" >>"${SHIM_LOG:?}"
+if [ "${1:-}" = "-p" ] && [ -n "${SHIM_SPARKLE_PUBLIC_KEY:-}" ]; then
+    printf '%s\n' "$SHIM_SPARKLE_PUBLIC_KEY"
+    exit 0
+fi
+echo "ERROR! Failed to find the private key in the login keychain." >&2
+exit 1

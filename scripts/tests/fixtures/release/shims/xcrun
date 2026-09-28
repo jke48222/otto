@@ -1,0 +1,9 @@
+#!/bin/bash
+# xcrun shim: stapler validate accepts the fixture DMG; notarytool refuses (no test notarizes); anything else runs the
+# real xcrun.
+echo "xcrun $*" >>"${SHIM_LOG:?}"
+case "$1 ${2:-}" in
+    "stapler validate") echo "The validate action worked!"; exit 0 ;;
+    "notarytool "*) echo "xcrun shim: script tests never notarize" >&2; exit 1 ;;
+esac
+exec /usr/bin/xcrun "$@"
