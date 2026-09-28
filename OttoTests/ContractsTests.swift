@@ -439,7 +439,11 @@ final class ContractsNotchValueTests: XCTestCase {
         XCTAssertEqual(SettingsAnchor.usage.tab, .models)
         XCTAssertEqual(SettingsAnchor.permissions.tab, .privacy)
         XCTAssertEqual(SettingsAnchor.approvals.tab, .actions)
-        XCTAssertEqual(SettingsTab.allCases.map(\.title), ["General", "Notch", "Models", "Context", "Actions", "Voice", "Privacy"])
+        var titles = ["General", "Notch", "Models", "Context", "Actions", "Voice", "Privacy"]
+        #if OTTO_LICENSING
+        titles.append("License")
+        #endif
+        XCTAssertEqual(SettingsTab.allCases.map(\.title), titles)
         XCTAssertEqual(NotchRoute.history.title, "Recents")
     }
 
