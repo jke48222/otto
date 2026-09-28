@@ -1,0 +1,41 @@
+include:
+  - path: project.yml
+name: OttoSetapp
+configFiles:
+  Debug: Config/Setapp.xcconfig
+  Release: Config/Setapp.xcconfig
+packages:
+  Setapp:
+    url: https://github.com/MacPaw/Setapp-framework
+    exactVersion: 5.5.0
+settings:
+  configs:
+    Debug:
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS: "DEBUG OTTO_SETAPP"
+    Release:
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS: "OTTO_SETAPP"
+targets:
+  Otto:
+    dependencies:
+      - package: Setapp
+        product: Setapp
+    sources:
+      # The folder with an includes pattern, not the file itself: XcodeGen adds an optional file's reference even
+      # when the file is missing, which fails the build; a pattern that matches nothing adds nothing until J14.
+      - path: Config/Setapp
+        includes:
+          - setappPublicKey.pem
+        buildPhase: resources
+        optional: true
+    info:
+      path: build/flavors/setapp/Info.plist
+    entitlements:
+      path: build/flavors/setapp/Otto.entitlements
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.jalenedusei.otto-setapp
+        ENABLE_USER_SCRIPT_SANDBOXING: NO   # the pre-build check reads scripts/ and Config/, and runs openssl
+    preBuildScripts:
+      - name: Check commercial configuration
+        script: bash "$SRCROOT/scripts/check_commercial_config.sh" --flavor setapp --from-build-env
+        basedOnDependencyAnalysis: false
