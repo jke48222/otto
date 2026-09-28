@@ -32,6 +32,9 @@ enum NotchOverlay: String, Hashable, Sendable { case shortcutSheet }
 
 enum SettingsTab: String, CaseIterable, Identifiable, Sendable {
     case general, notch, models, context, actions, voice, privacy
+    #if OTTO_LICENSING
+    case license                 // title "License", symbol "checkmark.seal"; always last
+    #endif
 
     var id: String { rawValue }
 
@@ -44,6 +47,9 @@ enum SettingsTab: String, CaseIterable, Identifiable, Sendable {
         case .actions: return "Actions"
         case .voice: return "Voice"
         case .privacy: return "Privacy"
+        #if OTTO_LICENSING
+        case .license: return "License"
+        #endif
         }
     }
 
@@ -56,6 +62,9 @@ enum SettingsTab: String, CaseIterable, Identifiable, Sendable {
         case .actions: return "bolt"
         case .voice: return "waveform"
         case .privacy: return "lock.shield"
+        #if OTTO_LICENSING
+        case .license: return "checkmark.seal"
+        #endif
         }
     }
 }
@@ -68,12 +77,30 @@ enum SettingsAnchor: String, Hashable, Sendable {
     case permissions
     /// Actions → Approvals ("Stop allowing", disabled-tool recovery).
     case approvals
+    #if OTTO_LICENSING
+    case licenseKey              // tab .license; focuses the key field
+    #endif
+    #if OTTO_SPARKLE || OTTO_SETAPP
+    case updates                 // tab .license (paid) or .general (Setapp)
+    #endif
 
     var tab: SettingsTab {
         switch self {
         case .usage: return .models
         case .permissions: return .privacy
         case .approvals: return .actions
+        #if OTTO_LICENSING
+        case .licenseKey: return .license
+        #endif
+        #if OTTO_SPARKLE || OTTO_SETAPP
+        case .updates:
+            // The paid build (the only one with Sparkle) also has licensing; Setapp has no License tab.
+            #if OTTO_LICENSING
+            return .license
+            #else
+            return .general
+            #endif
+        #endif
         }
     }
 }

@@ -27,6 +27,14 @@ import os
     var speaker: ReplySpeaker?
     /// tccutil reset.
     var processRunner: ProcessRunning?
+    #if OTTO_LICENSING
+    /// Settings → License. nil in demo and inert graphs (the tab then says licenses aren't checked).
+    var license: LicenseControlling? = nil
+    #endif
+    #if OTTO_SPARKLE || OTTO_SETAPP
+    /// The updates section (License tab in the paid build, General in Setapp). nil in demo and inert graphs.
+    var updater: UpdaterControlling? = nil
+    #endif
 
     /// Same recipe as NotchServices.inert: PermissionsCenter(StaticPermissionProbe([:], default: .notDetermined),
     /// no-op openURL and relauncher), in-memory ledger, actionLog nil, every optional service nil. Approvals and the
@@ -106,6 +114,9 @@ struct SettingsView: View {
         case .actions: SettingsActionsPane(settings: settings, services: services)
         case .voice: SettingsVoicePane(settings: settings, services: services)
         case .privacy: SettingsPrivacyPane(settings: settings, services: services)
+        #if OTTO_LICENSING
+        case .license: SettingsGeneralPane(settings: settings, services: services)
+        #endif
         }
     }
 }
