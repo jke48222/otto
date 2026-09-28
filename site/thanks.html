@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Thanks for buying Otto</title>
+  <meta name="description" content="Activate your Otto license in Settings, License.">
+  <meta name="robots" content="noindex">
+  <meta name="theme-color" content="#060607">
+  <meta name="color-scheme" content="dark">
+  <link rel="canonical" href="__SITE_URL__/thanks">
+
+  <link rel="icon" type="image/png" href="media/icon.png">
+  <link rel="apple-touch-icon" href="media/icon.png">
+  <link rel="stylesheet" href="styles.css">
+  <script>document.documentElement.classList.add("js");</script>
+  <script src="script.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="notchbar" id="top">
+    <nav class="notchbar__inner" aria-label="Primary">
+      <a class="brand" href="/" aria-label="Otto, home">
+        <span class="orb" aria-hidden="true"></span>
+        <span class="brand__name">Otto</span>
+      </a>
+      <ul class="notchbar__links">
+        <li><a href="/#features">Features</a></li>
+        <li><a href="/buy">Pricing</a></li>
+        <li><a href="/privacy">Privacy</a></li>
+        <li><a href="/#faq">FAQ</a></li>
+      </ul>
+      <a class="notchbar__cta" href="/download">Download</a>
+    </nav>
+  </header>
+
+  <main id="main">
+    <section class="hero hero--page" aria-labelledby="thanks-title">
+      <div class="hero__glow" aria-hidden="true"></div>
+      <div class="wrap hero__copy">
+        <img class="hero__icon" src="media/icon.png" width="512" height="512" alt="" decoding="async">
+        <h1 id="thanks-title" class="h2 reveal">Thanks for buying Otto.</h1>
+        <p class="lede reveal">Your license key is in the email from Polar and on your <a href="{{PORTAL_URL}}">Polar purchases page</a>.</p>
+      </div>
+    </section>
+
+    <section class="section section--tint" aria-label="Activate your license">
+      <div class="wrap">
+        <ol class="steps steps--short">
+          <li class="step clay reveal">
+            <span class="step__num" aria-hidden="true">1</span>
+            <p>Open Otto.</p>
+          </li>
+          <li class="step clay reveal">
+            <span class="step__num" aria-hidden="true">2</span>
+            <p>Choose Settings, then License.</p>
+          </li>
+          <li class="step clay reveal">
+            <span class="step__num" aria-hidden="true">3</span>
+            <p>Paste the key and click Activate.</p>
+          </li>
+        </ol>
+        <p class="page-note reveal">Haven't installed Otto yet? <a href="/download">Download it.</a></p>
+        <p class="page-note reveal">Problems? Email <a href="mailto:{{SUPPORT_EMAIL}}">{{SUPPORT_EMAIL}}</a>.</p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap footer__inner">
+      <div class="footer__brand">
+        <span class="orb" aria-hidden="true"></span>
+        <span class="brand__name">Otto</span>
+      </div>
+      <nav class="footer__links" aria-label="Footer">
+        <a href="/terms">Terms</a>
+        <a href="/privacy">Privacy</a>
+        <a href="/refunds">Refunds</a>
+        <a href="mailto:{{SUPPORT_EMAIL}}">{{SUPPORT_EMAIL}}</a>
+      </nav>
+      <p class="footer__legal">© 2026 Jalen Edusei. Released under the MIT License.<br>
+        Otto is an independent project and is not affiliated with, endorsed by or sponsored by Anthropic. Claude and Anthropic are trademarks of Anthropic, PBC.</p>
+    </div>
+  </footer>
+</body>
+</html>

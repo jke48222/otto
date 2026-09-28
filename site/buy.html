@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Otto for Mac: pricing</title>
+  <meta name="description" content="Otto for Mac is {{PRICE}} once for up to {{SEATS}} Macs, with every 1.x update and a {{TRIAL_DAYS}}-day trial.">
+  <meta name="theme-color" content="#060607">
+  <meta name="color-scheme" content="dark">
+  <link rel="canonical" href="__SITE_URL__/buy">
+
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Otto">
+  <meta property="og:title" content="Otto for Mac: pricing">
+  <meta property="og:description" content="{{PRICE}} once. Up to {{SEATS}} Macs. Every 1.x update.">
+  <meta property="og:url" content="__SITE_URL__/buy">
+  <meta property="og:image" content="__SITE_URL__/media/social-preview.png">
+  <meta property="og:image:width" content="1280">
+  <meta property="og:image:height" content="640">
+  <meta property="og:image:alt" content="Otto, the AI assistant that lives in your notch">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:image" content="__SITE_URL__/media/social-preview.png">
+
+  <link rel="icon" type="image/png" href="media/icon.png">
+  <link rel="apple-touch-icon" href="media/icon.png">
+  <link rel="stylesheet" href="styles.css">
+  <script>document.documentElement.classList.add("js");</script>
+  <script src="script.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="notchbar" id="top">
+    <nav class="notchbar__inner" aria-label="Primary">
+      <a class="brand" href="/" aria-label="Otto, home">
+        <span class="orb" aria-hidden="true"></span>
+        <span class="brand__name">Otto</span>
+      </a>
+      <ul class="notchbar__links">
+        <li><a href="/#features">Features</a></li>
+        <li><a href="/buy" aria-current="page">Pricing</a></li>
+        <li><a href="/privacy">Privacy</a></li>
+        <li><a href="#faq">FAQ</a></li>
+      </ul>
+      <a class="notchbar__cta" href="/download">Download</a>
+    </nav>
+  </header>
+
+  <main id="main">
+    <section class="hero hero--page" aria-labelledby="buy-title">
+      <div class="hero__glow" aria-hidden="true"></div>
+      <div class="wrap hero__copy">
+        <img class="hero__icon" src="media/icon.png" width="512" height="512" alt="" decoding="async">
+        <h1 id="buy-title" class="display reveal">Otto for Mac</h1>
+        <p class="lede reveal">{{PRICE}} once. Up to {{SEATS}} Macs. Every 1.x update.</p>
+        <!-- launch:begin -->
+        <p class="launch-line" data-ends-at="{{LAUNCH_ENDS_ISO}}" data-launch-only>Launch price: {{LAUNCH_PRICE}} until {{LAUNCH_ENDS}}.</p>
+        <!-- launch:end -->
+        <div class="cta-row reveal">
+          <!-- launch:begin -->
+          <a class="btn btn--primary" href="{{CHECKOUT_URL}}" data-ends-at="{{LAUNCH_ENDS_ISO}}" data-href-regular="{{REGULAR_CHECKOUT_URL}}" data-label-regular="Buy Otto, {{PRICE}}">
+            <svg class="btn__icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false"><path d="M4.8 7h10.4l-.7 8.6a1.5 1.5 0 0 1-1.5 1.4H7a1.5 1.5 0 0 1-1.5-1.4L4.8 7Zm2.7 0V6a2.5 2.5 0 0 1 5 0v1" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span class="btn__label">{{BUY_LABEL}}</span>
+          </a>
+          <!-- launch:end -->
+          <!-- regular:begin -->
+          <a class="btn btn--primary" href="{{CHECKOUT_URL}}">
+            <svg class="btn__icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false"><path d="M4.8 7h10.4l-.7 8.6a1.5 1.5 0 0 1-1.5 1.4H7a1.5 1.5 0 0 1-1.5-1.4L4.8 7Zm2.7 0V6a2.5 2.5 0 0 1 5 0v1" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span class="btn__label">{{BUY_LABEL}}</span>
+          </a>
+          <!-- regular:end -->
+          <a class="btn btn--clay" href="/download">
+            <svg class="btn__icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false"><path d="M10 3.5v9m-3.6-3.6L10 12.5l3.6-3.6M4.5 16h11" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            Download the {{TRIAL_DAYS}}-day trial
+          </a>
+        </div>
+        <p class="fineprint reveal">In the US, Canada and India, sales tax is added at checkout. Elsewhere the price includes VAT or GST.</p>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="plan-title">
+      <div class="wrap plan-grid">
+        <article class="plan clay reveal">
+          <h2 id="plan-title" class="h3">Otto license&nbsp;&middot; {{PRICE}} once</h2>
+          <ul class="checklist">
+            <li>Signed and notarized, so it opens like any Mac app</li>
+            <li>Updates install themselves</li>
+            <li>Use it on up to {{SEATS}} Macs and move seats from Settings</li>
+            <li>Every 1.x update is included</li>
+            <li>{{REFUND_DAYS}}-day refund, no questions</li>
+          </ul>
+        </article>
+        <div class="plan-notes">
+          <div class="plan-note clay reveal">
+            <h2 class="h4">Trial</h2>
+            <p>Try it for {{TRIAL_DAYS}} days. Every feature, no card. After that, sending a message needs a license.</p>
+          </div>
+          <div class="plan-note clay reveal">
+            <h2 class="h4">Requirements</h2>
+            <p>macOS {{MIN_MACOS}} or later and an Anthropic API key with credit. Anthropic bills your Claude usage to your own account at its API rates. A Claude.ai subscription doesn't work here.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section section--tint" id="faq" aria-labelledby="faq-title">
+      <div class="wrap wrap--narrow">
+        <header class="section__head reveal">
+          <p class="eyebrow">FAQ</p>
+          <h2 id="faq-title" class="h2">Before you buy.</h2>
+        </header>
+
+        <div class="faq">
+          <details class="faq__item">
+            <summary>What happens after the trial?</summary>
+            <div class="faq__body"><p>Settings, Recents and demo mode keep working, and nothing is deleted. Sending a message needs a license.</p></div>
+          </details>
+          <details class="faq__item">
+            <summary>How many Macs can I use?</summary>
+            <div class="faq__body"><p>{{SEATS}} per license. Deactivate a Mac in Settings, License, to move its seat.</p></div>
+          </details>
+          <details class="faq__item">
+            <summary>Do updates cost extra?</summary>
+            <div class="faq__body"><p>No. Every 1.x update is included. If there is ever a paid 2.0, your 1.x copy keeps working.</p></div>
+          </details>
+          <details class="faq__item">
+            <summary>Is there a student discount?</summary>
+            <div class="faq__body"><p>Yes, {{STUDENT_DISCOUNT}} off. <a href="mailto:{{SUPPORT_EMAIL}}">Email me</a> from your school address and I'll send a code.</p></div>
+          </details>
+          <details class="faq__item">
+            <summary>Can I get a refund?</summary>
+            <div class="faq__body"><p>Yes, within {{REFUND_DAYS}} days, no questions. See the <a href="/refunds">refund policy</a>.</p></div>
+          </details>
+          <details class="faq__item">
+            <summary>What leaves my Mac?</summary>
+            <div class="faq__body"><p>Your messages go to Anthropic when you send them. The signed app also checks its license with Polar and looks for updates on this site. The <a href="/privacy">privacy policy</a> lists every detail.</p></div>
+          </details>
+          <details class="faq__item">
+            <summary>Can I build it for free instead?</summary>
+            <div class="faq__body"><p>Yes. The <a href="https://github.com/jke48222/otto#build-from-source">source</a> is MIT licensed and builds with Xcode in three steps: install XcodeGen, clone the repository and run <code>scripts/run.sh</code>.</p></div>
+            <!-- sponsors:begin -->
+            <div class="faq__body"><p>If you build it yourself and want to support the work, you can <a href="https://github.com/sponsors/jke48222">sponsor Otto on GitHub</a>.</p></div>
+            <!-- sponsors:end -->
+          </details>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap footer__inner">
+      <div class="footer__brand">
+        <span class="orb" aria-hidden="true"></span>
+        <span class="brand__name">Otto</span>
+      </div>
+      <nav class="footer__links" aria-label="Footer">
+        <a href="/terms">Terms</a>
+        <a href="/privacy">Privacy</a>
+        <a href="/refunds">Refunds</a>
+        <a href="mailto:{{SUPPORT_EMAIL}}">{{SUPPORT_EMAIL}}</a>
+      </nav>
+      <p class="footer__legal">© 2026 Jalen Edusei. Released under the MIT License.<br>
+        Otto is an independent project and is not affiliated with, endorsed by or sponsored by Anthropic. Claude and Anthropic are trademarks of Anthropic, PBC.</p>
+    </div>
+  </footer>
+</body>
+</html>

@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Otto privacy policy</title>
+  <meta name="description" content="Everything the signed Otto app sends, where it goes, and what stays on your Mac.">
+  <meta name="theme-color" content="#060607">
+  <meta name="color-scheme" content="dark">
+  <link rel="canonical" href="__SITE_URL__/privacy">
+
+  <link rel="icon" type="image/png" href="media/icon.png">
+  <link rel="apple-touch-icon" href="media/icon.png">
+  <link rel="stylesheet" href="styles.css">
+  <script>document.documentElement.classList.add("js");</script>
+  <script src="script.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="notchbar" id="top">
+    <nav class="notchbar__inner" aria-label="Primary">
+      <a class="brand" href="/" aria-label="Otto, home">
+        <span class="orb" aria-hidden="true"></span>
+        <span class="brand__name">Otto</span>
+      </a>
+      <ul class="notchbar__links">
+        <li><a href="/#features">Features</a></li>
+        <li><a href="/buy">Pricing</a></li>
+        <li><a href="/privacy" aria-current="page">Privacy</a></li>
+        <li><a href="/#faq">FAQ</a></li>
+      </ul>
+      <a class="notchbar__cta" href="/buy">Buy Otto</a>
+    </nav>
+  </header>
+
+  <main id="main" class="doc">
+    <div class="wrap wrap--narrow">
+      <header class="doc__head">
+        <h1 class="h2">Privacy policy</h1>
+        <p class="doc__meta">Effective {{EFFECTIVE_DATE}}.</p>
+        <p class="doc__intro">Otto runs on your Mac. It has no account, no analytics and no server of its own. This page lists everything the signed app sends, where it goes, and what stays on your Mac.</p>
+      </header>
+
+      <section class="doc__section" aria-labelledby="privacy-send">
+        <h2 id="privacy-send" class="h4">When you send a message</h2>
+        <p>Otto sends your message, the items you attached, your custom instructions and the conversation so far to api.anthropic.com over HTTPS, with your own API key. Nothing goes to Anthropic before you press send. Anthropic's privacy policy covers that data.</p>
+      </section>
+
+      <section class="doc__section" aria-labelledby="privacy-checks">
+        <h2 id="privacy-checks" class="h4">License checks</h2>
+        <p>About once a day, and when you activate or deactivate, the signed app contacts api.polar.sh. It sends your license key, Otto's organization and product IDs at Polar, and this Mac's activation ID. When you first activate, it also sends a label like "Mac 7F3A" made from random characters. Otto never sends your name, your email, your Mac's name or a hardware ID. For a key bought on Gumroad, Otto contacts api.gumroad.com with the key and Otto's product ID instead. Polar records the time and count of each check and the activation label, and links them to your purchase, so I can see when a license was last checked. I use this only for support.</p>
+      </section>
+
+      <section class="doc__section" aria-labelledby="privacy-updates">
+        <h2 id="privacy-updates" class="h4">Updates</h2>
+        <p>Once a day the signed app downloads the list of releases from {{SITE_HOST}}/appcast.xml. The request carries Otto's version number and nothing that identifies you or your Mac. Updates download from {{DOWNLOADS_HOST}}, which is Vercel's file storage. You can turn automatic checks off in Settings, License.</p>
+      </section>
+
+      <section class="doc__section" aria-labelledby="privacy-other">
+        <h2 id="privacy-other" class="h4">Other requests</h2>
+        <p>If Now Playing is on and Spotify is playing, Otto loads the album art from Spotify's image server. Only if you turn on Apple's speech service in Settings, Voice, your recorded audio goes to Apple for transcription; otherwise speech is recognized on your Mac. Web search and web fetch run on Anthropic's servers, not on your Mac.</p>
+      </section>
+
+      <section class="doc__section" aria-labelledby="privacy-setapp">
+        <h2 id="privacy-setapp" class="h4">Setapp</h2>
+        <p>If you use Otto through Setapp, the Setapp Framework tells Setapp when you use Otto, so Setapp can pay developers. Setapp's privacy policy covers that. The Setapp build makes no license checks and gets its updates from Setapp.</p>
+      </section>
+
+      <section class="doc__section" aria-labelledby="privacy-servers">
+        <h2 id="privacy-servers" class="h4">What every server sees</h2>
+        <p>Each of these servers sees your IP address, like any website you visit, and keeps logs under its own policy: Anthropic, Polar, Gumroad, Vercel, Setapp, Spotify's image server and, if you turn it on, Apple's speech service.</p>
+      </section>
+
+      <section class="doc__section" aria-labelledby="privacy-local">
+        <h2 id="privacy-local" class="h4">What stays on your Mac</h2>
+        <p>Your API key, license key, activation ID and trial start date are in your login Keychain. Conversations, the File Shelf and usage totals are in your Library folder and never leave your Mac. You choose how long history is kept in Settings, Privacy.</p>
+      </section>
+
+      <section class="doc__section" aria-labelledby="privacy-buy">
+        <h2 id="privacy-buy" class="h4">When you buy</h2>
+        <p>Polar runs the checkout. It collects your name, email, billing address and payment details under its privacy policy, and shares your name, email and order with me so I can help you and send refunds. I use your email only to reply to you. No newsletter unless you ask for one.</p>
+      </section>
+
+      <section class="doc__section" aria-labelledby="privacy-site">
+        <h2 id="privacy-site" class="h4">This website</h2>
+        <p>{{SITE_HOST}} is hosted by Vercel. It sets no cookies and runs no analytics or trackers. Vercel keeps standard server logs.</p>
+      </section>
+
+      <section class="doc__section" aria-labelledby="privacy-rights">
+        <h2 id="privacy-rights" class="h4">Your rights</h2>
+        <p>{{SELLER_LEGAL_NAME}} is responsible for the purchase details Polar shares with me. I keep them while you hold a license, and longer only where tax law requires it. You can ask me for a copy, a correction or deletion at <a href="mailto:{{SUPPORT_EMAIL}}">{{SUPPORT_EMAIL}}</a>, and you can complain to your data protection authority.</p>
+      </section>
+
+      <section class="doc__section" aria-labelledby="privacy-delete">
+        <h2 id="privacy-delete" class="h4">Deleting your data</h2>
+        <p>Quit Otto and delete the Otto folder in Application Support. In Keychain Access, delete the items whose names start with "Otto (", such as "Otto (license)" and "Otto (trial)". To delete your purchase records, email me. Polar keeps what tax law requires.</p>
+      </section>
+
+      <section class="doc__section" aria-labelledby="privacy-contact">
+        <h2 id="privacy-contact" class="h4">Contact</h2>
+        <p><a href="mailto:{{SUPPORT_EMAIL}}">{{SUPPORT_EMAIL}}</a></p>
+      </section>
+    </div>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap footer__inner">
+      <div class="footer__brand">
+        <span class="orb" aria-hidden="true"></span>
+        <span class="brand__name">Otto</span>
+      </div>
+      <nav class="footer__links" aria-label="Footer">
+        <a href="/terms">Terms</a>
+        <a href="/privacy" aria-current="page">Privacy</a>
+        <a href="/refunds">Refunds</a>
+        <a href="mailto:{{SUPPORT_EMAIL}}">{{SUPPORT_EMAIL}}</a>
+      </nav>
+      <p class="footer__legal">© 2026 Jalen Edusei. Released under the MIT License.<br>
+        Otto is an independent project and is not affiliated with, endorsed by or sponsored by Anthropic. Claude and Anthropic are trademarks of Anthropic, PBC.</p>
+    </div>
+  </footer>
+</body>
+</html>

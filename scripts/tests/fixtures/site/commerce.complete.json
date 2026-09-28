@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "siteHost": "otto.example.com",
+  "downloadsHost": "fixture.public.blob.vercel-storage.com",
+  "seller": {
+    "legalName": "Fixture Seller",
+    "supportEmail": "support@example.com",
+    "governingLaw": "Georgia"
+  },
+  "price": {"usd": 19, "seats": 3, "trialDays": 14, "refundDays": 30, "studentDiscountPercent": 30, "minMacOS": "14"},
+  "polar": {
+    "checkoutURL": "https://buy.polar.sh/polar_cl_fixtureRegular",
+    "portalURL": "https://polar.sh/otto-fixture/portal"
+  },
+  "launch": {
+    "usd": 14,
+    "startsAt": "2026-10-13T06:59:00Z",
+    "endsAt": "2026-10-20T06:59:00Z",
+    "timeZone": "America/Los_Angeles",
+    "checkoutURL": "https://buy.polar.sh/polar_cl_fixtureLaunch"
+  },
+  "legal": {"approved": true, "effectiveDate": "2026-10-12"}
+}
