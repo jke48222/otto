@@ -1,0 +1,27 @@
+# Style and audit checks for the Otto cask on every push and pull request.
+name: tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  cask:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_INSTALL_FROM_API: "1"
+    steps:
+      # setup-homebrew taps this checkout as jke48222/tap, so brew audit can name the cask.
+      - name: Set up Homebrew
+        uses: Homebrew/actions/setup-homebrew@main
+
+      - name: brew style
+        run: brew style --cask jke48222/tap/otto
+
+      - name: brew audit
+        run: brew audit --cask --online jke48222/tap/otto

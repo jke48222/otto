@@ -1,0 +1,30 @@
+cask "otto" do
+  version "{{VERSION}}"
+  sha256 "{{DMG_SHA256}}"
+
+  url "https://{{DOWNLOADS_HOST}}/releases/Otto-#{version}.dmg",
+      verified: "{{DOWNLOADS_HOST}}/releases/"
+  name "Otto"
+  desc "AI assistant that lives in the notch"
+  homepage "https://{{SITE_HOST}}/"
+
+  livecheck do
+    url "https://{{SITE_HOST}}/appcast.xml"
+    strategy :sparkle, &:short_version
+  end
+
+  auto_updates true
+  depends_on macos: :sonoma
+
+  app "Otto.app"
+
+  uninstall quit: "com.jalenedusei.otto"
+
+  zap login_item: "Otto",
+      trash:      [
+        "~/Library/Application Support/Otto",
+        "~/Library/Caches/com.jalenedusei.otto",
+        "~/Library/HTTPStorages/com.jalenedusei.otto",
+        "~/Library/Preferences/com.jalenedusei.otto.plist",
+      ]
+end
