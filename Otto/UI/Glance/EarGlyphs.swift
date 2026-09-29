@@ -180,12 +180,14 @@ private struct BreathingOrb: View {
 }
 
 /// Connecting: a slow (1.8 s) dim wave, opacity up to 0.6. Thinking: a 1.2 s wave, opacity 0.35 → 1.
+/// Three 3.4 pt dots 1.9 pt apart fill the 14 pt box, so they sit at the same optical weight as the other ear
+/// glyphs instead of reading as specks.
 private struct ThinkingDots: View {
     let isSlow: Bool
     let frame: GlyphClock.Frame
 
-    private static let dotSize: CGFloat = 3
-    private static let spacing: CGFloat = 2
+    private static let dotSize: CGFloat = 3.4
+    private static let spacing: CGFloat = 1.9
 
     var body: some View {
         HStack(spacing: Self.spacing) {
@@ -212,41 +214,33 @@ private struct ThinkingDots: View {
     }
 }
 
-/// A magnifier (7 pt ring, 3 pt handle) drifting round a 2 pt circle every 1.6 s.
+/// A 10 pt magnifier drifting round a 1.5 pt circle every 1.6 s (the drift keeps it inside the box).
 private struct SearchGlyph: View {
     let frame: GlyphClock.Frame
 
+    private static let drift: CGFloat = 1.5
+
     var body: some View {
-        Canvas { context, size in
-            let angle = frame.isStill ? -Double.pi / 4 : frame.progress(period: 1.6) * 2 * Double.pi
-            let drift = CGPoint(x: 2 * cos(angle), y: 2 * sin(angle))
-            // A 7 pt ring (2.8 pt radius plus the stroke) and its handle stay inside the box at any drift.
-            let center = CGPoint(x: size.width / 2 - 0.6 + drift.x, y: size.height / 2 - 0.7 + drift.y)
-            let radius: CGFloat = 2.8
-            let ring = Path(ellipseIn: CGRect(x: center.x - radius, y: center.y - radius,
-                                              width: radius * 2, height: radius * 2))
-            var handle = Path()
-            let diagonal = CGFloat(0.5.squareRoot())
-            let start = CGPoint(x: center.x + radius * diagonal, y: center.y + radius * diagonal)
-            handle.move(to: start)
-            handle.addLine(to: CGPoint(x: start.x + 3 * diagonal, y: start.y + 3 * diagonal))
-            let style = StrokeStyle(lineWidth: 1.4, lineCap: .round)
-            context.stroke(ring, with: .color(Theme.orbLight), style: style)
-            context.stroke(handle, with: .color(Theme.orbLight), style: style)
-        }
+        let angle = frame.isStill ? -Double.pi / 4 : frame.progress(period: 1.6) * 2 * Double.pi
+        Image(systemName: "magnifyingglass")
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(Theme.orbLight)
+            .offset(x: Self.drift * cos(angle), y: Self.drift * sin(angle))
     }
 }
 
-/// Two 1.8 pt lines; the lower one grows 3 → 12 pt behind a caret dot, looping every 1.4 s.
+/// Two 1.75 pt lines in a 12 × 8 pt block; the lower one grows 3 → 12 pt behind a caret dot, looping every 1.4 s.
 private struct WritingGlyph: View {
     let frame: GlyphClock.Frame
 
     var body: some View {
         Canvas { context, size in
-            let lineWidth: CGFloat = 1.8
+            let lineWidth: CGFloat = 1.75
             let left: CGFloat = 1
-            let upperY = size.height / 2 - 2.5
-            let lowerY = size.height / 2 + 2.5
+            // Outer stroke edges 8 pt apart.
+            let halfGap = (8 - lineWidth) / 2
+            let upperY = size.height / 2 - halfGap
+            let lowerY = size.height / 2 + halfGap
             let style = StrokeStyle(lineWidth: lineWidth, lineCap: .round)
 
             var upper = Path()
@@ -261,7 +255,8 @@ private struct WritingGlyph: View {
             lower.addLine(to: CGPoint(x: left + length - 2.5, y: lowerY))
             context.stroke(lower, with: .color(Theme.orbLight), style: style)
 
-            let caret = CGRect(x: left + length - 0.9, y: lowerY - 0.9, width: 1.8, height: 1.8)
+            let caret = CGRect(x: left + length - lineWidth / 2, y: lowerY - lineWidth / 2,
+                               width: lineWidth, height: lineWidth)
             context.fill(Path(ellipseIn: caret), with: .color(Theme.orbLight))
         }
     }
@@ -285,19 +280,25 @@ private struct ActionGlyph: View {
     }
 }
 
-/// An amber 5 pt dot with a ring pulsing out from it (scale 1 → 2.2, opacity 0.6 → 0, every 1.6 s).
+/// An amber 7 pt dot inside an 11 pt ring (1.5 pt, amber at 45 %), with a ring pulsing out from the dot
+/// (scale 1 → 1.85, opacity 0.6 → 0, every 1.6 s), so it holds the same 10 pt presence as the other ear glyphs.
 private struct ApprovalPulse: View {
     let frame: GlyphClock.Frame
 
-    private static let dotSize: CGFloat = 5
+    private static let dotSize: CGFloat = 7
+    private static let ringSize: CGFloat = 11
+    private static let ringWidth: CGFloat = 1.5
 
     var body: some View {
         let pulse = frame.isStill ? 0.5 : frame.progress(period: 1.6)
         ZStack {
             Circle()
+                .strokeBorder(Theme.attention.opacity(0.45), lineWidth: Self.ringWidth)
+                .frame(width: Self.ringSize, height: Self.ringSize)
+            Circle()
                 .stroke(Theme.attention, lineWidth: 1)
                 .frame(width: Self.dotSize, height: Self.dotSize)
-                .scaleEffect(1 + 1.2 * pulse)
+                .scaleEffect(1 + 0.85 * pulse)
                 .opacity(0.6 * (1 - pulse))
             Circle()
                 .fill(Theme.attention)
@@ -315,8 +316,9 @@ private struct GlyphBars: View {
 
     private static let barWidth: CGFloat = 2.5
     private static let spacing: CGFloat = 2.2
-    private static let minimumHeight: CGFloat = 3.5
-    private static let maximumHeight: CGFloat = 13
+    /// 4 → 10 pt: the bars peak at the other ear glyphs' optical height instead of towering over them.
+    private static let minimumHeight: CGFloat = 4
+    private static let maximumHeight: CGFloat = 10
 
     var body: some View {
         HStack(alignment: .center, spacing: Self.spacing) {
@@ -349,7 +351,8 @@ private struct GlyphBars: View {
     }
 }
 
-/// An 11 pt hourglass that flips half a turn every 2 s: it rests for 1.6 s, then turns over 0.4 s.
+/// A 10 pt hourglass in the orb's warm white (like every other ear glyph) that flips half a turn every
+/// 2 s: it rests upright for 1.6 s, then turns over 0.4 s. The still frame rests at 0°.
 private struct HourglassGlyph: View {
     let frame: GlyphClock.Frame
 
@@ -358,8 +361,8 @@ private struct HourglassGlyph: View {
 
     var body: some View {
         Image(systemName: "hourglass")
-            .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(Theme.textSecondary)
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(Theme.orbLight)
             .rotationEffect(.degrees(angle))
     }
 
@@ -377,12 +380,12 @@ private struct HourglassGlyph: View {
 
 // MARK: - Still glyphs
 
-/// The unread-reply dot: 6 pt of the orb's warm white with a soft glow.
+/// The unread-reply dot: 7 pt of the orb's warm white with a soft glow.
 private struct UnreadDot: View {
     var body: some View {
         Circle()
             .fill(Theme.orbLight)
-            .frame(width: 6, height: 6)
+            .frame(width: 7, height: 7)
             .shadow(color: Theme.orbLight.opacity(0.7), radius: 4)
     }
 }

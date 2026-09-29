@@ -51,8 +51,8 @@ struct GlanceRow: View {
         return max(0, min(share, leftOver))
     }
 
-    /// Pure. The row's height: the tallest child present (strip 36, chip 26), 0 when empty. A strip
-    /// caption adds to the strip below this.
+    /// Pure. The row's height: the tallest child present (strip 36, chip 26 alone; beside the strip the chip
+    /// is 36 too), 0 when empty. A strip caption adds to the strip below this.
     static func height(hasMedia: Bool, hasEvent: Bool) -> CGFloat {
         max(hasMedia ? NowPlayingStrip.height : 0, hasEvent ? NextEventChip.height : 0)
     }
@@ -72,10 +72,10 @@ struct GlanceRow: View {
                         .transition(.opacity)
                 }
                 if showsChip {
+                    // Beside the strip, the chip takes the strip's 36 pt height so the two capsules line up.
                     NextEventChip(calendar: calendar, maxWidth: chipWidth, onJoin: onJoinMeeting,
-                                  isVisible: isVisible)
-                        // Beside the strip, centred on its 36 pt tray.
-                        .padding(.top, hasMedia ? (NowPlayingStrip.height - NextEventChip.height) / 2 : 0)
+                                  isVisible: isVisible,
+                                  chipHeight: hasMedia ? NowPlayingStrip.height : NextEventChip.height)
                         .transition(.opacity)
                 }
                 if !hasMedia {

@@ -3,7 +3,8 @@
 //  Otto
 //
 //  The closed notch while Otto listens. The notch grows into a pill: on the camera row a breathing red dot
-//  in the left ear and a 9-bar live waveform in the right, and under the camera a one-line caption with the
+//  in the left ear and a 9-bar live waveform in the right, each the same distance in from its side, vertically
+//  centered on the camera row, and under the camera a one-line caption with the
 //  newest words. It draws only the contents; the closed frame sizes the black shape with ClosedNotchLayout
 //  and places this view inside it.
 //
@@ -18,6 +19,11 @@ struct VoiceListeningPill: View {
     /// Characters the one-line caption keeps; head truncation trims whatever still doesn't fit.
     static let captionCharacterLimit = 160
     static let captionHorizontalPadding: CGFloat = 18
+    /// From the pill's outer edges in to the dot and the waveform: where a full-size glyph's edge sits in the other
+    /// closed states (the concave top corner, then a 14 pt glyph centered in its ear), so the two marks sit the
+    /// same distance in from their sides whatever their widths.
+    static let earInset: CGFloat = NotchMetrics.closedTopRadius
+        + (ClosedNotchView.earWidth - EarGlyphView.glyphSize.width) / 2
 
     /// The camera housing (hardware or virtual notch) the pill grows from.
     let notchSize: CGSize
@@ -48,11 +54,13 @@ struct VoiceListeningPill: View {
         VStack(spacing: 0) {
             HStack(spacing: 0) {
                 VoiceRecordingDot(isFinishing: isFinishing, breathes: !reduceMotion)
-                    .frame(maxWidth: .infinity)
+                    .padding(.leading, Self.earInset)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 Color.clear
                     .frame(width: notchSize.width)
                 VoiceWaveformView(style: .ear, meter: meter, isActive: !isFinishing)
-                    .frame(maxWidth: .infinity)
+                    .padding(.trailing, Self.earInset)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
             }
             .frame(height: notchSize.height)
 

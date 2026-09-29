@@ -58,6 +58,14 @@ struct ReplyPreviewDrop: View {
         }
     }
 
+    /// 12.5 pt down to 11 pt.
+    static let failedMinimumScale: CGFloat = 0.88
+
+    /// Pure. Whether the drop's text may shrink a little to show whole (failures only).
+    static func fitsWholeLine(_ content: DropContent) -> Bool {
+        icon(for: content) == .failed
+    }
+
     /// How the drop's content arrives and leaves inside the growing shape (glance.md §1.3): in, opacity
     /// with a 4 pt blur and a 6 pt drop after 0.08 s; out, a 0.12 s fade. Reduce Motion: 0.15 s fades.
     static func transition(reduceMotion: Bool) -> AnyTransition {
@@ -79,6 +87,11 @@ struct ReplyPreviewDrop: View {
                 .font(Theme.font(ReplyPreviewMetrics.fontSize))
                 .foregroundStyle(isHovered ? Theme.textPrimary : Theme.textBody)
                 .lineLimit(1)
+                // A failure's message is the whole point of the drop: rather than cut it short at the 380 pt
+                // cap, let it tighten and step down to 11 pt. The drop keeps its one 28 pt line (its height
+                // belongs to ClosedNotchLayout and the panel frame). Answers still truncate.
+                .allowsTightening(Self.fitsWholeLine(content))
+                .minimumScaleFactor(Self.fitsWholeLine(content) ? Self.failedMinimumScale : 1)
                 .truncationMode(.tail)
         }
         .padding(.horizontal, ReplyPreviewMetrics.horizontalPadding + NotchMetrics.closedTopRadius)
@@ -108,9 +121,10 @@ struct ReplyPreviewDrop: View {
         case .refused:
             symbol("hand.raised", color: Theme.textSecondary)
         case .approval:
+            // The ear's 7 pt approval dot.
             Circle()
                 .fill(Theme.attention)
-                .frame(width: 5, height: 5)
+                .frame(width: 7, height: 7)
         case .systemWait:
             symbol("hourglass", color: Theme.textSecondary)
         }

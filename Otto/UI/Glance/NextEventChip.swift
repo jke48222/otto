@@ -22,14 +22,19 @@ struct NextEventChip: View {
     var onOpenCalendar: (() -> Void)?
     /// False while the panel can't be seen: an imminent event's dot stops breathing.
     var isVisible: Bool = true
+    /// The chip's height: `height` alone in the row; beside the Now Playing strip the row passes the strip's
+    /// height so the two capsules share one top and bottom edge.
+    var chipHeight: CGFloat = NextEventChip.height
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovering = false
 
+    /// The chip's own height, alone in the glance row.
     static let height: CGFloat = 26
-    static let cornerRadius: CGFloat = 10
-    static let horizontalPadding: CGFloat = 9
-    static let dotSize: CGFloat = 6
+    /// Horizontal padding at the strip's 36 pt height, and at the chip's own 26 pt.
+    static let horizontalPadding: CGFloat = 14
+    static let compactHorizontalPadding: CGFloat = 11
+    static let dotSize: CGFloat = 7
     /// Narrower than this, the title can't show a useful few characters, so the chip hides.
     static let minimumWidth: CGFloat = 64
     /// An imminent event's dot breathes on this loop.
@@ -100,11 +105,11 @@ struct NextEventChip: View {
                         .fixedSize()
                 }
             }
-            .font(Theme.font(12, .medium))
-            .foregroundStyle(Theme.chipLabel)
-            .padding(.horizontal, Self.horizontalPadding)
-            .frame(height: Self.height)
-            .contentShape(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous))
+            .font(Theme.font(12.5, .medium))
+            .foregroundStyle(Theme.textPrimary)
+            .padding(.horizontal, chipHeight > Self.height ? Self.horizontalPadding : Self.compactHorizontalPadding)
+            .frame(height: chipHeight)
+            .contentShape(Capsule(style: .continuous))
         }
         .buttonStyle(ChipButtonStyle(isHovering: isHovering))
         .onHover { isHovering = $0 }
@@ -170,13 +175,13 @@ struct NextEventChip: View {
     }
 }
 
-/// The clay chip: lifts a touch on hover, sinks while pressed.
+/// The clay capsule (the strip's tray): lifts a touch on hover, sinks while pressed.
 private struct ChipButtonStyle: ButtonStyle {
     let isHovering: Bool
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .clay(cornerRadius: NextEventChip.cornerRadius, style: .chip, isPressed: configuration.isPressed,
+            .clay(in: Capsule(style: .continuous), style: .tray, isPressed: configuration.isPressed,
                   isHighlighted: isHovering && !configuration.isPressed)
             .scaleEffect(configuration.isPressed ? 0.97 : 1)
             .animation(Theme.Motion.press, value: configuration.isPressed)

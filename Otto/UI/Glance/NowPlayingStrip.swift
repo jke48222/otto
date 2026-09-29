@@ -24,13 +24,30 @@ struct NowPlayingStrip: View {
     var isVisible: Bool = true
 
     static let height: CGFloat = 36
-    static let cornerRadius: CGFloat = 12
+    /// A capsule: every 36 pt well in the notch (this strip, the next-event chip beside it, the Recents
+    /// search well) shares the composer's fully rounded ends.
+    static let cornerRadius: CGFloat = height / 2
     static let artworkSize: CGFloat = 26
-    static let artworkCornerRadius: CGFloat = 6
-    static let artworkInset: CGFloat = 5
+    static let artworkCornerRadius: CGFloat = 7
+    /// The artwork's inset from the leading end.
+    static let artworkInset: CGFloat = 6
+    /// The last transport button's inset from the trailing end: its 26 pt circle sits concentric in the
+    /// capsule's 18 pt end.
+    static let controlsInset: CGFloat = 5
     static let controlSize: CGFloat = 26
     static let hairlineHeight: CGFloat = 2
     static let hoveredHairlineHeight: CGFloat = 4
+    /// The position bar runs under the title column (from the artwork's trailing edge plus the 8 pt gap)
+    /// to `positionTrailingInset` from the trailing end, `positionBottomInset` above the bottom edge.
+    static let positionLeadingInset: CGFloat = artworkInset + artworkSize + 8
+    /// Gap between the controls' spacing in `controls(for:)`.
+    static let controlSpacing: CGFloat = 2
+    /// The bar stops 10 pt before the first transport button, so it runs under the title column only.
+    static let positionTrailingInset: CGFloat = controlsInset + 3 * controlSize + 2 * controlSpacing + 10
+    static let positionBottomInset: CGFloat = 3
+    /// Extra room under the title column, which rides half this above centre: with the 12 / 10.5 pt lines set
+    /// tight, the subtitle's baseline sits about 4 pt over the bar and the title's caps about 5.5 pt under the top.
+    static let textLift: CGFloat = 4
     /// Controls dim to this while Otto isn't allowed to control the player.
     static let deniedControlOpacity: Double = 0.4
     /// VoiceOver's increment and decrement step on the position.
@@ -131,29 +148,33 @@ struct NowPlayingStrip: View {
         let shape = RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
         return HStack(spacing: 8) {
             artwork(for: item)
-            VStack(alignment: .leading, spacing: 1) {
+            VStack(alignment: .leading, spacing: 0) {
                 Text(DisplayText.sanitized(item.title, maxLength: 200))
-                    .font(Theme.font(12.5, .medium))
+                    .font(Theme.font(12, .medium))
                     .foregroundStyle(Theme.textPrimary)
                 Text(Self.subtitle(for: item))
-                    .font(Theme.font(11))
-                    .foregroundStyle(Theme.textTertiary)
+                    .font(Theme.font(10.5))
+                    .foregroundStyle(Theme.textSecondary)
             }
             .lineLimit(1)
             .truncationMode(.tail)
+            .padding(.bottom, Self.textLift)
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityElement(children: .combine)
             controls(for: item)
                 .opacity(consent == .denied ? Self.deniedControlOpacity : 1)
         }
         .padding(.leading, Self.artworkInset)
-        .padding(.trailing, Self.artworkInset)
+        .padding(.trailing, Self.controlsInset)
         .frame(height: Self.height)
         .overlay {
             ZStack(alignment: .bottom) {
                 Color.clear
                 PositionHairline(item: item, canSeek: Self.canSeek(item, consent: consent),
                                  isExpanded: isHovering, isVisible: isVisible, onSeek: { onCommand(.seek($0)) })
+                    .padding(.leading, Self.positionLeadingInset)
+                    .padding(.trailing, Self.positionTrailingInset)
+                    .padding(.bottom, Self.positionBottomInset)
             }
             .clipShape(shape)
         }
@@ -177,7 +198,7 @@ struct NowPlayingStrip: View {
                     .overlay {
                         Image(systemName: "music.note")
                             .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(Theme.textTertiary)
+                            .foregroundStyle(Theme.textTertiaryOnClay)
                     }
             }
         }
@@ -189,7 +210,7 @@ struct NowPlayingStrip: View {
 
     private func controls(for item: NowPlayingItem) -> some View {
         let isPlaying = item.state == .playing
-        return HStack(spacing: 2) {
+        return HStack(spacing: Self.controlSpacing) {
             TransportButton(symbol: "backward.fill", label: "Previous track") { onCommand(.previous) }
             TransportButton(symbol: isPlaying ? "pause.fill" : "play.fill", label: isPlaying ? "Pause" : "Play") {
                 onCommand(isPlaying ? .pause : .play)
@@ -247,7 +268,7 @@ private struct TransportButton: View {
     }
 }
 
-/// The position along the strip's bottom edge: a 2 pt hairline (4 pt while the strip is hovered),
+/// The position under the strip's title column: a 2 pt capsule (4 pt while the strip is hovered),
 /// extrapolated once a second while playing. With `canSeek`, a click or drag seeks.
 private struct PositionHairline: View {
     let item: NowPlayingItem
@@ -291,11 +312,12 @@ private struct PositionHairline: View {
     private func line(width: CGFloat, fraction: Double) -> some View {
         let height = isExpanded || dragFraction != nil ? NowPlayingStrip.hoveredHairlineHeight : NowPlayingStrip.hairlineHeight
         return ZStack(alignment: .leading) {
-            Rectangle()
-                .fill(Color.white.opacity(0.08))
-            Rectangle()
-                .fill(Theme.orbLight.opacity(0.55))
-                .frame(width: width * CGFloat(fraction))
+            Capsule(style: .continuous)
+                .fill(Color.white.opacity(0.10))
+            Capsule(style: .continuous)
+                .fill(Color.white.opacity(0.55))
+                .frame(width: max(height, width * CGFloat(fraction)))
+                .opacity(fraction > 0 ? 1 : 0)
         }
         .frame(width: width, height: height)
     }
