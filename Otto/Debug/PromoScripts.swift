@@ -20,6 +20,14 @@ import Foundation
 
 // MARK: - Conversations
 
+/// The client tool an action turn calls.
+struct PromoToolCall {
+    let name: String
+    let input: JSONValue
+    /// The one line that streams before the call (what Otto says it's about to do).
+    let sentence: String
+}
+
 /// One scripted exchange: what the user asks and how Otto answers.
 struct PromoConversation {
     /// The prompt as typed into the composer. The client matches on it.
@@ -35,6 +43,14 @@ struct PromoConversation {
     /// pauses between its list and its wrap-up. It lets the films tuck the notch away after the
     /// list has landed while the reply is still visibly working.
     var tailPause: Double = 0
+    /// An action turn: after thinking, `toolCall.sentence` streams and the response stops for
+    /// `tool_use` with this client tool call (the real registry and executor take it from there).
+    /// `answer` is then the sentence, so a finished turn reads the same.
+    var toolCall: PromoToolCall?
+    /// What streams once the tool result comes back (`end_turn`). Action turns only.
+    var afterTool: String?
+    /// Seconds between thinking and the answer (nil: 0.7 without server tools, 0.35 with them).
+    var leadPause: Double?
 
     struct PromoActivity {
         let kind: ToolActivity.Kind
@@ -67,6 +83,34 @@ enum PromoContent {
 
     static let articleURL = URL(string: "https://calm-notes.example/on-calm-software") ?? URL(fileURLWithPath: "/")
     static let articleTitle = "On Calm Software"
+
+    // MARK: Stage clock
+
+    /// The stage's world runs on a fixed future morning: Tuesday 8 October 2030, 9:41 AM in New York
+    /// (the menu bar's "Tue 9:41 AM"). The calendar tool and the demo calendar read this clock, so
+    /// "tomorrow at 10" is always Wednesday the 9th and misses every seeded demo event. It is in the
+    /// future on purpose: an Undo token expires 10 minutes after `stageNow`, checked against the real
+    /// clock, so the Undo link stays live on camera. No year is ever shown (`DateInput.display`
+    /// omits it). The tool executor stays on the real clock (it times arming with it).
+    static let stageZone = TimeZone(identifier: "America/New_York") ?? TimeZone(secondsFromGMT: -4 * 3600) ?? .current
+    static let stageLocale = Locale(identifier: "en_US")
+    /// 2030-10-08 09:41 EDT (13:41 UTC).
+    static let stageNow = Date(timeIntervalSince1970: 1_917_697_260)
+    static let stageClock = CalendarToolClock(now: { stageNow }, timeZone: { stageZone }, locale: stageLocale)
+
+    /// `YYYY-MM-DD` of the stage day `offset` days after `stageNow`, in the stage's zone.
+    static func stageDay(_ offset: Int) -> String {
+        DateInput.isoDay(stageNow.addingTimeInterval(Double(offset) * 86_400), in: stageZone)
+    }
+
+    // MARK: Frontmost app
+
+    /// The app the stage is "in": a fictional one, named like the menu bar's frontmost app. The notch
+    /// records it instead of the Mac's real frontmost app (`NotchViewModel.debugFrontmostApp`), so no
+    /// footage can name or show an app from the machine it was recorded on. It has no bundle, so no
+    /// icon, and the stage's insert environment reports it as not running, so no reply ever offers
+    /// "Paste into" anything.
+    static let studioApp = AppRef(pid: -4_141, bundleID: "example.promo.studio", name: "Studio", bundleURL: nil)
 
     // MARK: Conversations
 
@@ -170,11 +214,39 @@ enum PromoContent {
         """
     )
 
+    // MARK: Action turns
+
+    /// Books Sam's review through the real calendar tool: one line, then `calendar_create_event`
+    /// (the approval card), then a short confirmation. Dates come from `stageNow`, so the card reads
+    /// WED 9, 10:00 – 10:30 AM. The prompt says "schedule", never "add … to my calendar", so it can't
+    /// match the demo client's tool phrases.
+    static let schedule = PromoConversation(
+        prompt: "Schedule Sam's review for tomorrow at 10",
+        thinking: "Sam's review is the last open item before Friday. Thirty minutes tomorrow at 10, on the Work calendar.",
+        activities: [],
+        answer: "I'll add a 30-minute release notes review with Sam for tomorrow at 10.",
+        toolCall: PromoToolCall(
+            name: "calendar_create_event",
+            input: [
+                "title": "Release notes review",
+                "start": .string("\(stageDay(1))T10:00"),
+                "end": .string("\(stageDay(1))T10:30"),
+                "calendar": "Work",
+            ],
+            sentence: "I'll add a 30-minute release notes review with Sam for tomorrow at 10."
+        ),
+        afterTool: "Done. It's on your Work calendar for Wednesday at 10.",
+        leadPause: 0.4
+    )
+
+    /// Conversations that end in `end_turn` on their first response.
     static let all = [summarize, friday, screenshot, draft]
+    /// Conversations whose first response stops for a client tool call.
+    static let actionTurns = [schedule]
 
     static func conversation(forPrompt prompt: String) -> PromoConversation {
         let normalized = prompt.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return all.first { $0.prompt.lowercased() == normalized } ?? summarize
+        return (all + actionTurns).first { $0.prompt.lowercased() == normalized } ?? summarize
     }
 
     // MARK: Attachments
@@ -298,15 +370,28 @@ final class PromoLLMClient: LLMClient, @unchecked Sendable {
     }
 
     func stream(_ request: MessagesRequest) -> AsyncThrowingStream<StreamEvent, Error> {
-        let prompt = MockLLMClient.lastUserPrompt(in: request.messages).text
-        let conversation = PromoContent.conversation(forPrompt: prompt)
+        let isToolRound = Self.startsWithToolResults(request.messages)
+        let conversation = PromoContent.conversation(forPrompt: Self.lastTypedPrompt(in: request.messages))
+        let offeredTools = Set(request.clientTools.compactMap { $0["name"]?.stringValue })
         let chunkInterval = chunkInterval
         let timeScale = timeScale
         let model = request.model.rawValue
         return AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    try await Self.play(conversation, model: model, chunkInterval: chunkInterval, timeScale: timeScale, continuation: continuation)
+                    let player = Player(model: model, chunkInterval: chunkInterval, timeScale: timeScale, continuation: continuation)
+                    if isToolRound {
+                        try await player.playAfterTool(conversation)
+                    } else if let call = conversation.toolCall {
+                        if offeredTools.contains(call.name) {
+                            try await player.playToolCall(conversation, call: call)
+                        } else {
+                            // As the snapshot client does when the action is turned off.
+                            try await player.playText("That action is turned off, so I can't do it from here.", pace: 1, leadPause: 0.22)
+                        }
+                    } else {
+                        try await player.play(conversation)
+                    }
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
@@ -316,16 +401,36 @@ final class PromoLLMClient: LLMClient, @unchecked Sendable {
         }
     }
 
-    private static func play(
-        _ conversation: PromoConversation,
-        model: String,
-        chunkInterval: Double,
-        timeScale: Double,
-        continuation: AsyncThrowingStream<StreamEvent, Error>.Continuation
-    ) async throws {
+    /// The last user entry starts with `tool_result` blocks: this request continues an action turn.
+    static func startsWithToolResults(_ messages: [JSONValue]) -> Bool {
+        guard let last = messages.last(where: { $0["role"]?.stringValue == "user" }),
+              let blocks = last["content"]?.arrayValue else { return false }
+        return blocks.first?.typeName == "tool_result"
+    }
+
+    /// The prompt the user typed last: tool-result entries are skipped, and within an entry the last
+    /// text block is the typed one (context blocks come first).
+    static func lastTypedPrompt(in messages: [JSONValue]) -> String {
+        let typed = messages.last { entry in
+            guard entry["role"]?.stringValue == "user" else { return false }
+            if entry["content"]?.stringValue != nil { return true }
+            return entry["content"]?.arrayValue?.first?.typeName != "tool_result"
+        }
+        guard let typed else { return "" }
+        return MockLLMClient.lastUserPrompt(in: [typed]).text
+    }
+
+    /// Emits one response's events with promo pacing.
+    private struct Player {
+        let model: String
+        let chunkInterval: Double
+        let timeScale: Double
+        let continuation: AsyncThrowingStream<StreamEvent, Error>.Continuation
+
         func emit(_ event: StreamEvent) throws {
             if case .terminated = continuation.yield(event) { throw CancellationError() }
         }
+
         func pause(_ seconds: Double) async throws {
             let scaled = seconds * timeScale
             if scaled > 0 {
@@ -335,56 +440,114 @@ final class PromoLLMClient: LLMClient, @unchecked Sendable {
             }
         }
 
-        try await pause(0.22)
-        try emit(.messageStart(model: model))
-        try emit(.thinkingStarted)
-        let thoughts = MockLLMClient.wordChunks(conversation.thinking)
-        for (index, word) in thoughts.enumerated() {
-            try emit(.thinkingDelta(word))
-            if index % 4 == 3 { try await pause(0.06) }
-        }
-        try await pause(conversation.activities.isEmpty ? 0.7 : 0.35)
-
-        for (index, activity) in conversation.activities.enumerated() {
-            let id = "srvtoolu_promo_\(index)"
-            try emit(.toolActivity(ToolActivity(id: id, kind: activity.kind, label: activity.label, isDone: false)))
-            try await pause(activity.duration)
-            try emit(.toolActivity(ToolActivity(id: id, kind: activity.kind, label: activity.label, isDone: true)))
-            if !activity.sources.isEmpty {
-                try emit(.sources(activity.sources))
+        func think(_ thinking: String) async throws {
+            try emit(.thinkingStarted)
+            let thoughts = MockLLMClient.wordChunks(thinking)
+            for (index, word) in thoughts.enumerated() {
+                try emit(.thinkingDelta(word))
+                if index % 4 == 3 { try await pause(0.06) }
             }
-            try await pause(0.18)
         }
 
-        // Two words per delta, like a real stream's token groups. The closing paragraph (after the
-        // last blank line) streams after `tailPause`.
-        let answer = conversation.answer
-        var parts = [answer]
-        if conversation.tailPause > 0, let split = answer.range(of: "\n\n", options: .backwards) {
-            parts = [String(answer[..<split.upperBound]), String(answer[split.upperBound...])]
-        }
-        for (partIndex, part) in parts.enumerated() {
-            if partIndex > 0 { try await pause(conversation.tailPause) }
-            let words = MockLLMClient.wordChunks(part)
+        /// Two words per delta, like a real stream's token groups, lingering a touch at line ends.
+        func stream(_ text: String, pace: Double) async throws {
+            let words = MockLLMClient.wordChunks(text)
             var index = 0
             while index < words.count {
                 let chunk = words[index..<min(index + 2, words.count)].joined()
                 try emit(.textDelta(chunk))
                 index += 2
-                // Linger a touch at line ends so structure lands as it streams.
-                let interval = chunkInterval * conversation.pace
+                let interval = chunkInterval * pace
                 try await pause(chunk.contains("\n") ? interval * 2.5 : interval)
             }
         }
 
-        let result = StreamResult(
-            content: [["type": "text", "text": .string(conversation.answer)]],
-            stopReason: "end_turn",
-            stopDetails: nil,
-            model: model,
-            usage: ["input_tokens": 1_200, "output_tokens": .int(Int64(conversation.answer.count / 4))]
-        )
-        try emit(.completed(result))
+        func usage(output: Int) -> JSONValue {
+            ["input_tokens": 1_200, "output_tokens": .int(Int64(max(1, output)))]
+        }
+
+        func complete(text: String) throws {
+            let usage = usage(output: text.count / 4)
+            try emit(.usage(usage))
+            try emit(.completed(StreamResult(
+                content: [["type": "text", "text": .string(text)]],
+                stopReason: "end_turn",
+                stopDetails: nil,
+                model: model,
+                usage: usage
+            )))
+        }
+
+        /// Thinking, server tools with their sources, then the answer (`end_turn`).
+        func play(_ conversation: PromoConversation) async throws {
+            try await pause(0.22)
+            try emit(.messageStart(model: model))
+            try await think(conversation.thinking)
+            try await pause(conversation.leadPause ?? (conversation.activities.isEmpty ? 0.7 : 0.35))
+
+            for (index, activity) in conversation.activities.enumerated() {
+                let id = "srvtoolu_promo_\(index)"
+                try emit(.toolActivity(ToolActivity(id: id, kind: activity.kind, label: activity.label, isDone: false)))
+                try await pause(activity.duration)
+                try emit(.toolActivity(ToolActivity(id: id, kind: activity.kind, label: activity.label, isDone: true)))
+                if !activity.sources.isEmpty {
+                    try emit(.sources(activity.sources))
+                }
+                try await pause(0.18)
+            }
+
+            // The closing paragraph (after the last blank line) streams after `tailPause`.
+            let answer = conversation.answer
+            var parts = [answer]
+            if conversation.tailPause > 0, let split = answer.range(of: "\n\n", options: .backwards) {
+                parts = [String(answer[..<split.upperBound]), String(answer[split.upperBound...])]
+            }
+            for (partIndex, part) in parts.enumerated() {
+                if partIndex > 0 { try await pause(conversation.tailPause) }
+                try await stream(part, pace: conversation.pace)
+            }
+            try complete(text: answer)
+        }
+
+        /// Thinking, the sentence, then the client tool call; the response stops for `tool_use`.
+        /// A port of `SnapshotLLMClient.toolCall` at promo pacing.
+        func playToolCall(_ conversation: PromoConversation, call: PromoToolCall) async throws {
+            let toolUseID = "toolu_promo_" + UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(20).lowercased()
+            try await pause(0.22)
+            try emit(.messageStart(model: model))
+            try await think(conversation.thinking)
+            try await pause(conversation.leadPause ?? 0.7)
+            try await stream(call.sentence, pace: conversation.pace)
+            try emit(.toolUseStarted(id: toolUseID, name: call.name))
+            try await pause(0.2)
+            let raw = call.input.encodedString()
+            try emit(.toolUseReady(id: toolUseID, name: call.name, input: call.input, rawInput: raw))
+            let content: [JSONValue] = [
+                [
+                    "type": "thinking",
+                    "thinking": .string(conversation.thinking),
+                    "signature": .string("promo-signature"),
+                ],
+                ["type": "text", "text": .string(call.sentence)],
+                ["type": "tool_use", "id": .string(toolUseID), "name": .string(call.name), "input": call.input],
+            ]
+            let usage = usage(output: (conversation.thinking.count + call.sentence.count + raw.count) / 4)
+            try emit(.usage(usage))
+            try emit(.completed(StreamResult(content: content, stopReason: "tool_use", stopDetails: nil, model: model, usage: usage)))
+        }
+
+        /// After the tool result: a short beat, then the confirmation (`end_turn`).
+        func playAfterTool(_ conversation: PromoConversation) async throws {
+            try await playText(conversation.afterTool ?? "Done.", pace: conversation.pace, leadPause: 0.22)
+        }
+
+        /// Plain text with no thinking (`end_turn`).
+        func playText(_ text: String, pace: Double, leadPause: Double) async throws {
+            try await pause(leadPause)
+            try emit(.messageStart(model: model))
+            try await stream(text, pace: pace)
+            try complete(text: text)
+        }
     }
 }
 
