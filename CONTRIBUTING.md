@@ -92,13 +92,19 @@ Otto/
 ├── Media/        Now Playing monitor and the media_control tool
 ├── Shelf/        File Shelf store, ingest, thumbnails, drag, sharing, Quick Look
 ├── Usage/        pricing, usage ledger, cost formatting
+├── Licensing/    paid build only: trial, Polar and Gumroad license keys, Keychain records, LicenseController
+├── Updates/      the updater seam, SparkleUpdater (paid build) and SetappUpdater (Setapp build)
+├── Setapp/       Setapp build only: SetappBridge (usage events, release notes)
 ├── UI/           SwiftUI views: notch shape, clay theme, dock cards, pages, chat, glance, voice,
 │                 Settings panes, composer, conversation, Markdown
 └── Debug/        Debug-build-only tools: SnapshotRenderer (--snapshot), SelfTest (--selftest),
                   the promo stage and stills (--promo, --promo-stills) behind the launch media
 OttoTests/        XCTest unit tests; shared fakes in OttoTests/Support/
-scripts/          build.sh, run.sh, snapshot.sh, make_icon.swift, release.sh, make_media.sh (+ video tools)
-Config/           Signing.xcconfig (+ your git-ignored Local.xcconfig)
+scripts/          build.sh, run.sh, snapshot.sh, make_icon.swift, release.sh, publish.sh, make_media.sh
+                  (+ video tools), audit_flavor.sh, check_commercial_config.sh; their tests in scripts/tests/
+Config/           Signing.xcconfig (+ your git-ignored Local.xcconfig); Commercial.xcconfig, Paid.xcconfig
+                  and Setapp.xcconfig for the paid and Setapp builds
+project*.yml      project.yml (Otto.xcodeproj); project-paid.yml and project-setapp.yml add one package each
 docs/             SPEC.md (architecture & design spec), RELEASING.md, snapshots/, media/
 ```
 
@@ -106,7 +112,7 @@ docs/             SPEC.md (architecture & design spec), RELEASING.md, snapshots/
 language. Read the section for the area you're changing before you start. The shared contract types
 (`JSONValue`, `Attachment`, `ChatMessage`, `StreamEvent`, `LLMClient`, `NotchMetrics`, …) live in
 `Otto/Chat/Models.swift`. Change them carefully; many modules depend on them. The 1.1 modules
-(sections 6 to 18 of the spec) keep their shared types in one contracts file each, such as
+(sections 6 to 19 of the spec) keep their shared types in one contracts file each, such as
 `Otto/Tools/ToolContracts.swift` and `Otto/Notch/NotchContracts.swift`.
 
 ## Coding conventions
@@ -115,14 +121,15 @@ language. Read the section for the area you're changing before you start. The sh
   `@MainActor`.
 - **Observation, not Combine.** State objects use `@Observable`; views take them as `@Bindable var` or
   `let`.
-- **Apple frameworks only.** No third-party dependencies (AppKit, SwiftUI, Observation, Carbon, PDFKit,
-  UniformTypeIdentifiers, ServiceManagement, Security, ImageIO, CoreImage, AVFoundation, Speech,
-  NaturalLanguage, EventKit, UserNotifications, ScreenCaptureKit, QuickLookUI, CryptoKit and friends).
+- **Apple frameworks only in shared code.** No new third-party dependencies. The only packages are Sparkle
+  (paid build) and the Setapp Framework (Setapp build), and code that uses them stays behind
+  `#if OTTO_SPARKLE` or `#if OTTO_SETAPP`.
 - **No force-unwraps** on anything that can fail at runtime.
 - **Log with `os.Logger`** (subsystem `com.jalenedusei.otto`, a category named after the module, such as
-  `Tools`, `Voice` or `History`), never `print`. Never log API keys. Anything the user wrote or Otto read
-  (prompts, replies, tool inputs and outputs, file paths, selections, event titles) is logged only with
-  `privacy: .private`; ids, counts, statuses and error codes can be `.public`.
+  `Tools`, `Voice` or `History`, plus `License`, `Updates` and `Setapp` in those builds), never `print`. Never
+  log API keys, license keys, activation IDs, license labels or email addresses. Anything the user wrote or
+  Otto read (prompts, replies, tool inputs and outputs, file paths, selections, event titles) is logged only
+  with `privacy: .private`; ids, counts, statuses and error codes can be `.public`.
 - **File headers.** Every Swift file starts with the standard header comment:
   ```swift
   //
@@ -188,6 +195,39 @@ only, so run them from `scripts/build.sh` output:
 
 When you're done, make sure no Otto process is left running (`pkill -x Otto`).
 
+**Testing licensing.** The trial, license keys and updaters compile only into the paid and Setapp builds, so
+the test run above skips them. Run these when you change anything under `Otto/Licensing/`, `Otto/Updates/` or
+`Otto/Setapp/`, or any code behind `OTTO_LICENSING`, `OTTO_SPARKLE` or `OTTO_SETAPP`:
+
+```sh
+# The licensing-check build: Otto.xcodeproj with the license code compiled in and no packages
+xcodebuild -project Otto.xcodeproj -scheme Otto -configuration Debug -derivedDataPath build/licensing \
+  'SWIFT_ACTIVE_COMPILATION_CONDITIONS=DEBUG OTTO_LICENSING' test
+
+# The paid build with Sparkle, then the Setapp build with the Setapp Framework
+xcodegen generate --spec project-paid.yml
+xcodebuild -project OttoPaid.xcodeproj -scheme Otto -configuration Debug -derivedDataPath build/paid test
+xcodegen generate --spec project-setapp.yml
+xcodebuild -project OttoSetapp.xcodeproj -scheme Otto -configuration Debug -derivedDataPath build/setapp build
+```
+
+Each flavor builds into its own folder under `build/`, so none of them replaces the source build's `Otto.app`.
+The first flavor build downloads its one pinned package. If the paid test host refuses to load an ad hoc
+signed `Sparkle.framework`, add `ENABLE_HARDENED_RUNTIME=NO` to that command, as CI does. A Debug flavor build
+prints a warning for every `JALEN_MUST_SET` placeholder in `Config/Commercial.xcconfig`, and a Release build
+with one fails. Both are on purpose, so never replace a placeholder with a made-up value. A Debug paid build
+checks keys against the Polar sandbox, and every build that isn't fully configured for Polar's production API
+keeps its license and trial in separate `.sandbox` Keychain items, so a development build never touches a real
+license on the same Mac. `--license-state` shows any license state without the Keychain at all. Two tests are opt-in: the Keychain
+store test runs with `TEST_RUNNER_OTTO_KEYCHAIN_TESTS=1`, and the live Polar sandbox test with
+`TEST_RUNNER_OTTO_POLAR_SANDBOX_TESTS=1` plus the sandbox IDs and key named in its header. If you change the
+flavor specs, `Config/` or the release scripts, also run the script tests
+(`for t in scripts/tests/*_test.sh; do bash "$t"; done`) and `scripts/audit_flavor.sh --flavor source` on a
+source Release build.
+
+The license code is public on purpose. Please don't open issues or pull requests that make it harder to get
+around: the source is free to build.
+
 Maintainers build release disk images with `scripts/release.sh`; see the header of that script for its
 options. Contributors don't need it.
 
@@ -207,7 +247,7 @@ options. Contributors don't need it.
       and, if possible, a display without a notch.
 - [ ] New permissions, tools or data on disk are covered in the README's privacy section and, if a
       person has to check them on a real Mac, in the release gate in `docs/RELEASING.md`.
-- [ ] No third-party dependencies, force-unwraps, `print` calls or placeholder code were added.
+- [ ] No new third-party dependencies, force-unwraps, `print` calls or placeholder code were added.
 - [ ] No secrets, team IDs or personal data are included.
 - [ ] `README.md`, `docs/SPEC.md` and `CHANGELOG.md` (under **Unreleased**) are updated where relevant.
 

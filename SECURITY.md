@@ -54,6 +54,11 @@ Out of scope:
 - Ad hoc signatures on builds you compile yourself, and the Keychain prompt they cause after each
   rebuild, which are documented.
 
+**License checks are not a security boundary.** Otto's source is free to build, so a way around the paid
+build's license check isn't a vulnerability, and I'd rather you didn't report one. Do report anything that
+could leak a license key, send data the privacy page doesn't list, or let an update install that isn't
+signed with Otto's key.
+
 ## How Otto handles your API key
 
 - The key is stored in your **login Keychain** as a generic password (service `com.jalenedusei.otto`,
