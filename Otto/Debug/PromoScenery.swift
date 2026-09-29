@@ -603,47 +603,89 @@ struct PromoDragStack: View {
 /// A macOS-style window around the real `SettingsView`, for the Settings shot.
 struct PromoSettingsWindow: View {
     let settings: AppSettings
+    /// The pane showing; the film and settings.png show Models (the key in Keychain, models, prices).
+    var tab: SettingsTab = .models
     var contentHeight: CGFloat = 560
 
-    static let titleBarHeight: CGFloat = 28
-    /// Content height that ends just after the Model group (models, Response style and its helper
-    /// line) with the form's own bottom padding.
-    static let throughModelGroup: CGFloat = 436
+    /// The real Settings window's content width.
+    static let width = SettingsWindowController.contentWidth
+    /// The unified title bar and toolbar: traffic lights and the pane's title, then one item per tab.
+    static let chromeHeight: CGFloat = 80
+    /// Content height that ends just after the Models pane's Response style group (its helper line
+    /// included), before the next group's card. Measured on a 1.1 render of this window (settings.png
+    /// seeded at `settingsScale` 0.5 with a 900 pt pane, 1.25 px per pt): the Model group's card ends
+    /// 452.8 pt below the toolbar and the Web search card starts at 466.4 pt, so 462 leaves 9 pt of
+    /// the form's background under the card and never a sliver of the next one.
+    static let throughModelGroup: CGFloat = 462
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
-        SettingsView(settings: settings)
-            // No overlay scroller flashing in as the window appears.
-            .scrollIndicators(.never)
-            // The form's minimum height is 560: pin it to the top and let the window cut it off.
-            .frame(width: 480, height: contentHeight, alignment: .top)
-            .background(Theme.rgb(0x1F1F21))
-            .clipped()
-            .padding(.top, Self.titleBarHeight)
-            .overlay(alignment: .top) {
-                ZStack {
-                    Text("Otto Settings")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(Color.white.opacity(0.85))
-                    HStack(spacing: 8) {
-                        Circle().fill(Theme.rgb(0xFF5F57)).frame(width: 12, height: 12)
-                        Circle().fill(Theme.rgb(0x4A4A4D)).frame(width: 12, height: 12)
-                        Circle().fill(Theme.rgb(0x4A4A4D)).frame(width: 12, height: 12)
-                        Spacer()
-                    }
-                    .padding(.leading, 12)
-                }
-                .frame(width: 480, height: Self.titleBarHeight)
-                .background(Theme.rgb(0x2A2A2C))
-                .overlay(alignment: .bottom) { Rectangle().fill(Color.black.opacity(0.5)).frame(height: 1) }
-            }
-        .frame(width: 480)
+        VStack(spacing: 0) {
+            chrome
+            SettingsView(settings: settings, tab: tab, services: .inert(settings: settings))
+                // No overlay scroller flashing in as the window appears.
+                .scrollIndicators(.never)
+                // Pin the pane to the top and let the window cut it off.
+                .frame(width: Self.width, height: contentHeight, alignment: .top)
+                .background(Theme.rgb(0x1F1F21))
+                .clipped()
+        }
+        .frame(width: Self.width)
         .clipShape(shape)
         .overlay { shape.strokeBorder(Color.white.opacity(0.12), lineWidth: 1) }
         .background {
             shape.fill(Color.black).shadow(color: .black.opacity(0.5), radius: 40, x: 0, y: 24)
         }
         .environment(\.colorScheme, .dark)
+    }
+
+    /// Drawn, since the stage hosts the pane in a borderless window: the title is the selected tab's,
+    /// and the items come from `SettingsTab` (symbol over title), as the real toolbar shows them.
+    private var chrome: some View {
+        VStack(spacing: 0) {
+            ZStack {
+                Text(tab.title)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.white.opacity(0.85))
+                HStack(spacing: 8) {
+                    Circle().fill(Theme.rgb(0xFF5F57)).frame(width: 12, height: 12)
+                    Circle().fill(Theme.rgb(0x4A4A4D)).frame(width: 12, height: 12)
+                    Circle().fill(Theme.rgb(0x4A4A4D)).frame(width: 12, height: 12)
+                    Spacer()
+                }
+                .padding(.leading, 12)
+            }
+            .frame(height: 28)
+            HStack(spacing: 2) {
+                ForEach(SettingsTab.allCases) { item in
+                    toolbarItem(item)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: Self.chromeHeight - 28, alignment: .top)
+        }
+        .frame(width: Self.width, height: Self.chromeHeight)
+        .background(Theme.rgb(0x2A2A2C))
+        .overlay(alignment: .bottom) { Rectangle().fill(Color.black.opacity(0.5)).frame(height: 1) }
+    }
+
+    private func toolbarItem(_ item: SettingsTab) -> some View {
+        let isSelected = item == tab
+        return VStack(spacing: 3) {
+            Image(systemName: item.symbol)
+                .font(.system(size: 17, weight: .regular))
+                .frame(height: 20)
+            Text(item.title)
+                .font(.system(size: 11))
+                .lineLimit(1)
+        }
+        .foregroundStyle(isSelected ? Theme.rgb(0x0A84FF) : Color.white.opacity(0.62))
+        .frame(width: 62, height: 44)
+        .background {
+            if isSelected {
+                RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Color.white.opacity(0.1))
+            }
+        }
     }
 }
 

@@ -381,7 +381,9 @@ enum PromoStill: CaseIterable {
             chat.debugSeed(messages: [], isStreaming: false)
             vm.debugSeed(presentation: .closed, composerText: "", attachments: [], suggestedTab: nil, hasUnreadReply: false)
             state.showsSettings = true
-            state.settingsScale = 0.9
+            // The 1.1 window (560 pt wide, toolbar, Models through Response style) is 542 pt tall: at
+            // 0.78 it ends about 20 pt above the still's bottom edge.
+            state.settingsScale = 0.78
             // Settings is Otto's own window, so Otto is the frontmost app in the menu bar.
             state.menuBarApp = "Otto"
             state.isPointerVisible = false
