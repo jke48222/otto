@@ -8,8 +8,9 @@
 //                  shelf.png, voice.png, recents.png                           2080 × 1300 (2.5×)
 //    <dir>/social-preview.png                                                  1280 × 640
 //    <dir>/icon.png                                                            512 × 512
-//    <dir>/poster-stage.png   3072 × 1728: the video stage with the film's finished answer and no
-//                             pointer, which scripts/make_video.swift frames for the poster
+//    <dir>/poster-stage.png   3072 × 1728: the video stage with the Friday answer, the armed calendar
+//                             card below it and no pointer, which scripts/make_video.swift frames
+//                             for the poster
 //
 //  Every still runs on the 1.1 promo cast (`PromoCast.make()`) and is checked with
 //  `PromoCast.privacyProblem()` before it is captured.
@@ -59,6 +60,7 @@ extension PromoStage {
 
         var failures = 0
         var answerImage: CGImage?
+        var actionsImage: CGImage?
         for still in PromoStill.allCases {
             let layout = still.layout
             guard let cast = PromoCast.make() else { fail("Couldn't open the promo defaults suite.") }
@@ -113,11 +115,12 @@ extension PromoStage {
                 image = composed
             }
             if still == .answer { answerImage = image }
+            if still == .actions { actionsImage = image }
             if !writePNG(image, to: screens.appendingPathComponent(still.fileName), opaque: true) { failures += 1 }
         }
 
-        // The poster's plate: the video stage at 2× (the masters' resolution) with the film's
-        // finished answer reopened under the notch, and no pointer.
+        // The poster's plate: the video stage at 2× (the masters' resolution) with the armed calendar
+        // card under the notch, and no pointer.
         if let poster = await renderPosterStage() {
             if !writePNG(poster, to: directory.appendingPathComponent("poster-stage.png"), opaque: true) { failures += 1 }
         } else {
@@ -125,8 +128,8 @@ extension PromoStage {
             failures += 1
         }
 
-        // Social preview, built around the answer shot.
-        let social = PromoSocialPreview(productShot: answerImage, wallpaper: wallpaper)
+        // Social preview, built around the actions shot (the answer shot if that one failed).
+        let social = PromoSocialPreview(productShot: actionsImage ?? answerImage, wallpaper: wallpaper)
         if let image = await capture(social, size: PromoSocialPreview.size, settle: 0.4),
            let downsampled = resample(image, to: PromoSocialPreview.size) {
             if !writePNG(downsampled, to: directory.appendingPathComponent("social-preview.png"), opaque: true) { failures += 1 }
@@ -156,11 +159,21 @@ extension PromoStage {
         let state = PromoStageState(pointer: .zero)
         state.isPointerVisible = false
         await cast.warmUp()
+        // The film's Friday answer above, then the schedule turn played off camera up to its card.
         cast.chat.debugSeed(
             messages: PromoContent.finishedTurn(PromoContent.friday, attachments: PromoContent.droppedFiles() + [PromoContent.browserTab()]),
             isStreaming: false
         )
+        guard await cast.sendUntilApproval(PromoContent.schedule) else {
+            report("The poster's approval card never came.")
+            return nil
+        }
         cast.viewModel.debugSeed(presentation: .open, composerText: "", attachments: [], suggestedTab: nil, hasUnreadReply: false)
+        cast.viewModel.debugSeed(features: PromoStill.armedApproval())
+        if let problem = cast.privacyProblem() {
+            report("poster-stage.png: \(problem)")
+            return nil
+        }
         let view = PromoStageView(layout: layout, wallpaper: wallpaper, viewModel: cast.viewModel, settings: cast.settings, state: state)
         return await capture(view, size: layout.stageSize, settle: 0.9, scale: 2)
     }
@@ -782,8 +795,9 @@ enum GlanceLoupe {
 
 // MARK: - Social preview
 
-/// GitHub's social card (1280 × 640): icon, name, tagline and subline on the left, the answer
-/// shot (lid, menu bar, open notch) on the right, fading into the graphite backdrop.
+/// GitHub's social card (1280 × 640): icon, name, tagline and subline on the left, the actions
+/// shot (lid, menu bar, open notch with the calendar card) on the right, fading into the graphite
+/// backdrop.
 struct PromoSocialPreview: View {
     static let size = CGSize(width: 1280, height: 640)
 
