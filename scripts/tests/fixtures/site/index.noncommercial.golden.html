@@ -75,15 +75,18 @@
       <div class="wrap wrap--wide">
         <figure class="display-frame reveal">
           <div class="display-frame__screen">
-            <video class="promo" id="promo" autoplay muted loop playsinline preload="metadata"
+            <!-- No autoplay: script.js starts the loop once the frame is on screen, unless the visitor
+                 asked for less motion or less data. Without script.js, the native controls play it. -->
+            <video class="promo" id="promo" muted loop playsinline controls preload="none"
                    poster="media/otto-promo-poster.jpg" width="1920" height="1080"
                    aria-label="Otto opening from the MacBook notch, answering a question with web sources, then tucking away">
-              <source src="media/otto-promo.mp4" type="video/mp4">
+              <source src="media/otto-promo-web-720.mp4" type="video/mp4" media="(max-width: 800px)">
+              <source src="media/otto-promo-web.mp4" type="video/mp4">
             </video>
-            <button class="video-toggle" id="promo-toggle" type="button" aria-controls="promo" aria-pressed="false">
+            <button class="video-toggle" id="promo-toggle" type="button" aria-controls="promo" aria-pressed="true" hidden>
               <svg class="i-pause" viewBox="0 0 20 20" aria-hidden="true" focusable="false"><path d="M7 5v10m6-10v10" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
               <svg class="i-play" viewBox="0 0 20 20" aria-hidden="true" focusable="false"><path d="M7 5.2v9.6a.6.6 0 0 0 .9.5l7.6-4.8a.6.6 0 0 0 0-1L7.9 4.7a.6.6 0 0 0-.9.5Z" fill="currentColor"/></svg>
-              <span class="visually-hidden" id="promo-toggle-label">Pause video</span>
+              <span class="visually-hidden" id="promo-toggle-label">Play video</span>
             </button>
           </div>
           <figcaption class="visually-hidden">A 40-second tour of Otto.</figcaption>

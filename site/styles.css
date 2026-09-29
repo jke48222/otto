@@ -486,6 +486,7 @@ code {
 .video-toggle .i-play { display: none; }
 .video-toggle[aria-pressed="true"] .i-play { display: block; }
 .video-toggle[aria-pressed="true"] .i-pause { display: none; }
+.video-toggle[hidden],
 .no-video .video-toggle { display: none; }
 
 /* ---------- Sections ---------- */

@@ -66,13 +66,25 @@
     }
   });
 
-  /* Promo video: honour reduced motion, offer pause/play, and pause while off screen. */
+  /* Promo video. The page ships it with native controls, preload="none" and no autoplay, so nothing
+     downloads until the frame is on screen. Here the native controls give way to the pause/play
+     button, and the loop starts the first time the frame scrolls into view, unless the visitor asked
+     for less motion or less data (Save-Data or prefers-reduced-data), in which case it waits for the
+     button. It pauses while off screen. */
   var video = document.getElementById("promo");
   var toggle = document.getElementById("promo-toggle");
   var toggleLabel = document.getElementById("promo-toggle-label");
   if (!video || !toggle) return;
 
-  var userPaused = false;
+  var reduceData = window.matchMedia("(prefers-reduced-data: reduce)");
+  var connection = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+  var saveData = !!(connection && connection.saveData) || reduceData.matches;
+
+  // Held until the visitor presses play: no autoplay for reduced motion or reduced data.
+  var userPaused = reduceMotion.matches || saveData;
+
+  video.removeAttribute("controls");
+  toggle.hidden = false;
 
   function syncToggle() {
     var paused = video.paused;
@@ -85,15 +97,10 @@
     if (p && typeof p.catch === "function") p.catch(function () { syncToggle(); });
   }
 
-  if (reduceMotion.matches) {
-    userPaused = true;
-    video.removeAttribute("autoplay");
-    video.pause();
-  }
-
-  // If the video can't load, fall back to the poster (drawn as the frame's background) and hide controls.
-  var source = video.querySelector("source");
-  (source || video).addEventListener("error", function () {
+  // If the video can't load, fall back to the poster (drawn as the frame's background) and hide
+  // controls. The browser tries each <source> in turn and only the last one's error means none played.
+  var sources = video.querySelectorAll("source");
+  (sources.length ? sources[sources.length - 1] : video).addEventListener("error", function () {
     root.classList.add("no-video");
   });
 
@@ -120,6 +127,8 @@
         }
       });
     }, { threshold: 0.15 }).observe(video);
+  } else if (!userPaused) {
+    tryPlay();
   }
 
   reduceMotion.addEventListener && reduceMotion.addEventListener("change", function (e) {

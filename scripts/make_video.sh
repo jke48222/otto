@@ -5,6 +5,7 @@
 #   scripts/make_video.sh                         # raw footage from build/media-raw
 #   scripts/make_video.sh --raw-dir /path/to/raw  # e.g. wherever make_media.sh --raw-dir wrote it
 #   scripts/make_video.sh --crf 20                # lighter film
+#   scripts/make_video.sh --web-only              # only re-derive the site's renditions from the film
 #
 # Inputs (recorded by scripts/make_media.sh):
 #   <raw>/{story,settings,hero}.mov + .json   3072×1728 60 fps masters and their timelines
@@ -16,6 +17,8 @@
 #                                     H.264 High yuv420p BT.709, AAC 48 kHz stereo at -16 LUFS,
 #                                     +faststart, ≤ 25 MB
 #   docs/media/otto-promo-poster.jpg  1920×1080 poster frame
+#   docs/media/otto-promo-web.mp4     the website's copy: 1920×1080 H.264, CRF 24, no audio track, ≤ 8 MB
+#   docs/media/otto-promo-web-720.mp4 the website's copy for narrow screens: 1280×720, no audio, ≤ 3.5 MB
 #   docs/media/otto-hero.gif          1280×1000, 25 fps, 13.6 s seamless loop, UI at 1:1 with the
 #                                     2× master (body text ≈ 28 px), ≤ 8 MB
 #
@@ -30,6 +33,10 @@
 # card, fading in over the title card's first 0.5 s and out over the end card's last 1.5 s. It is
 # then loudness-normalized (two-pass loudnorm, -16 LUFS) and muxed.
 #
+# The website plays the film muted, so it gets its own silent, lighter renditions (the film itself,
+# with its soundtrack, is what the README links to). They are encoded from the silent picture, or with
+# --web-only from the film's picture track; site/index.html picks the 720p one below 800 px.
+#
 # The GIF is a 1:1 crop of the hero take, rendered by make_video.swift (with the film's collapse, and
 # the unread dot's ear retracting into the notch at the end so the last frame is the first frame),
 # then a temporal denoise (so codec noise in the still wallpaper doesn't bloat every frame), ordered
@@ -43,6 +50,7 @@ RAW="$ROOT/build/media-raw"
 MEDIA="$ROOT/docs/media"
 FPS=30
 CRF=18
+WEB_ONLY=0
 FFMPEG="$(command -v ffmpeg || echo /opt/homebrew/bin/ffmpeg)"
 
 while [[ $# -gt 0 ]]; do
@@ -50,13 +58,44 @@ while [[ $# -gt 0 ]]; do
     --raw-dir) RAW="$2"; shift ;;
     --fps) FPS="$2"; shift ;;
     --crf) CRF="$2"; shift ;;
-    -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
+    --web-only) WEB_ONLY=1 ;;
+    -h|--help) sed -n '2,/^set -euo/{/^set -euo/d;p;}' "$0"; exit 0 ;;
     *) echo "error: unknown option $1" >&2; exit 1 ;;
   esac
   shift
 done
 
 [[ -x "$FFMPEG" ]] || { echo "error: ffmpeg not found (brew install ffmpeg)" >&2; exit 1; }
+
+check() { # file max_bytes
+  local size; size=$(stat -f %z "$1" 2>/dev/null || stat -c %s "$1")
+  printf '  %-26s %6.1f MB' "$(basename "$1")" "$(python3 -c "print($size/1e6)")"
+  if (( size > $2 )); then echo "  OVER BUDGET ($(python3 -c "print($2/1e6)") MB)"; exit 1; else echo; fi
+}
+
+# The site's renditions: video only (-an), +faststart, H.264 High so every browser plays them.
+encode_web() { # source
+  local common=(-an -c:v libx264 -preset slow -crf 24 -profile:v high -pix_fmt yuv420p
+    -color_primaries bt709 -color_trc bt709 -colorspace bt709 -movflags +faststart)
+  "$FFMPEG" -v error -y -i "$1" -map 0:v:0 "${common[@]}" "$MEDIA/otto-promo-web.mp4"
+  "$FFMPEG" -v error -y -i "$1" -map 0:v:0 -vf "scale=1280:720:flags=lanczos" "${common[@]}" \
+    "$MEDIA/otto-promo-web-720.mp4"
+}
+check_web() {
+  check "$MEDIA/otto-promo-web.mp4" 8000000
+  check "$MEDIA/otto-promo-web-720.mp4" 3500000
+}
+
+if [[ $WEB_ONLY == 1 ]]; then
+  [[ -f "$MEDIA/otto-promo.mp4" ]] || { echo "error: missing $MEDIA/otto-promo.mp4; run without --web-only first" >&2; exit 1; }
+  echo "==> Encoding the site's renditions from the film"
+  encode_web "$MEDIA/otto-promo.mp4"
+  echo "==> Checking budgets"
+  check_web
+  echo "==> Done"
+  exit 0
+fi
+
 for clip in story settings hero; do
   [[ -f "$RAW/$clip.mov" && -f "$RAW/$clip.json" ]] || { echo "error: missing $RAW/$clip.mov/.json — run scripts/make_media.sh --footage-only first" >&2; exit 1; }
 done
@@ -90,6 +129,9 @@ echo "==> Muxing"
   -af "loudnorm=I=-16:TP=-1.5:LRA=11:measured_I=$MI:measured_TP=$MTP:measured_LRA=$MLRA:measured_thresh=$MTH:offset=$OFF:linear=true,aresample=48000" \
   -map 0:v:0 -map 1:a:0 -c:v copy -c:a aac -b:a 160k -ar 48000 -ac 2 -shortest \
   -movflags +faststart "$MEDIA/otto-promo.mp4"
+
+echo "==> Encoding the site's renditions"
+encode_web "$WORK/picture.mp4"
 
 echo "==> Quantizing the README loop"
 # hero.mkv is lossless (ffv1) from make_video.swift. The temporal denoise only touches pixels that
@@ -125,12 +167,8 @@ else
   cp "$WORK/hero.gif" "$MEDIA/otto-hero.gif"
 fi
 echo "==> Checking budgets"
-check() { # file max_bytes
-  local size; size=$(stat -f %z "$1" 2>/dev/null || stat -c %s "$1")
-  printf '  %-26s %6.1f MB' "$(basename "$1")" "$(python3 -c "print($size/1e6)")"
-  if (( size > $2 )); then echo "  OVER BUDGET ($(python3 -c "print($2/1e6)") MB)"; exit 1; else echo; fi
-}
 check "$MEDIA/otto-promo.mp4" 25000000
+check_web
 check "$MEDIA/otto-hero.gif" 8000000
 check "$MEDIA/otto-promo-poster.jpg" 2000000
 echo "==> Done"

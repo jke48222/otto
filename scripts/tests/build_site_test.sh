@@ -116,6 +116,33 @@ check "flag-0 deny grep over html, css and js is empty" deny_grep_empty "$out"
 check "flag-0 styles.css and script.js are copied unchanged" \
   eval 'cmp -s "$ROOT/site/styles.css" "$out/styles.css" && cmp -s "$ROOT/site/script.js" "$out/script.js"'
 
+# The promo video never autoplays from markup (script.js starts it once on screen), preloads nothing,
+# and offers a lighter source to narrow screens.
+video_tag() { tr '\n' ' ' < "$1/index.html" | grep -oE '<video[^>]*>'; }
+video_waits_for_script() {
+  local tag
+  tag="$(video_tag "$1")" || return 1
+  ! grep -qE '[[:space:]]autoplay([[:space:]=>]|$)' <<< "$tag" && grep -qF 'preload="none"' <<< "$tag"
+}
+video_has_narrow_source() { grep -qE '<source src="media/[^"]+\.mp4" type="video/mp4" media="\(max-width: [0-9]+px\)">' "$1/index.html"; }
+# Every video the page references is at most 8 MB and, where ffprobe exists, has no audio track.
+page_videos_light_and_silent() {
+  local ref size refs
+  refs="$(grep -oE 'media/[A-Za-z0-9_./-]+\.(mp4|webm)' "$1/index.html" | sort -u)"
+  [[ -n "$refs" ]] || return 1
+  while IFS= read -r ref; do
+    size=$(stat -f %z "$1/$ref" 2>/dev/null || stat -c %s "$1/$ref") || return 1
+    (( size <= 8000000 )) || { echo "$ref is $size bytes" >&2; return 1; }
+    if command -v ffprobe >/dev/null 2>&1; then
+      [[ -z "$(ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 "$1/$ref")" ]] ||
+        { echo "$ref has an audio track" >&2; return 1; }
+    fi
+  done <<< "$refs"
+}
+check "the promo video waits for script.js and preloads nothing" video_waits_for_script "$out"
+check "the promo video offers narrow screens a lighter source" video_has_narrow_source "$out"
+check "every video the page plays is silent and at most 8 MB" page_videos_light_and_silent "$out"
+
 echo "== defaults"
 out="$WORK/defaults"
 check "no flags set builds the flag-0 page" build "$out" PATH="$NO_NODE_BIN"
