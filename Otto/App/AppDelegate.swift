@@ -13,7 +13,7 @@ import os
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private static let onboardingDefaultsKey = "otto.didShowOnboarding"
-    /// SPEC-v2 §3.5: the launch guard looks for other processes with Otto's bundle identifier.
+    /// SPEC-v2 §3.5: the launch guard looks for other Ottos; this is the id when the bundle doesn't say.
     private static let fallbackBundleIdentifier = "com.jalenedusei.otto"
     /// How long a second Otto waits for the first one to quit (a relaunch after "Quit & Reopen").
     private static let launchGuardTimeout: Duration = .seconds(3)
@@ -135,8 +135,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Polls every 100 ms for up to 3 s while another process with Otto's bundle identifier runs. Returns it when it
-    /// is still running at the end, nil as soon as there is none.
+    /// Polls every 100 ms for up to 3 s while another Otto (any flavor) runs. Returns it when it is still running at
+    /// the end, nil as soon as there is none.
     private static func waitForOtherInstanceToQuit() async -> NSRunningApplication? {
         let clock = ContinuousClock()
         let deadline = clock.now + launchGuardTimeout
@@ -147,10 +147,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return nil
     }
 
+    /// Any other running Otto, whatever its flavor (OttoBuild.allBundleIDs, plus this build's own id), so the source,
+    /// signed and Setapp builds never share the data folder at once.
     private static func otherInstance() -> NSRunningApplication? {
-        let bundleIdentifier = Bundle.main.bundleIdentifier ?? fallbackBundleIdentifier
         let ownPID = ProcessInfo.processInfo.processIdentifier
-        return NSRunningApplication.runningApplications(withBundleIdentifier: bundleIdentifier)
+        let bundleIdentifiers = OttoBuild.allBundleIDs.union([Bundle.main.bundleIdentifier ?? fallbackBundleIdentifier])
+        return bundleIdentifiers.sorted()
+            .lazy
+            .flatMap { NSRunningApplication.runningApplications(withBundleIdentifier: $0) }
             .first { $0.processIdentifier != ownPID && !$0.isTerminated }
     }
 

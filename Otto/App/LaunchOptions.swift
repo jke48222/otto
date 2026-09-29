@@ -12,6 +12,11 @@
 //                        scripts/record_promo.swift says go (handshake files live in <dir>)
 //    --promo-scene <n>   which promo scene to play (default: hero)
 //    --promo-stills <dir> render the marketing stills (docs/media) into <dir> and exit
+//    --license-state <s>  (Debug, licensing builds) run the license engine on an in-memory store seeded for
+//                        one state: trial, trial-last-day, ended, removed, licensed, overdue, required or
+//                        keychain-error; the Keychain is never read or written
+//    --license-clock-offset <hours>  (Debug, licensing builds) shift the license engine's clock; while set it
+//                        never advances the trial's clock high-water mark
 //
 //  --snapshot, --selftest and the --promo flags drive developer tooling in Otto/Debug, which is
 //  compiled only into Debug builds (or Release with OTTO_TOOLS); a shipping build ignores them.
@@ -60,6 +65,33 @@ enum LaunchOptions {
     static var promoStillsDirectory: URL? {
         directory(for: "--promo-stills")
     }
+
+    #if DEBUG
+    /// The states `--license-state` can seed (SPEC-v2 §14.10.4). Honored only by builds with OTTO_LICENSING.
+    enum LicenseState: String, CaseIterable, Sendable {
+        case trial
+        case trialLastDay = "trial-last-day"
+        case ended
+        case removed
+        case licensed
+        case overdue
+        case required
+        case keychainError = "keychain-error"
+    }
+
+    /// `--license-state <state>`; nil when missing or not one of `LicenseState`'s names.
+    static var licenseState: LicenseState? {
+        value(for: "--license-state").flatMap(LicenseState.init(rawValue:))
+    }
+
+    /// `--license-clock-offset <hours>` in seconds (fractions and negative values allowed); nil when missing or not
+    /// a finite number.
+    static var licenseClockOffset: TimeInterval? {
+        guard let raw = value(for: "--license-clock-offset"),
+              let hours = Double(raw), hours.isFinite else { return nil }
+        return hours * 3_600
+    }
+    #endif
 
     /// True when the app is hosting an XCTest bundle.
     static var isRunningTests: Bool {
