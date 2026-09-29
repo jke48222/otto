@@ -3,7 +3,8 @@
 //  Otto
 //
 //  Settings → General: the global shortcut, login item, menu bar icon, custom instructions, the notch's
-//  keyboard shortcuts, and the version.
+//  keyboard shortcuts, then (Setapp build) the Updates section, and the build footer: version, build and
+//  which kind of build this is (§14.10.3).
 //
 
 import SwiftUI
@@ -13,6 +14,9 @@ struct SettingsGeneralPane: View {
     let services: SettingsServices
 
     @State private var showsNotchShortcuts = false
+    #if OTTO_SETAPP
+    @Environment(\.settingsOpenExternal) private var openExternal
+    #endif
 
     var body: some View {
         SettingsPane(tab: .general, settings: settings) {
@@ -60,6 +64,15 @@ struct SettingsGeneralPane: View {
                 }
             }
 
+            #if OTTO_SETAPP
+            if let updater = services.updater {
+                let opener = openExternal
+                UpdatesSection(updater: updater, siteHost: nil, openExternal: { opener($0) })
+                    // Setapp is asked whether an update waits each time General appears (§14.11.2).
+                    .onAppear { updater.checkNow() }
+            }
+            #endif
+
             Section {
                 footer
             }
@@ -70,9 +83,10 @@ struct SettingsGeneralPane: View {
 
     private var footer: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(Self.versionString)
-                .font(.callout)
-                .foregroundStyle(.secondary)
+            BuildInfoFooter(version: Self.bundleValue("CFBundleShortVersionString") ?? "1.0",
+                            build: Self.bundleValue("CFBundleVersion") ?? "",
+                            flavor: OttoBuild.flavor,
+                            isDemo: LaunchOptions.demo)
             if LaunchOptions.demo {
                 Text("Demo mode: replies are simulated and no API key is needed.")
                     .font(.caption)
@@ -82,13 +96,8 @@ struct SettingsGeneralPane: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    static var versionString: String {
-        let info = Bundle.main.infoDictionary
-        let version = info?["CFBundleShortVersionString"] as? String ?? "1.0"
-        if let build = info?["CFBundleVersion"] as? String, !build.isEmpty {
-            return "Otto \(version) (\(build))"
-        }
-        return "Otto \(version)"
+    private static func bundleValue(_ key: String) -> String? {
+        Bundle.main.object(forInfoDictionaryKey: key) as? String
     }
 
     // MARK: Notch shortcuts
