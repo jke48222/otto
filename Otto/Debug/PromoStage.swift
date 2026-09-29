@@ -265,6 +265,9 @@ enum PromoStage {
             defer: false
         )
         window.isReleasedWhenClosed = false
+        // No order-in/out animation (see SnapshotRenderer.render): a closed stage window would strand its
+        // animation's worker thread.
+        window.animationBehavior = .none
         window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopWindow)) - 1)
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         window.ignoresMouseEvents = true

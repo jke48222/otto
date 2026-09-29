@@ -204,6 +204,10 @@ enum SnapshotRenderer {
             defer: false
         )
         window.isReleasedWhenClosed = false
+        // No order-in/out animation, as on the notch panel. AppKit runs it on a GCD worker thread that never
+        // returns once the window is closed mid-animation, so each scene stranded a thread until Swift's task
+        // pool starved and a later scene's setup hung or the renderer crashed.
+        window.animationBehavior = .none
         window.appearance = NSAppearance(named: .darkAqua)
         window.backgroundColor = background
         window.contentView = hostingView
