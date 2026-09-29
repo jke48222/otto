@@ -59,7 +59,7 @@ extension PromoStage {
             let layout = still.layout
             guard let cast = PromoCast.make() else { fail("Couldn't open the promo defaults suite.") }
             let state = PromoStageState(pointer: .zero)
-            still.seed(cast: cast, state: state, layout: layout)
+            await still.seed(cast: cast, state: state, layout: layout)
             let view = PromoStageView(layout: layout, wallpaper: wallpaper, viewModel: cast.viewModel, settings: cast.settings, state: state)
             let crop = still.crop(in: layout)
             let image = await capture(
@@ -140,6 +140,7 @@ extension PromoStage {
         )
         let state = PromoStageState(pointer: .zero)
         state.isPointerVisible = false
+        await cast.warmUp()
         cast.chat.debugSeed(
             messages: PromoContent.finishedTurn(PromoContent.friday, attachments: PromoContent.droppedFiles() + [PromoContent.browserTab()]),
             isStreaming: false
@@ -328,11 +329,14 @@ enum PromoStill: CaseIterable {
         }
     }
 
+    /// Sets the still's state. Async, so a still can await setup first (permission statuses, a turn
+    /// played off camera at `cast.timing.scale` 0, Shelf thumbnails).
     @MainActor
-    func seed(cast: PromoCast, state: PromoStageState, layout: PromoLayout) {
+    func seed(cast: PromoCast, state: PromoStageState, layout: PromoLayout) async {
         let vm = cast.viewModel
         let chat = cast.chat
         let top = layout.notchTop
+        await cast.warmUp()
         switch self {
         case .ask:
             chat.debugSeed(messages: [], isStreaming: false)

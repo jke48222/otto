@@ -299,11 +299,12 @@ func recordTake(options: Options, outputURL: URL) async -> TakeResult {
     }
 
     let readyURL = workURL.appendingPathComponent("ready.json")
-    guard await waitForFile(readyURL, timeout: 30, process: app),
+    // The stage writes ready.json after its async prepare, which may play a turn off camera first.
+    guard await waitForFile(readyURL, timeout: 90, process: app),
           let readyData = try? Data(contentsOf: readyURL),
           let ready = try? JSONSerialization.jsonObject(with: readyData) as? [String: Any],
           let windowNumber = ready["windowNumber"] as? Int else {
-        fail("the stage didn't report ready (scene \(options.scene)); is the scene name valid?")
+        fail("the stage didn't report ready (scene \(options.scene)); is the scene name valid, and did its prepare finish?")
     }
 
     // Find the stage window. It is behind the desktop, so ask for off-screen windows too.

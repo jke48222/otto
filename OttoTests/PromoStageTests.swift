@@ -197,6 +197,36 @@ final class PromoStageTests: XCTestCase {
         XCTAssertNotEqual(viewModel.openContextApp, studio)
     }
 
+    /// The whole action path on the promo cast: the real registry and executor over the demo calendar on the
+    /// stage clock. The card comes up, the approved call adds the event with a live Undo, the confirmation
+    /// streams, and nothing on stage names a real app or offers to paste.
+    @MainActor
+    func testCastRunsAnActionTurnThroughTheRealExecutor() async throws {
+        let cast = try XCTUnwrap(PromoCast.make())
+        defer { cast.tearDown() }
+        await cast.warmUp()
+        XCTAssertNotNil(cast.tools.tool(named: "calendar_create_event"))
+        cast.viewModel.open(reason: .hover, focus: false)
+        XCTAssertEqual(cast.viewModel.openContextApp, PromoContent.studioApp)
+
+        let ok = await cast.preRollActionTurn(PromoContent.schedule)
+        XCTAssertTrue(ok)
+        XCTAssertEqual(cast.timing.scale, 1)
+        let assistant = try XCTUnwrap(cast.chat.messages.last(where: { $0.role == .assistant }))
+        let call = try XCTUnwrap(assistant.toolCalls.first)
+        XCTAssertEqual(call.name, "calendar_create_event")
+        XCTAssertEqual(call.status, .succeeded)
+        let undo = try XCTUnwrap(call.undo)
+        XCTAssertGreaterThan(undo.expires, Date())
+        XCTAssertTrue(assistant.text.hasSuffix(try XCTUnwrap(PromoContent.schedule.afterTool)), assistant.text)
+        let events = try await cast.eventKit.events(from: PromoContent.stageNow,
+                                                     to: PromoContent.stageNow.addingTimeInterval(3 * 86_400),
+                                                     calendarIDs: nil)
+        let added = try XCTUnwrap(events.first { $0.title == "Release notes review" })
+        XCTAssertEqual(added.calendarTitle, "Work")
+        XCTAssertNil(cast.privacyProblem())
+    }
+
     func testEasingIsMonotonicFromZeroToOne() {
         let easing = PromoEasing(x1: 0.42, y1: 0, x2: 0.18, y2: 1)
         XCTAssertEqual(easing.value(at: 0), 0)

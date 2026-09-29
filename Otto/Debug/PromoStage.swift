@@ -51,7 +51,7 @@ import SwiftUI
     var caret: CGRect?
     var clock = PromoMenuBar.clock
     /// The frontmost app in the menu bar ("Otto" while its Settings window is focused).
-    var menuBarApp = "Studio"
+    var menuBarApp = PromoContent.studioApp.name
     /// Flips every frame while recording: an imperceptible one-point change in the corner that keeps
     /// ScreenCaptureKit delivering frames through still moments, so the recorder can tell a live stage
     /// from one the window server has stopped rendering.
@@ -132,14 +132,77 @@ struct PromoStageView: View {
 
 // MARK: - Cast
 
-/// The real Otto objects the stage films, on throwaway settings.
+/// How fast the scripted replies play: 1 while filming, 0 for off-camera pre-rolls and stills. Read
+/// when each turn's client is made, so a change applies from the next request on.
+@MainActor final class PromoTiming {
+    var scale: Double = 1
+}
+
+/// The words a voice take "hears". `ScriptedSpeechEngine` is made when listening starts, so a take
+/// sets `steps` in its prepare (empty: the pill listens and hears nothing).
+@MainActor final class PromoVoiceScript {
+    var steps: [(delay: Duration, text: String, level: Float)] = []
+}
+
+/// No relaunch on the stage.
+private struct PromoRelauncher: AppRelaunching {
+    func relaunch() {}
+}
+
+/// Never pastes: no key events.
+private final class PromoKeySender: KeySending {
+    var isSecureInputEnabled: Bool { false }
+    func areModifiersDown() -> Bool { false }
+    func postPaste() throws {}
+}
+
+/// The stage's insert environment. Every app reads as not running, so no reply ever offers "Paste into"
+/// (the frontmost app the notch records is the fictional `PromoContent.studioApp` anyway), and nothing
+/// here looks at a real app, activates one or posts a key.
+private final class PromoInsertEnvironment: InsertEnvironment {
+    var isAccessibilityTrusted: Bool { false }
+    func frontmostPID() -> pid_t? { nil }
+    func isRunning(_ app: AppRef) -> Bool { false }
+    func requestActivation(of app: AppRef) {}
+    func isChromiumOrElectron(_ app: AppRef) -> Bool { false }
+    func focusedElementIsSecure(in app: AppRef) async -> Bool { false }
+    func focusedValueFingerprint(in app: AppRef) async -> ValueFingerprint? { nil }
+    func selectionState(of snapshot: SelectionSnapshot) async -> SelectionState { .unknown }
+    func restoreSelection(_ snapshot: SelectionSnapshot) async -> Bool { false }
+    func sleep(for duration: Duration) async {}
+}
+
+/// The real Otto objects the stage films, on throwaway settings. Modeled on `SnapshotStage.init`: the
+/// real tool registry (only the calendar tool the film needs) and `ToolExecutor` over the demo calendar,
+/// permissions and approvals on a throwaway suite, the glance started (so the closed notch grows its
+/// phase ears), voice on a scripted engine, history in memory and the Shelf on.
 @MainActor
 struct PromoCast {
     let settings: AppSettings
     let chat: ChatSession
     let viewModel: NotchViewModel
+    let permissions: PermissionsCenter
+    let approvals: ApprovalStore
+    let tools: ToolRegistry
+    let executor: ToolExecutor
+    /// The demo calendar, seeded around `PromoContent.stageNow` (nothing of it is ever listed on stage:
+    /// its seeded events carry demo locations and attendees).
+    let eventKit: DemoEventKitService
+    let timing: PromoTiming
+    let voiceScript: PromoVoiceScript
+    /// A per-run folder for fixture files a take drops or shelves (`makeFixtureDirectory()`); removed by
+    /// `tearDown`.
+    let fixtureDirectory: URL
 
     static let defaultsSuite = "otto.promo"
+
+    /// Granted, so no permission card or TCC prompt ever shows: the calendar tool, voice and speech.
+    private static let permissionStatuses: [Permission: PermissionStatus] = [
+        .calendars: .granted,
+        .reminders: .granted,
+        .microphone: .granted,
+        .speechRecognition: .granted,
+    ]
 
     static func make() -> PromoCast? {
         guard let defaults = UserDefaults(suiteName: defaultsSuite) else { return nil }
@@ -153,18 +216,132 @@ struct PromoCast {
         // In memory only (the Keychain is off for these settings): Settings shows a saved key.
         // A made-up value, assembled from parts so secret scanners don't mistake it for a real key.
         settings.apiKey = ["sk", "ant", "promo", "stage", "7Q2c"].joined(separator: "-")
+        settings.actions.enabled = true
+        settings.voice.enabled = true
+        settings.voice.spokenReplies = .off
+        settings.shelf.enabled = true
+        settings.glance.replyPreviews = true
+        settings.history.noticeAcknowledged = true
 
-        let chat = ChatSession(settings: settings, makeClient: { PromoLLMClient() })
-        let viewModel = NotchViewModel(settings: settings, chat: chat)
+        let permissions = PermissionsCenter(probe: StaticPermissionProbe(permissionStatuses, default: .notDetermined),
+                                            defaults: defaults,
+                                            openURL: { _ in },
+                                            relauncher: PromoRelauncher())
+        let approvals = ApprovalStore(defaults: defaults)
+        let eventKit = DemoEventKitService(now: PromoContent.stageNow, timeZone: PromoContent.stageZone)
+        let tools = ToolRegistry(tools: [CalendarCreateEventTool(eventKit: eventKit, clock: PromoContent.stageClock)])
+        // The executor stays on the real clock: it times the approval card's arming with it.
+        let executor = ToolExecutor(permissions: permissions, approvals: approvals, log: nil)
+        let timing = PromoTiming()
+        let chat = ChatSession(settings: settings, makeClient: { PromoLLMClient(timeScale: timing.scale) }, tools: tools,
+                               executor: executor, permissions: permissions, isDemo: false)
+
+        let voiceScript = PromoVoiceScript()
+        var services = NotchServices.inert(settings: settings, chat: chat)
+        services.permissions = permissions
+        services.approvals = approvals
+        services.voice = VoiceController(settings: settings,
+                                         makeEngine: { ScriptedSpeechEngine(script: voiceScript.steps) },
+                                         interruptions: InertVoiceInterruptions(),
+                                         holdProbe: { _ in nil })
+        let history = HistoryController(settings: settings, chat: chat, store: ConversationStore(location: .inMemory),
+                                        now: { PromoContent.stageNow })
+        services.history = history
+        services.recents = RecentsState(history: history)
+        services.shelf = ShelfController(store: ShelfStore(directory: nil), settings: settings)
+        services.inserter = InsertCoordinator(
+            inserter: AnswerInserter(pasteboard: NSPasteboard.withUniqueName(), keys: PromoKeySender(),
+                                     environment: PromoInsertEnvironment()),
+            settings: settings
+        )
+
+        let viewModel = NotchViewModel(settings: settings, chat: chat, services: services)
         viewModel.closedNotchSize = PromoLayout.video.notchSize
         viewModel.hasPhysicalNotch = true
-        return PromoCast(settings: settings, chat: chat, viewModel: viewModel)
+        // A services graph makes link opening live; the stage never opens anything.
+        viewModel.openExternalURL = { _ in }
+        // The privacy fix: the notch records the fictional Studio app, never the Mac's frontmost app.
+        viewModel.debugFrontmostApp = PromoContent.studioApp
+        // Phase ears on the closed notch, and the reply preview. Nothing posts: the inert glance has no
+        // notification presenter or attention monitor.
+        viewModel.glance.start()
+
+        let fixtureDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("otto-promo-\(UUID().uuidString)", isDirectory: true)
+        return PromoCast(settings: settings, chat: chat, viewModel: viewModel, permissions: permissions,
+                         approvals: approvals, tools: tools, executor: executor, eventKit: eventKit, timing: timing,
+                         voiceScript: voiceScript, fixtureDirectory: fixtureDirectory)
     }
 
-    /// Drops the throwaway defaults again.
+    /// Caches every permission status before anything reads it, so no row or card changes on camera.
+    func warmUp() async {
+        await permissions.refresh(Permission.systemWide)
+    }
+
+    /// Creates the per-run fixture folder and returns it.
+    @discardableResult
+    func makeFixtureDirectory() throws -> URL {
+        try FileManager.default.createDirectory(at: fixtureDirectory, withIntermediateDirectories: true)
+        return fixtureDirectory
+    }
+
+    /// Leaves nothing running (a scripted turn, a pending approval), removes the fixture folder and drops
+    /// the throwaway defaults again.
     func tearDown() {
         chat.reset()
+        viewModel.inserter.reset()
+        try? FileManager.default.removeItem(at: fixtureDirectory)
         UserDefaults(suiteName: Self.defaultsSuite)?.removePersistentDomain(forName: Self.defaultsSuite)
+    }
+
+    // MARK: Tool turns
+
+    /// Sends an action turn's prompt (instantly, at `timing.scale` 0) and waits for its approval card.
+    /// Returns false if the card never came. The scale is left at 0; set it back when the turn is done.
+    func sendUntilApproval(_ conversation: PromoConversation, timeout: Double = 10) async -> Bool {
+        timing.scale = 0
+        chat.send(text: conversation.prompt, attachments: [])
+        return await Self.waitUntil(timeout: timeout) { chat.pendingApproval != nil }
+    }
+
+    /// Plays a whole action turn off camera: sends it, approves the card as a reviewed hardware click
+    /// would (the executor still checks the call), and waits for the confirmation to finish. The
+    /// transcript then shows the added row with its Undo link. Returns false if any step timed out.
+    func preRollActionTurn(_ conversation: PromoConversation, timeout: Double = 10) async -> Bool {
+        defer { timing.scale = 1 }
+        guard await sendUntilApproval(conversation, timeout: timeout) else { return false }
+        chat.resolveApproval(.run(ApprovalOptions()), hardwareConfirmed: true,
+                             visibleSince: Date(timeIntervalSinceNow: -60))
+        return await Self.waitUntil(timeout: timeout) { !chat.isStreaming && chat.pendingApproval == nil }
+    }
+
+    /// Polls `condition` every 20 ms until it holds (true) or `timeout` seconds pass (false).
+    static func waitUntil(timeout: Double, _ condition: @MainActor () -> Bool) async -> Bool {
+        let deadline = ContinuousClock.now + .milliseconds(Int(timeout * 1000))
+        while !condition() {
+            guard ContinuousClock.now < deadline else { return false }
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        return true
+    }
+
+    // MARK: Privacy
+
+    /// Why the stage is not safe to film, or nil: the notch recorded an app other than the fictional
+    /// Studio app, or a reply offers to paste somewhere.
+    func privacyProblem() -> String? {
+        if let app = viewModel.openContextApp, app != PromoContent.studioApp {
+            return "The notch recorded a real frontmost app (\(app.name))."
+        }
+        if viewModel.inserter.targets.values.contains(where: { $0.app != PromoContent.studioApp }) {
+            return "A turn recorded a real app as its paste target."
+        }
+        for message in chat.messages where message.role == .assistant {
+            if viewModel.insertTarget(forAssistant: message.id) != nil {
+                return "A reply offers \u{201C}Paste into\u{201D}."
+            }
+        }
+        return nil
     }
 }
 
@@ -203,7 +380,6 @@ enum PromoStage {
         )
         let state = PromoStageState(pointer: PromoDirector.restingPointer(in: layout))
         let director = PromoDirector(layout: layout, cast: cast, state: state)
-        director.prepare(scene)
 
         let stage = makeStageWindow(
             size: layout.stageSize,
@@ -213,6 +389,8 @@ enum PromoStage {
         startHeartbeat(state)
 
         Task { @MainActor in
+            // The opening state (and any off-camera pre-roll) is set before the recorder looks.
+            await director.prepare(scene)
             // Let SwiftUI lay out and settle before the recorder starts looking.
             try? await Task.sleep(for: .milliseconds(500))
             writeJSON(
@@ -236,6 +414,9 @@ enum PromoStage {
             director.begin()
             await director.play(scene)
             director.stopCaret()
+            if let problem = cast.privacyProblem() {
+                fail("Take \(scene.rawValue) isn't safe to publish: \(problem)")
+            }
             writeJSON(
                 [
                     "scene": scene.rawValue,
@@ -579,8 +760,22 @@ final class PromoDirector {
     func sendWithButton() async {
         await move(to: sendButton, duration: 0.6)
         await click()
+        send(note: nil)
+    }
+
+    /// Sends the composer (Return, or after the button's click), refusing to film a turn whose paste
+    /// target could name a real app.
+    func send(note: String? = "return") {
+        checkPrivacy()
         viewModel.send()
-        mark("send")
+        mark("send", note)
+    }
+
+    /// Stops the take if the stage could show a real app's name or icon (see `PromoCast.privacyProblem`).
+    func checkPrivacy() {
+        if let problem = cast.privacyProblem() {
+            PromoStage.fail(problem)
+        }
     }
 
     /// Click on the wallpaper: the notch tucks away.
@@ -648,9 +843,11 @@ final class PromoDirector {
 
     // MARK: Scenes
 
-    /// Sets the opening state, before the recorder starts (so the pre-roll matches it).
-    func prepare(_ scene: PromoScene) {
+    /// Sets the opening state, before the recorder starts (so the pre-roll matches it). Async, so a
+    /// take can await setup (permission statuses, an off-camera pre-roll of a turn) before `ready.json`.
+    func prepare(_ scene: PromoScene) async {
         let vm = viewModel
+        await cast.warmUp()
         switch scene {
         case .story:
             vm.debugSeed(presentation: .closed, composerText: "", attachments: [], suggestedTab: nil, hasUnreadReply: false)
