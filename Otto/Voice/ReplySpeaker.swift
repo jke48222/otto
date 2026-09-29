@@ -34,13 +34,25 @@ import os
     private var silencedAssistantID: UUID?
     private var pendingUtterances: Set<ObjectIdentifier> = []
     private var reportedSpeaking = false
+    private let catalog: VoiceCatalog
+    private var resolvedVoice: (key: ResolvedVoiceKey, voice: AVSpeechSynthesisVoice?)?
+
+    private struct ResolvedVoiceKey: Equatable {
+        let language: String
+        let preferredIdentifier: String
+        let catalogGeneration: Int
+    }
 
     /// `volume` scales every utterance (0 mutes it, for self-tests that exercise the pipeline silently).
-    init(settings: AppSettings, volume: Float = 1) {
+    /// The voice list is warmed off the main thread so the first spoken sentence doesn't wait for it.
+    init(settings: AppSettings, volume: Float = 1, catalog: VoiceCatalog = .shared) {
         self.settings = settings
         self.volume = min(max(volume, 0), 1)
+        self.catalog = catalog
         super.init()
         synthesizer.delegate = self
+        let language = settings.voice.locale.identifier(.bcp47)
+        Task.detached(priority: .utility) { _ = catalog.voices(languageCode: language) }
     }
 
     /// Feed the whole reply so far. Complete sentences are queued as they appear; `isFinal` reads the rest.
@@ -79,34 +91,21 @@ import os
     /// The preferred voice when it is installed; otherwise the best voice for the language by quality
     /// (premium, enhanced, default), preferring the system's own pick for the language on a tie.
     static func bestVoice(languageCode: String, preferredIdentifier: String?) -> AVSpeechSynthesisVoice? {
-        if let preferredIdentifier, !preferredIdentifier.isEmpty,
-           let preferred = AVSpeechSynthesisVoice(identifier: preferredIdentifier), isOffered(preferred) {
-            return preferred
-        }
-        return availableVoices(languageCode: languageCode).first
+        VoiceCatalog.shared.bestVoice(languageCode: languageCode, preferredIdentifier: preferredIdentifier)
     }
 
     /// Voices for the picker: the language's installed voices without novelty or personal voices, best first.
+    /// Cached for the process; the first call for a language after launch or a voice install enumerates every
+    /// system voice, so views should load it with `loadAvailableVoices` instead of reading it in `body`.
     static func availableVoices(languageCode: String) -> [AVSpeechSynthesisVoice] {
-        let wanted = normalizedLanguage(languageCode)
-        guard let primary = wanted.split(separator: "-").first.map(String.init), !primary.isEmpty else { return [] }
-        let systemPick = AVSpeechSynthesisVoice(language: languageCode.replacingOccurrences(of: "_", with: "-"))?.identifier
-        let candidates = AVSpeechSynthesisVoice.speechVoices().filter { voice in
-            let language = normalizedLanguage(voice.language)
-            let voicePrimary = language.split(separator: "-").first.map(String.init) ?? language
-            return voicePrimary == primary && isOffered(voice)
-        }
-        return candidates.sorted { lhs, rhs in
-            let lhsRank = qualityRank(lhs.quality), rhsRank = qualityRank(rhs.quality)
-            if lhsRank != rhsRank { return lhsRank > rhsRank }
-            let lhsPick = lhs.identifier == systemPick, rhsPick = rhs.identifier == systemPick
-            if lhsPick != rhsPick { return lhsPick }
-            let lhsExact = normalizedLanguage(lhs.language) == wanted
-            let rhsExact = normalizedLanguage(rhs.language) == wanted
-            if lhsExact != rhsExact { return lhsExact }
-            if lhs.name != rhs.name { return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending }
-            return lhs.identifier < rhs.identifier
-        }
+        VoiceCatalog.shared.voices(languageCode: languageCode)
+    }
+
+    /// `availableVoices` off the main thread, for the Settings picker.
+    nonisolated static func loadAvailableVoices(languageCode: String) async -> [AVSpeechSynthesisVoice] {
+        await Task.detached(priority: .userInitiated) {
+            VoiceCatalog.shared.voices(languageCode: languageCode)
+        }.value
     }
 
     // MARK: - AVSpeechSynthesizerDelegate
@@ -155,9 +154,116 @@ import os
         onSpeakingChange?(speaking)
     }
 
-    private func currentVoice() -> AVSpeechSynthesisVoice? {
-        let language = settings.voice.locale.identifier(.bcp47)
-        return Self.bestVoice(languageCode: language, preferredIdentifier: settings.voice.voiceIdentifier)
+    /// The voice for the current settings, resolved once per (language, chosen voice, installed voices) and
+    /// reused for every sentence after that.
+    func currentVoice() -> AVSpeechSynthesisVoice? {
+        let key = ResolvedVoiceKey(language: settings.voice.locale.identifier(.bcp47),
+                                   preferredIdentifier: settings.voice.voiceIdentifier,
+                                   catalogGeneration: catalog.generation)
+        if let resolvedVoice, resolvedVoice.key == key { return resolvedVoice.voice }
+        let voice = catalog.bestVoice(languageCode: key.language, preferredIdentifier: key.preferredIdentifier)
+        resolvedVoice = (key, voice)
+        return voice
+    }
+}
+
+/// The installed system voices, ranked per language and cached for the process. Enumerating them costs tens of
+/// milliseconds a call (`speechVoices()` isn't cached by the system), far too slow for every streamed sentence
+/// or every Settings redraw. The cache empties when macOS reports that the installed voices changed.
+/// Thread-safe; the first lookup can run on any thread.
+final class VoiceCatalog: @unchecked Sendable {
+    static let shared = VoiceCatalog()
+
+    typealias Enumerate = @Sendable () -> [AVSpeechSynthesisVoice]
+    /// The system's own voice identifier for a BCP 47 language code.
+    typealias SystemPick = @Sendable (String) -> String?
+
+    private let lock = NSLock()
+    private let enumerate: Enumerate
+    private let systemPick: SystemPick
+    private let notificationCenter: NotificationCenter
+    private var observer: NSObjectProtocol?
+    private var allVoices: [AVSpeechSynthesisVoice]?
+    private var ranked: [String: [AVSpeechSynthesisVoice]] = [:]
+    private var generationValue = 0
+
+    init(notificationCenter: NotificationCenter = .default,
+         enumerate: @escaping Enumerate = { AVSpeechSynthesisVoice.speechVoices() },
+         systemPick: @escaping SystemPick = { AVSpeechSynthesisVoice(language: $0)?.identifier }) {
+        self.notificationCenter = notificationCenter
+        self.enumerate = enumerate
+        self.systemPick = systemPick
+        observer = notificationCenter.addObserver(
+            forName: AVSpeechSynthesizer.availableVoicesDidChangeNotification, object: nil, queue: nil
+        ) { [weak self] _ in
+            self?.invalidate()
+        }
+    }
+
+    deinit {
+        if let observer { notificationCenter.removeObserver(observer) }
+    }
+
+    /// Bumps whenever the cache empties, so callers holding a resolved voice know to resolve it again.
+    var generation: Int { lock.withLock { generationValue } }
+
+    func invalidate() {
+        lock.withLock {
+            allVoices = nil
+            ranked = [:]
+            generationValue += 1
+        }
+    }
+
+    /// The language's installed voices without novelty or personal voices, best first.
+    func voices(languageCode: String) -> [AVSpeechSynthesisVoice] {
+        let wanted = Self.normalizedLanguage(languageCode)
+        let (cached, known, generation) = lock.withLock { (ranked[wanted], allVoices, generationValue) }
+        if let cached { return cached }
+        let all = known ?? enumerate()
+        let result = Self.rank(all, wanted: wanted,
+                               systemPick: systemPick(languageCode.replacingOccurrences(of: "_", with: "-")))
+        lock.withLock {
+            // Dropped if the voices changed while this ran; the next lookup enumerates again.
+            guard generationValue == generation else { return }
+            allVoices = all
+            ranked[wanted] = result
+        }
+        return result
+    }
+
+    /// The preferred voice when it is installed and offered; otherwise the language's best voice.
+    func bestVoice(languageCode: String, preferredIdentifier: String?) -> AVSpeechSynthesisVoice? {
+        let ranked = voices(languageCode: languageCode)
+        if let preferredIdentifier, !preferredIdentifier.isEmpty {
+            let installed = lock.withLock { allVoices } ?? []
+            if let preferred = installed.first(where: { $0.identifier == preferredIdentifier }),
+               Self.isOffered(preferred) {
+                return preferred
+            }
+        }
+        return ranked.first
+    }
+
+    private static func rank(_ all: [AVSpeechSynthesisVoice], wanted: String,
+                             systemPick: String?) -> [AVSpeechSynthesisVoice] {
+        guard let primary = wanted.split(separator: "-").first.map(String.init), !primary.isEmpty else { return [] }
+        let candidates = all.filter { voice in
+            let language = normalizedLanguage(voice.language)
+            let voicePrimary = language.split(separator: "-").first.map(String.init) ?? language
+            return voicePrimary == primary && isOffered(voice)
+        }
+        return candidates.sorted { lhs, rhs in
+            let lhsRank = qualityRank(lhs.quality), rhsRank = qualityRank(rhs.quality)
+            if lhsRank != rhsRank { return lhsRank > rhsRank }
+            let lhsPick = lhs.identifier == systemPick, rhsPick = rhs.identifier == systemPick
+            if lhsPick != rhsPick { return lhsPick }
+            let lhsExact = normalizedLanguage(lhs.language) == wanted
+            let rhsExact = normalizedLanguage(rhs.language) == wanted
+            if lhsExact != rhsExact { return lhsExact }
+            if lhs.name != rhs.name { return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending }
+            return lhs.identifier < rhs.identifier
+        }
     }
 
     private static func isOffered(_ voice: AVSpeechSynthesisVoice) -> Bool {
@@ -173,7 +279,7 @@ import os
         }
     }
 
-    /// "en_US" and "en-us" → "en-US"-style comparison key (lowercased, hyphenated).
+    /// "en_US" and "en-us" → "en-us" (lowercased, hyphenated), the cache and comparison key.
     private static func normalizedLanguage(_ code: String) -> String {
         code.replacingOccurrences(of: "_", with: "-").lowercased()
     }

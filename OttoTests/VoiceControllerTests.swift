@@ -620,4 +620,73 @@ final class VoiceControllerTests: XCTestCase {
                 last.identifier)
         }
     }
+
+    // MARK: - Voice catalog
+
+    func testVoiceCatalogEnumeratesOnceUntilTheInstalledVoicesChange() {
+        let counter = EnumerationCounter()
+        let center = NotificationCenter()
+        let catalog = VoiceCatalog(notificationCenter: center,
+                                   enumerate: { counter.increment(); return AVSpeechSynthesisVoice.speechVoices() })
+        let first = catalog.voices(languageCode: "en-US")
+        XCTAssertEqual(catalog.voices(languageCode: "en_US").map(\.identifier), first.map(\.identifier),
+                       "one cache entry per language, however it is spelled")
+        XCTAssertEqual(first.map(\.identifier),
+                       ReplySpeaker.availableVoices(languageCode: "en-US").map(\.identifier),
+                       "same ranking as the shared catalog")
+        _ = catalog.voices(languageCode: "fr-FR")
+        _ = catalog.bestVoice(languageCode: "en-US", preferredIdentifier: first.last?.identifier)
+        _ = catalog.bestVoice(languageCode: "en-US", preferredIdentifier: "com.example.not-installed")
+        XCTAssertEqual(counter.count, 1, "other languages and preferred voices reuse the one enumeration")
+
+        let generation = catalog.generation
+        center.post(name: AVSpeechSynthesizer.availableVoicesDidChangeNotification, object: nil)
+        XCTAssertEqual(catalog.generation, generation + 1)
+        _ = catalog.voices(languageCode: "en-US")
+        XCTAssertEqual(counter.count, 2, "a voice install or removal enumerates again")
+    }
+
+    func testSpeakerResolvesTheVoiceOncePerSettingWhileStreaming() {
+        let counter = EnumerationCounter()
+        let center = NotificationCenter()
+        let catalog = VoiceCatalog(notificationCenter: center,
+                                   enumerate: { counter.increment(); return AVSpeechSynthesisVoice.speechVoices() })
+        settings.voice.localeIdentifier = "en_US"
+        let voices = catalog.voices(languageCode: "en-US")
+        XCTAssertEqual(counter.count, 1)
+
+        let speaker = ReplySpeaker(settings: settings, volume: 0, catalog: catalog)
+        defer { speaker.stop() }
+        let reply = UUID()
+        var text = ""
+        for line in 1...12 {
+            text += "Line \(line) of the reply.\n"
+            speaker.progress(assistantID: reply, text: text, isFinal: false)
+        }
+        speaker.progress(assistantID: reply, text: text + "The end.", isFinal: true)
+        XCTAssertEqual(speaker.currentVoice()?.identifier, voices.first?.identifier)
+        XCTAssertEqual(counter.count, 1, "streamed sentences never enumerate the system voices again")
+
+        if let last = voices.last {
+            settings.voice.voiceIdentifier = last.identifier
+            XCTAssertEqual(speaker.currentVoice()?.identifier, last.identifier, "a new choice takes effect")
+            XCTAssertEqual(counter.count, 1)
+        }
+        settings.voice.voiceIdentifier = ""
+        XCTAssertEqual(speaker.currentVoice()?.identifier, voices.first?.identifier)
+
+        center.post(name: AVSpeechSynthesizer.availableVoicesDidChangeNotification, object: nil)
+        XCTAssertEqual(speaker.currentVoice()?.identifier, voices.first?.identifier)
+        XCTAssertGreaterThanOrEqual(counter.count, 2, "resolved again after the installed voices change")
+    }
+}
+
+/// Counts voice enumerations from any thread.
+private final class EnumerationCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+
+    var count: Int { lock.withLock { value } }
+
+    func increment() { lock.withLock { value += 1 } }
 }
