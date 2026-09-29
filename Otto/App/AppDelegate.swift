@@ -22,6 +22,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// The live object graph; nil until the launch guard has finished (and in every non-app mode).
     private var composition: AppComposition?
+    /// Held for the whole of a snapshot, promo-stills or self-test run, so App Nap never defers its timers.
+    private var toolingActivity: NSObjectProtocol?
 
     // MARK: - NSApplicationDelegate
 
@@ -30,6 +32,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         #if DEBUG || OTTO_TOOLS
         // Developer tooling (Otto/Debug): not compiled into shipping Release builds.
+        if LaunchOptions.snapshotDirectory != nil || LaunchOptions.promoStillsDirectory != nil
+            || LaunchOptions.selfTestDirectory != nil {
+            // The renderers draw into off-screen windows and the self-test can run on a locked screen, so macOS
+            // treats the app as hidden and App Nap defers its timers: a scene's Task.sleep could then wait for
+            // minutes and trip the watchdog. PromoStage.perform holds the same kind of activity.
+            toolingActivity = ProcessInfo.processInfo.beginActivity(
+                options: [.userInitiated, .latencyCritical],
+                reason: "Running Otto's developer tooling"
+            )
+        }
         if let directory = LaunchOptions.snapshotDirectory {
             renderSnapshots(to: directory)
             return
