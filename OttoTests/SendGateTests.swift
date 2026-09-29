@@ -176,6 +176,25 @@ final class SendGateTests: XCTestCase {
         XCTAssertEqual(vm.gateAttention, 1, "…doesn't pulse the line")
     }
 
+    func testRegenerateFromTheViewModelIsBlocked() async {
+        // ⌘R and the ⋮ menu call regenerate() directly: it stops before any request, like the footer button.
+        let harness = makeHarness(gate: nil, responses: [reply("First answer."), reply("Second answer.")])
+        let vm = harness.vm
+        vm.composerText = "Question"
+        vm.send()
+        await waitUntil { !harness.chat.isStreaming && harness.chat.messageCount == 2 }
+        let messagesBefore = harness.chat.messages
+
+        harness.gate?.composerGate = trialEndedGate()
+        vm.regenerate()
+        await Task.yield()
+
+        XCTAssertFalse(harness.chat.isStreaming, "no new turn started")
+        XCTAssertEqual(harness.chat.messages, messagesBefore, "the reply and its turn are untouched")
+        XCTAssertEqual(harness.client.requests.count, 1, "no second request")
+        XCTAssertEqual(vm.gateAttention, 1, "the line pulses once")
+    }
+
     // MARK: - Choices
 
     func testBuyClosesTheNotchThenOpensTheLink() throws {

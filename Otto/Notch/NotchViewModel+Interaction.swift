@@ -98,8 +98,10 @@ extension NotchViewModel {
 
     // MARK: - Regenerate and model
 
-    /// ⌘R: answers the last question again (the current reply is kept as a version).
+    /// ⌘R: answers the last question again (the current reply is kept as a version). While sending is paused
+    /// (§14.10.1) it stops before any request and pulses the gate line instead.
     func regenerate() {
+        guard !blockIfSendingPaused() else { return }
         voice.stopSpeaking()
         guard chat.regenerate() == .started else { return }
         history.noteActivity()
