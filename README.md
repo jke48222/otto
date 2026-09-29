@@ -50,8 +50,8 @@ Otto 1.1 goes further when you want it to. Ask about text you've selected in any
 back in place. Talk to it. Let Claude check your calendar, add a reminder or run a shortcut, with every
 change shown to you before it runs. Pick up yesterday's conversation from Recents.
 
-It's a native Mac app written in Swift with SwiftUI and AppKit and no third-party dependencies. It talks
-to the Anthropic API directly with your own key.
+It's a native Mac app written in Swift with SwiftUI and AppKit. The source build uses only Apple frameworks;
+the signed app adds Sparkle for updates. It talks to the Anthropic API directly with your own key.
 
 ## Why I built it
 
@@ -293,6 +293,14 @@ artwork from Spotify's image servers.
 no crash reporting, no account and no server of its own. How Anthropic handles API data is covered by
 [Anthropic's privacy policy](https://www.anthropic.com/legal/privacy).
 
+**When the signed app ships**, it also talks to two more services. About once a day it checks your license
+with Polar (`api.polar.sh`, or `api.gumroad.com` for a key bought on Gumroad): it sends the key, Otto's IDs
+at Polar and this Mac's activation ID, never your name, email, Mac name or a hardware ID. Polar records the
+time and count of each check with your purchase. Once a day it downloads the release list from Otto's site
+and gets updates from Vercel's file storage; that request carries Otto's version number and nothing that
+identifies you or your Mac. The Setapp build tells Setapp when you use Otto and makes no license checks. A
+build from source does none of this.
+
 **History and the activity log.** Otto keeps everything it saves in `~/Library/Application Support/Otto`,
 readable only by your user account and excluded from Time Machine. Each data folder's name ends in
 `.noindex` (`Conversations.noindex`, `Attachments.noindex`, `Shelf.noindex`, `Logs.noindex`), which keeps
@@ -381,8 +389,10 @@ your own API account. Set a monthly spend limit in the Anthropic Console if you 
 <details>
 <summary><strong>If the code is open source, what does the paid app add?</strong></summary>
 
-A build that's signed with a Developer ID and notarized by Apple, so it opens like any other Mac app and
-you don't need Xcode. The code is the same code that's in this repository.
+A build that's signed with a Developer ID and notarized by Apple, so it opens like any other Mac app;
+updates that install themselves; and a license that pays for development. It's the same code as this
+repository. The license check and the updater compile only into the signed build, so you can read exactly
+what they send.
 </details>
 
 <details>
@@ -440,7 +450,9 @@ launchers register it in a way macOS can't detect. If that happens, pick a diffe
 2. Delete `Otto.app` (from Applications, or the `build/` folder of your clone).
 3. Optional clean-up: in **Keychain Access**, delete the item named `com.jalenedusei.otto` (your API
    key), run `defaults delete com.jalenedusei.otto` to remove preferences, and delete
-   `~/Library/Application Support/Otto` to remove your history, Shelf and activity log.
+   `~/Library/Application Support/Otto` to remove your history, Shelf and activity log. The signed app
+   also keeps its license and trial dates in the Keychain, in items named "Otto (license)" and
+   "Otto (trial)"; delete them in Keychain Access.
 </details>
 
 ## Build from source
@@ -467,7 +479,11 @@ there. It was built on your Mac, so Gatekeeper opens it without a warning.
 | `scripts/make_media.sh` | Re-renders the stills in `docs/media/` and records raw promo footage from the real UI |
 | `scripts/make_video.sh` | Cuts the promo film, its poster and the README loop from that footage (needs `ffmpeg`) |
 | `scripts/build_site.sh` | Assembles the website from `site/` and `docs/media/` into `_site/` |
-| `scripts/release.sh` | Builds, signs and packages `dist/Otto.dmg` (see [docs/RELEASING.md](docs/RELEASING.md)) |
+| `scripts/release.sh` | Builds, signs, notarizes and packages the paid or Setapp build (`--flavor`; see [docs/RELEASING.md](docs/RELEASING.md)) |
+| `scripts/publish.sh` | Uploads a paid release, writes the signed appcast and updates the Homebrew cask |
+
+The paid and Setapp builds are generated from `project-paid.yml` and `project-setapp.yml`. `Otto.xcodeproj`
+never downloads a package.
 
 Run the tests with:
 
@@ -498,6 +514,7 @@ Set `OTTO_ADHOC_SIGNING=1` to force an ad hoc signature for a single build.
 | `--open` | Opens the notch, focused, right after launch. |
 | `--snapshot <dir>` | Debug builds only. Renders PNG snapshots of the UI in fixed states into `<dir>`, then quits. |
 | `--selftest <dir>` | Debug builds only. Drives the real notch on screen through a scripted session (open, type, send, stream, close mid-reply, reopen, attach files, approve and decline actions, voice, Recents, the Shelf) with demo services and temporary stores, and checks the pointer logic against the live notch geometry. Writes `report.json` and PNG captures, then exits `0` only if every step passed. |
+| `--license-state <state>`, `--license-clock-offset <hours>` | Debug builds of the paid flavor only. Show a license state or shift the license clock without touching your Keychain. |
 
 **API key from the environment.** With no key in the Keychain, Otto falls back to `ANTHROPIC_API_KEY`.
 Apps opened from Finder don't inherit your shell's environment, so run the binary directly:
@@ -509,7 +526,8 @@ ANTHROPIC_API_KEY=sk-ant-… build/Build/Products/Debug/Otto.app/Contents/MacOS/
 ## How it works
 
 Otto is an accessory app (no Dock icon) built with AppKit for the window and event plumbing and SwiftUI
-for everything you see. It uses only Apple frameworks.
+for everything you see. The source build uses only Apple frameworks. The signed app adds Sparkle for updates,
+and the Setapp build adds the Setapp Framework.
 
 ```
 Otto/
@@ -527,6 +545,9 @@ Otto/
 ├── Media/        Now Playing and media controls
 ├── Shelf/        File Shelf store, thumbnails, drag and share
 ├── Usage/        pricing, usage ledger, cost labels
+├── Licensing/    paid build only: the trial, Polar and Gumroad license keys, their Keychain records
+├── Updates/      Sparkle updates in the paid build, Setapp's updater in the Setapp build
+├── Setapp/       Setapp build only: usage events and release notes
 ├── UI/           SwiftUI views: notch, dock cards, pages, chat, glance, voice, Settings panes, theme
 └── Debug/        Debug-build tools: snapshot renderer, on-screen self-test, promo stage for the launch media
 ```
