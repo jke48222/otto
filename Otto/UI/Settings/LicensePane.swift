@@ -317,7 +317,7 @@ struct LicensePane: View {
         switch row {
         case .demo(let text):
             Text(text)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(SettingsTone.secondaryText)
         case .configuration(let problems, let isSandbox):
             configurationBanner(problems: problems, isSandbox: isSandbox)
         case .status:
@@ -342,7 +342,7 @@ struct LicensePane: View {
         case .removal(let text):
             Text(text)
                 .font(.callout)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(SettingsTone.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
         case .keyEntry(let showsBuy):
             keyEntry(showsBuy: showsBuy)
@@ -368,7 +368,7 @@ struct LicensePane: View {
                 if let detail {
                     Text(detail)
                         .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(SettingsTone.secondaryText)
                         .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
                 }
@@ -380,7 +380,7 @@ struct LicensePane: View {
                         .fill(badgeColor(badge))
                         .frame(width: 7, height: 7)
                     Text(badge.title)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(SettingsTone.secondaryText)
                 }
                 .font(.caption)
                 .fixedSize()
@@ -419,7 +419,7 @@ struct LicensePane: View {
             if isSandbox {
                 Text(Self.sandboxBadge)
                     .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(SettingsTone.secondaryText)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 2)
                     .overlay {
@@ -433,7 +433,7 @@ struct LicensePane: View {
     @ViewBuilder private func keyEntry(showsBuy: Bool) -> some View {
         let activity = model?.activity ?? .idle
         VStack(alignment: .leading, spacing: 10) {
-            TextField(text: $keyDraft, prompt: Text(Self.keyPlaceholder)) {
+            TextField(text: $keyDraft, prompt: Text(Self.keyPlaceholder).foregroundStyle(SettingsTone.placeholder)) {
                 Text(Self.keyFieldLabel)
             }
             .labelsHidden()
@@ -513,7 +513,7 @@ struct LicensePane: View {
                 run(.dismissMessage)
             } label: {
                 Image(systemName: "xmark.circle.fill")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(SettingsTone.secondaryText)
             }
             .buttonStyle(.borderless)
             .help(Self.dismissTitle)
@@ -526,7 +526,7 @@ struct LicensePane: View {
             ForEach(Array(Self.footerLinks.enumerated()), id: \.offset) { index, link in
                 if index > 0 {
                     Text("·")
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(SettingsTone.secondaryText)
                         .accessibilityHidden(true)
                 }
                 Button(link.title) { run(.openSitePage(link.path)) }

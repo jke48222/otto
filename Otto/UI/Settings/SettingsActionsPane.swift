@@ -68,10 +68,8 @@ struct SettingsActionsPane: View {
 
     private func groupRow(_ group: ToolGroup) -> some View {
         Toggle(isOn: groupBinding(group)) {
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Image(systemName: group.symbol)
-                    .frame(width: 18)
-                    .foregroundStyle(.secondary)
+            HStack(alignment: .firstTextBaseline, spacing: SettingsRowIcon.spacing) {
+                SettingsRowIcon(systemName: group.symbol)
                 VStack(alignment: .leading, spacing: 3) {
                     labeled(group.displayName, Self.detail(for: group))
                     let permissions = groupPermissions(group)
@@ -132,7 +130,7 @@ struct SettingsActionsPane: View {
                         Text(Self.title(for: mode))
                         Text(Self.consequence(for: mode))
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(SettingsTone.secondaryText)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     .tag(mode)
@@ -185,7 +183,7 @@ struct SettingsActionsPane: View {
                             Text(DisplayText.sanitized(approval.scope.label, maxLength: 80))
                             Text("Allowed \(approval.grantedAt.formatted(date: .abbreviated, time: .omitted))")
                                 .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(SettingsTone.secondaryText)
                         }
                         Spacer(minLength: 8)
                         Button("Remove") { services.approvals.revoke(approval.id) }
@@ -276,7 +274,7 @@ private struct SettingsActivityLogSheet: View {
 
     private func placeholder(_ text: String) -> some View {
         Text(text)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(SettingsTone.secondaryText)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
@@ -288,7 +286,7 @@ private struct SettingsActivityLogSheet: View {
                 Spacer(minLength: 8)
                 Text(entry.date.formatted(date: .abbreviated, time: .shortened))
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(SettingsTone.secondaryText)
                     .monospacedDigit()
             }
             Text(Self.details(for: entry))

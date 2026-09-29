@@ -157,7 +157,7 @@ struct UpdatesSection: View {
                     Text(title)
                     Text(captionWithSiteLink(caption))
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(SettingsTone.secondaryText)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -172,7 +172,7 @@ struct UpdatesSection: View {
                 // Recomputed every minute, so "today" turns into "yesterday" while the window stays open.
                 TimelineView(.everyMinute) { context in
                     Text(Self.lastCheckedText(updater.lastCheck, now: context.date))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(SettingsTone.secondaryText)
                 }
                 Spacer(minLength: 8)
                 Button(title) { Self.perform(.checkNow, on: updater) }

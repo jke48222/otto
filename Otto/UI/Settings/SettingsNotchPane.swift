@@ -43,7 +43,7 @@ struct SettingsNotchPane: View {
                         SettingsCaption("\(neighbor.name) is running. Otto and \(neighbor.name) both react to the notch.")
                     } icon: {
                         Image(systemName: "info.circle")
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(SettingsTone.secondaryText)
                     }
                 }
             }
@@ -198,7 +198,7 @@ struct SettingsNotchPane: View {
                                 Text(choice.title)
                                 if !choice.source.isEmpty {
                                     Text(choice.source)
-                                        .foregroundStyle(.secondary)
+                                        .foregroundStyle(SettingsTone.secondaryText)
                                 }
                             }
                         }

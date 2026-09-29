@@ -39,7 +39,7 @@ struct SettingsModelsPane: View {
                         Text(option.displayName)
                         Text(Self.subtitle(for: option))
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(SettingsTone.secondaryText)
                     }
                     .tag(option)
                 }
@@ -106,6 +106,7 @@ private struct SettingsAPIKeySection: View {
                     "API key",
                     text: $draftKey,
                     prompt: Text(settings.apiKey.isEmpty ? "sk-ant-…" : "Paste a new key to replace it")
+                        .foregroundStyle(SettingsTone.placeholder)
                 )
                 .labelsHidden()
                 .textFieldStyle(.roundedBorder)
@@ -131,7 +132,7 @@ private struct SettingsAPIKeySection: View {
                 Image(systemName: keyStatus.symbol)
                     .foregroundStyle(keyStatus.color)
                 Text(keyStatus.text)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(SettingsTone.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 8)
                 if let url = SettingsLinks.apiKeys {
@@ -145,7 +146,7 @@ private struct SettingsAPIKeySection: View {
         } footer: {
             Text("Stored in your Mac's Keychain. Messages go directly to the Anthropic API.")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(SettingsTone.secondaryText)
         }
     }
 
@@ -250,7 +251,7 @@ private struct SettingsUsageSection: View {
                             .monospacedDigit()
                             .gridColumnAlignment(.trailing)
                         Text(Self.replies(period.totals.replies))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(SettingsTone.secondaryText)
                             .monospacedDigit()
                     }
                 }
@@ -270,7 +271,7 @@ private struct SettingsUsageSection: View {
                             Text("Cost")
                         }
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(SettingsTone.secondaryText)
                         ForEach(byModel, id: \.model) { row in
                             GridRow {
                                 Text(CostFormatter.modelName(row.model))

@@ -34,7 +34,7 @@ struct BuildInfoFooter: View {
     var body: some View {
         Text(Self.text(version: version, build: build, flavor: flavor, isDemo: isDemo))
             .font(.callout)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(SettingsTone.secondaryText)
             .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)
     }

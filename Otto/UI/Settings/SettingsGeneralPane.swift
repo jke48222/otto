@@ -36,7 +36,7 @@ struct SettingsGeneralPane: View {
                     if settings.customInstructions.isEmpty {
                         Text("e.g. Keep answers short. I write Swift and use British spelling.")
                             .font(.body)
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(SettingsTone.placeholder)
                             .padding(.leading, 5)
                             .allowsHitTesting(false)
                     }
@@ -56,7 +56,7 @@ struct SettingsGeneralPane: View {
                                     .font(.body.monospaced())
                                     .gridColumnAlignment(.trailing)
                                 Text(row.action)
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(SettingsTone.secondaryText)
                             }
                         }
                     }
@@ -90,7 +90,7 @@ struct SettingsGeneralPane: View {
             if LaunchOptions.demo {
                 Text("Demo mode: replies are simulated and no API key is needed.")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(SettingsTone.secondaryText)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

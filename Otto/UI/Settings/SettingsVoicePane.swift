@@ -7,6 +7,7 @@
 //  macOS Dictation is switched on.
 //
 
+import AppKit
 import AVFoundation
 import Speech
 import SwiftUI
@@ -35,7 +36,6 @@ struct SettingsVoicePane: View {
         SettingsPane(tab: .voice, settings: settings) {
             talkSection
             spokenRepliesSection
-            dictationSection
         }
         .task {
             languages = await Self.loadLanguages()
@@ -61,7 +61,7 @@ struct SettingsVoicePane: View {
     // MARK: Talking
 
     private var talkSection: some View {
-        Section("Voice") {
+        Section {
             FeatureToggleRow(
                 title: "Talk to Otto",
                 detail: "Hold \(shortcut) or the mic and speak.",
@@ -72,7 +72,7 @@ struct SettingsVoicePane: View {
                 .disabled(!settings.voice.enabled || !settings.hotKeyEnabled)
             Toggle("Send when I let go", isOn: Bindable(settings.voice).autoSend)
                 .disabled(!settings.voice.enabled)
-            Picker("Language", selection: Bindable(settings.voice).localeIdentifier) {
+            Picker(selection: Bindable(settings.voice).localeIdentifier) {
                 Text("Match System").tag("")
                 if !languages.isEmpty {
                     Divider()
@@ -85,11 +85,30 @@ struct SettingsVoicePane: View {
                    !languages.contains(where: { $0.id == settings.voice.localeIdentifier }) {
                     Text(Self.name(ofLocale: settings.voice.localeIdentifier)).tag(settings.voice.localeIdentifier)
                 }
+            } label: {
+                languageLabel
             }
             .pickerStyle(.menu)
-            recognitionRow
+            Toggle(isOn: Bindable(settings.voice).allowServerRecognition) {
+                labeled("Allow Apple's speech service",
+                        "Only for languages this Mac can't transcribe itself. Your audio then goes to Apple.")
+            }
+            .disabled(!settings.voice.enabled)
+            // Where Dictation is switched on: a plain row with its button, explained by the section's footer.
+            if let url = SettingsLinks.keyboardSettings {
+                LabeledContent("macOS Dictation") {
+                    Button("Keyboard Settings…") { openExternal(url) }
+                }
+            }
+        } header: {
+            Text("Voice")
+        } footer: {
+            SettingsCaption(Self.dictationNote)
         }
     }
+
+    static let dictationNote = "Otto uses macOS Dictation to turn speech into text. If Dictation is off, turn it on "
+        + "in Keyboard Settings."
 
     /// Where the chosen language's audio goes, under the picker it describes.
     enum RecognitionStatus: Equatable {
@@ -129,6 +148,15 @@ struct SettingsVoicePane: View {
         }
     }
 
+    private static let statusDotSize: CGFloat = 6
+    private static let statusDotSpacing: CGFloat = 5
+
+    /// The status and its explanation as one caption line: "On-device · ✓ Transcribed on this Mac."
+    static func recognitionCaption(_ status: RecognitionStatus) -> String {
+        guard let caption = status.caption else { return status.text }
+        return "\(status.text) · \(caption)"
+    }
+
     /// `isOnDevice` nil: the languages haven't loaded yet.
     static func recognitionStatus(isOnDevice: Bool?, allowsServer: Bool) -> RecognitionStatus {
         guard let isOnDevice else { return .checking }
@@ -151,31 +179,24 @@ struct SettingsVoicePane: View {
         )
     }
 
-    @ViewBuilder private var recognitionRow: some View {
+    /// "Language" with where the chosen language's audio goes as its caption, the way a toggle row carries its
+    /// detail: a status dot on the caption's first line, then the status and what it means.
+    private var languageLabel: some View {
         let status = Self.recognitionStatus(isOnDevice: languagesLoaded ? isCurrentLanguageOnDevice : nil,
                                             allowsServer: settings.voice.allowServerRecognition)
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .top, spacing: 6) {
+        return VStack(alignment: .leading, spacing: 2) {
+            Text("Language")
+            HStack(alignment: .firstTextBaseline, spacing: Self.statusDotSpacing) {
                 Circle()
                     .fill(status.dotColor)
-                    .frame(width: 7, height: 7)
-                    .padding(.top, 3)
+                    .frame(width: Self.statusDotSize, height: Self.statusDotSize)
+                    .alignmentGuide(.firstTextBaseline) { $0[.bottom] }
                     .accessibilityHidden(true)
-                Text(status.text)
+                Text(Self.recognitionCaption(status))
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(SettingsTone.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            if let caption = status.caption {
-                SettingsCaption(caption)
-            }
-        }
-        VStack(alignment: .leading, spacing: 4) {
-            Toggle(isOn: Bindable(settings.voice).allowServerRecognition) {
-                labeled("Allow Apple's speech service",
-                        "Only for languages this Mac can't transcribe itself. Your audio then goes to Apple.")
-            }
-            .disabled(!settings.voice.enabled)
         }
     }
 
@@ -190,12 +211,18 @@ struct SettingsVoicePane: View {
 
     private var spokenRepliesSection: some View {
         Section("Spoken Replies") {
-            Picker("Read replies aloud", selection: Bindable(settings.voice).spokenReplies) {
-                ForEach(SpokenReplies.allCases) { option in
-                    Text(option.displayName).tag(option)
-                }
+            // The title on its own line, the segments under it on the row's leading edge.
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Read replies aloud")
+                    .accessibilityHidden(true)
+                // Spans the group's content width like every other row's controls (a SwiftUI segmented picker
+                // keeps its intrinsic width on macOS).
+                FillingSegmentedPicker(
+                    label: "Read replies aloud",
+                    options: SpokenReplies.allCases.map { ($0.displayName, $0) },
+                    selection: Bindable(settings.voice).spokenReplies
+                )
             }
-            .pickerStyle(.segmented)
 
             if settings.voice.spokenReplies != .off {
                 HStack {
@@ -213,13 +240,13 @@ struct SettingsVoicePane: View {
                     HStack(spacing: 8) {
                         Text("Slower")
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(SettingsTone.secondaryText)
                         Slider(value: Bindable(settings.voice).speakingRate, in: VoiceSettings.speakingRateRange, step: 0.05)
                             .frame(maxWidth: 220)
                             .accessibilityLabel("Speaking speed")
                         Text("Faster")
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(SettingsTone.secondaryText)
                     }
                 }
                 SettingsCaption("Stops when you click, press a key in Otto, or tap \(shortcut).")
@@ -234,21 +261,6 @@ struct SettingsVoicePane: View {
         case .premium: return "\(voice.name) (Premium)"
         case .enhanced: return "\(voice.name) (Enhanced)"
         default: return voice.name
-        }
-    }
-
-    // MARK: Dictation
-
-    private var dictationSection: some View {
-        Section {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                SettingsCaption("Otto uses macOS Dictation to turn speech into text. If Dictation is off, turn it "
-                                + "on in Keyboard Settings.")
-                Spacer(minLength: 8)
-                if let url = SettingsLinks.keyboardSettings {
-                    Button("Keyboard Settings…") { openExternal(url) }
-                }
-            }
         }
     }
 
@@ -270,5 +282,49 @@ struct SettingsVoicePane: View {
                 }
                 .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
         }.value
+    }
+}
+
+// MARK: - Filling segmented picker
+
+/// A system segmented control whose segments share the full width it is offered, so it lines up with the trailing
+/// edge of the group's other controls. VoiceOver reads it as `label` with the selected segment.
+private struct FillingSegmentedPicker<Value: Hashable>: NSViewRepresentable {
+    let label: String
+    let options: [(title: String, value: Value)]
+    @Binding var selection: Value
+
+    func makeNSView(context: Context) -> NSSegmentedControl {
+        let control = NSSegmentedControl(labels: options.map(\.title), trackingMode: .selectOne,
+                                         target: context.coordinator, action: #selector(Coordinator.changed(_:)))
+        control.segmentDistribution = .fillEqually
+        control.setAccessibilityLabel(label)
+        control.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        return control
+    }
+
+    func updateNSView(_ control: NSSegmentedControl, context: Context) {
+        context.coordinator.parent = self
+        control.selectedSegment = options.firstIndex { $0.value == selection } ?? -1
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView control: NSSegmentedControl, context: Context) -> CGSize? {
+        let intrinsic = control.intrinsicContentSize
+        guard let width = proposal.width, width.isFinite else { return intrinsic }
+        return CGSize(width: max(width, intrinsic.width), height: intrinsic.height)
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+
+    final class Coordinator: NSObject {
+        var parent: FillingSegmentedPicker
+
+        init(parent: FillingSegmentedPicker) { self.parent = parent }
+
+        @MainActor @objc func changed(_ control: NSSegmentedControl) {
+            let index = control.selectedSegment
+            guard parent.options.indices.contains(index) else { return }
+            parent.selection = parent.options[index].value
+        }
     }
 }

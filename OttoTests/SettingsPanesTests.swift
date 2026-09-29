@@ -316,7 +316,8 @@ final class SettingsPanesTests: XCTestCase {
     /// the grouped rows (the system orange, red and green fail on a light window).
     func testSettingsToneTextPassesAAInBothAppearances() throws {
         let tones: [(String, NSColor)] = [("warning", SettingsTone.warningColor), ("error", SettingsTone.errorColor),
-                                          ("success", SettingsTone.successColor)]
+                                          ("success", SettingsTone.successColor),
+                                          ("secondary text", SettingsTone.secondaryTextColor)]
         let light = try XCTUnwrap(NSAppearance(named: .aqua))
         let dark = try XCTUnwrap(NSAppearance(named: .darkAqua))
         let groupedDarkRow = NSColor(srgbRed: 0.16, green: 0.16, blue: 0.16, alpha: 1)

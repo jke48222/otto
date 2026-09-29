@@ -141,7 +141,7 @@ func labeled(_ title: String, _ detail: String) -> some View {
         Text(title)
         Text(detail)
             .font(.caption)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(SettingsTone.secondaryText)
             .fixedSize(horizontal: false, vertical: true)
     }
 }
@@ -158,6 +158,17 @@ enum SettingsTone {
     static let warningColor = dynamic(light: 0xA84B00, dark: .systemOrange)
     static let errorColor = dynamic(light: 0xC4281C, dark: srgb(0xFF6B61))
     static let successColor = dynamic(light: 0x1B6E30, dark: .systemGreen)
+
+    /// Secondary text that has to read as text, not as a hint: captions and footers that carry a status or an
+    /// instruction. The system's secondary label color is 50 % black, 4.0:1 on the white light window; these are
+    /// opaque and pass AA: #636366 on white (5.9:1), #9A9A9F on the dark window (6.0:1) and grouped row (5.2:1).
+    static let secondaryText = Color(nsColor: secondaryTextColor)
+    static let secondaryTextColor = dynamic(light: 0x636366, dark: srgb(0x9A9A9F))
+
+    /// Placeholder text in a field or text editor. The system's tertiary and placeholder colors fall to about
+    /// 2.3:1 on a grouped row; these pass AA: #6B6B70 on white (5.3:1), #9A9A9F on the dark #252525 row (5.6:1).
+    static let placeholder = Color(nsColor: placeholderColor)
+    static let placeholderColor = dynamic(light: 0x6B6B70, dark: srgb(0x9A9A9F))
 
     private static func dynamic(light: UInt32, dark: NSColor) -> NSColor {
         let lightColor = srgb(light)
@@ -194,12 +205,12 @@ enum SettingsTone {
     }
 }
 
-/// A caption line under a row or at the end of a section.
+/// A caption line under a row or at the end of a section, in `SettingsTone.secondaryText` (AA in both appearances).
 struct SettingsCaption: View {
     let text: String
-    var color: Color = .secondary
+    var color: Color = SettingsTone.secondaryText
 
-    init(_ text: String, color: Color = .secondary) {
+    init(_ text: String, color: Color = SettingsTone.secondaryText) {
         self.text = text
         self.color = color
     }
@@ -274,7 +285,7 @@ struct SettingsPermissionBadge: View {
                 .fill(state.color)
                 .frame(width: 7, height: 7)
             Text(showsName ? "\(permission.displayName): \(state.text)" : state.text)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(SettingsTone.secondaryText)
             if state.offersOpen, let url = permission.settingsURL {
                 Button("Open") { openExternal(url) }
                     .buttonStyle(.link)
@@ -298,6 +309,7 @@ struct PermissionRow: View {
             SettingsPermissionBadge(permission: permission)
         } label: {
             Label(permission.displayName, systemImage: Self.symbol(for: permission))
+                .labelStyle(SettingsIconLabelStyle())
         }
     }
 
@@ -311,6 +323,34 @@ struct PermissionRow: View {
         case .reminders: return "checklist"
         case .notifications: return "bell"
         case .automation: return "applescript"
+        }
+    }
+}
+
+/// A settings row's leading symbol in a fixed 22 pt column, 10 pt before the title, so every icon row's title
+/// starts at the same x in every pane whatever the symbol's own width.
+struct SettingsRowIcon: View {
+    let systemName: String
+
+    static let columnWidth: CGFloat = 22
+    static let spacing: CGFloat = 10
+
+    var body: some View {
+        Image(systemName: systemName)
+            .foregroundStyle(SettingsTone.secondaryText)
+            .frame(width: Self.columnWidth, alignment: .center)
+            .accessibilityHidden(true)
+    }
+}
+
+/// `Label` with its icon in the `SettingsRowIcon` column.
+struct SettingsIconLabelStyle: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: SettingsRowIcon.spacing) {
+            configuration.icon
+                .foregroundStyle(SettingsTone.secondaryText)
+                .frame(width: SettingsRowIcon.columnWidth, alignment: .center)
+            configuration.title
         }
     }
 }

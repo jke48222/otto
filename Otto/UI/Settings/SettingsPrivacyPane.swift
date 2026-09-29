@@ -59,7 +59,7 @@ private struct SettingsHistorySection: View {
 
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(statusLine)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(SettingsTone.secondaryText)
                     .monospacedDigit()
                 Spacer(minLength: 8)
                 Button("Show in Finder", action: showInFinder)
