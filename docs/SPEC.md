@@ -29,15 +29,19 @@ update the matching section here when you change a module's interface or behavio
 Sections 1 to 5 describe Otto 1.0. [Otto 1.1: modules added and changed](#otto-11-modules-added-and-changed),
 sections 6 to 18, adds actions, permissions, voice, history, usage, the closed-notch glance, Now Playing, the
 calendar chip, the File Shelf, selection and window context, paste-back and the tabbed Settings window, and
-lists what changed in the 1.0 modules. Where the two parts disagree, the 1.1 part is current.
+lists what changed in the 1.0 modules. Where the two parts disagree, the 1.1 part is current. Section 19 covers
+the paid and Setapp builds: the trial, license keys and updates.
 
 Global conventions
 - Swift 5 mode, `SWIFT_STRICT_CONCURRENCY=minimal`. Mark UI/state classes `@MainActor`. Use `@Observable`
   (Observation framework, macOS 14) for state objects; views take them as `@Bindable var` / `let`.
-- No third-party dependencies. Only Apple frameworks (AppKit, SwiftUI, Observation, Carbon, PDFKit,
-  UniformTypeIdentifiers, ServiceManagement, Security, ImageIO, CoreImage, AVFoundation, AVFAudio, Speech,
+- The source build has no third-party dependencies: only Apple frameworks (AppKit, SwiftUI, Observation, Carbon,
+  PDFKit, UniformTypeIdentifiers, ServiceManagement, Security, ImageIO, CoreImage, AVFoundation, AVFAudio, Speech,
   NaturalLanguage, EventKit, UserNotifications, ScreenCaptureKit, ApplicationServices, QuickLookUI,
-  QuickLookThumbnailing, CryptoKit).
+  QuickLookThumbnailing, CryptoKit). The paid build adds Sparkle 2.10.0 and the Setapp build adds the Setapp
+  Framework 5.5.0, each through Swift Package Manager in its own generated project (`project-paid.yml`,
+  `project-setapp.yml`); `Otto.xcodeproj` never resolves a package. Flavor code sits behind `OTTO_LICENSING`,
+  `OTTO_SPARKLE` and `OTTO_SETAPP` (section 19).
 - No force-unwraps on anything that can fail at runtime. No `print` spam (use `os.Logger`, subsystem
   `com.jalenedusei.otto`).
 - Every file begins with the standard header comment (`//  FileName.swift` / `//  Otto`).
@@ -656,7 +660,7 @@ What changed in the v1.0 modules, in one place:
 
 - Every `os.Logger` uses subsystem `com.jalenedusei.otto` and one of the categories `Tools`, `Actions`,
   `Permissions`, `Voice`, `History`, `Usage`, `Glance`, `NowPlaying`, `Calendar`, `Context`, `Shelf`, `Input`,
-  `Settings`. User content (prompts, replies, tool inputs and outputs, file paths, selections, event titles) is
+  `Settings`, and `License`, `Updates` and `Setapp` in the paid and Setapp builds (section 19). User content (prompts, replies, tool inputs and outputs, file paths, selections, event titles) is
   logged only with `privacy: .private`. Ids, counts, statuses and error codes may be `.public`.
 - State classes are `@MainActor @Observable final class`. Values that cross actors are `Sendable`. Persisted
   stored properties of an `@Observable` class have no default value and are assigned in `init`, so `didSet`
@@ -700,6 +704,8 @@ that split; treat it as the module boundary, like the owner labels in sections 1
 | `Otto/Notch/` | `NotchContracts`, `NotchServices`, `NotchKeyCommands`, `ReadingRestore`; `NotchViewModel` and its `+Actions`, `+Commands`, `+Context`, `+Glance`, `+History`, `+Interaction`, `+Prompts`, `+Shelf`, `+Voice` extensions; window, pointer machine, geometry, panel, `NotchDropDelegate` | contracts, input, vm-core, vm-features, shell, ui-frame |
 | `Otto/UI/` | `Components/`, `Dock/`, `Glance/`, `Voice/`, `Pages/`, `Chat/`, `Settings/` components; `ClosedNotchView`, `NotchOpenContent`, `NotchRootView`, `NotchHeaderView`, `ComposerView`, `ConversationView`, `MessageView`, `MessageSegments` | ui-dock, ui-glance, ui-voice, ui-pages, ui-chat, settings, ui-frame |
 | `Otto/Debug/` | `SnapshotRenderer`, `SelfTest`, the promo stage | snapshots, integration |
+| `Otto/Licensing/` | Paid build only (section 19): `LicenseContracts`, `LicensePolicy`, `LicenseKeyRouter`, `LicenseCopy`, `StaticLicenseModel`, `LicenseConfiguration+Load`; `LicenseController`, the Keychain and in-memory stores, transport and scheduler; the Polar and Gumroad backends | contracts, license-engine, license-backends |
+| `Otto/Updates/`, `Otto/Setapp/` | `UpdateContracts`, `SparkleUpdater` (paid), `SetappUpdater` and `SetappBridge` (Setapp) | contracts, updates |
 
 Frameworks: everything in the global conventions list above. 1.1 added AVFoundation (voice input and spoken
 replies), Speech, NaturalLanguage (spoken-reply chunks and conversation titles), EventKit (calendar and
@@ -738,7 +744,8 @@ ServicesProvider(handler: VM as ServicesHandling)      NotchNeighborMonitor ─�
 - There is exactly one `PermissionsCenter` (no `shared`); the composition passes it to every consumer.
 - History deletions reach the activity log and delivered notifications only through
   `HistoryController.onDataRemoved`, which the composition wires. Engines never reference each other.
-- **Launch guard** (live and `--demo` only). If another process with bundle id `com.jalenedusei.otto` is running,
+- **Launch guard** (live and `--demo` only). If another process with any of Otto's bundle ids
+  (`OttoBuild.allBundleIDs`: `com.jalenedusei.otto`, `com.jalenedusei.otto-setapp`) is running,
   Otto waits up to 3 s for it to exit before it registers the hot key or opens a store. If it is still running,
   live mode asks the running copy to open its notch and quits; `--demo` keeps running without the hot key.
 - `applicationWillTerminate` calls `composition.terminate()`: cancel the reply, flush history, shelf and the
@@ -764,6 +771,7 @@ extra.
 | Actions activity log | `Logs.noindex/actions.jsonl` and `actions.1.jsonl`, rotated at 1 MB, pruned to the History retention | Tools |
 | Preferences, consents, remembered approvals | `UserDefaults` (`otto.*`) | Settings, `ApprovalStore` |
 | API key | Keychain (unchanged) | API |
+| License, trial and counted Gumroad keys (paid build) | Keychain, service `com.jalenedusei.otto`, accounts in section 19 | Licensing |
 
 `SecureFile.write(_:to:)` creates a temp file with `open(O_CREAT | O_EXCL | O_WRONLY, 0o600)` in the destination
 directory, writes it and `rename(2)`s it over the destination. Content-addressed blobs use
@@ -1147,6 +1155,10 @@ covers the switch it sent the user to.
 | Actions | Master switch, one row per tool group, step limit, how Otto asks, approvals, activity log |
 | Voice | Talk to Otto, hold to talk, send when I let go, language, spoken replies, voice and speed |
 | Privacy | History, retention, idle reset, delete all, permissions, reset approvals, reset macOS permissions |
+| License (paid and licensing-check builds) | License status, key entry, seats, Check Now, deactivation, updates (section 19) |
+
+The General tab ends with `BuildInfoFooter` ("Otto {version} ({build}) · {flavor}") in every flavor, and in the Setapp
+build with the Setapp updates section above it.
 
 ### 17. Security and privacy rules
 
@@ -1197,3 +1209,249 @@ animations off. The committed scenes are `closed.png`, `closed-activity.png`, `o
 
 The checks a person has to run on a signed build are the "v1.1 release gate" in
 [`RELEASING.md`](RELEASING.md#v11-release-gate).
+
+### 19. Licensing and updates (paid and Setapp builds)
+
+Otto builds in more than one flavor from this one repository. The source build is what you get from GitHub and
+compiles no license or update code. The paid build adds a 14-day trial, license keys and Sparkle updates, and the
+Setapp build adds the Setapp Framework instead. The license is a convenience for honest buyers, not copy
+protection: the source is MIT and free to build. So the license code never blocks launch, never deletes anything,
+never shows a dialog, and never downgrades on an answer that could be an outage.
+
+**Flavors.** These are the only four configurations.
+
+| Flavor | Project (generated from) | Compile conditions | Bundle id | Licensing | Updates | Third-party code |
+|---|---|---|---|---|---|---|
+| source | `Otto.xcodeproj` (`project.yml`) | none (`DEBUG` in Debug) | `com.jalenedusei.otto` | none | `git pull` and rebuild | none |
+| paid | `OttoPaid.xcodeproj` (`project-paid.yml`) | `OTTO_LICENSING OTTO_SPARKLE` | `com.jalenedusei.otto` | 14-day trial, Polar and Gumroad keys | Sparkle 2.10.0 | Sparkle |
+| setapp | `OttoSetapp.xcodeproj` (`project-setapp.yml`) | `OTTO_SETAPP` | `com.jalenedusei.otto-setapp` | Setapp's | Setapp | Setapp Framework 5.5.0 |
+| licensing check (development and CI only) | `Otto.xcodeproj` with `SWIFT_ACTIVE_COMPILATION_CONDITIONS='DEBUG OTTO_LICENSING'` | `OTTO_LICENSING` | `com.jalenedusei.otto` | as paid | none | none |
+
+- `project-paid.yml` and `project-setapp.yml` include `project.yml` and merge one pinned package, their compile
+  conditions, their Info.plist keys and a pre-build check on top. Their Info.plist and entitlements are generated under
+  `build/flavors/<flavor>/`, so generating a flavor project never changes a tracked file. `Otto.xcodeproj` never
+  contains a package. Pins are exact; a version bump is its own PR.
+- Each flavor builds into its own derived data (`build/paid`, `build/setapp`, `build/licensing`,
+  `build/release/<flavor>/DerivedData`), so none of them overwrites the source build's `Otto.app`.
+- Flavor code sits behind `#if OTTO_LICENSING`, `#if OTTO_SPARKLE`, `#if OTTO_SETAPP`, or `#if OTTO_SPARKLE ||
+  OTTO_SETAPP` for the shared updates UI. Every file under `Otto/Licensing/`, `Otto/Updates/` and `Otto/Setapp/` is
+  wrapped in its flag as a whole file, and so is every test file that needs a flag, because `project.yml` compiles all
+  of `OttoTests/` into every project. `import Sparkle` and `import Setapp` appear only inside their flags.
+- `OttoBuild` (`Otto/App/OttoBuild.swift`, compiled everywhere) names the flavor and its footer label and lists
+  `allBundleIDs`. It refuses to compile Setapp together with licensing or Sparkle, and Sparkle without licensing.
+- The flavor-neutral seams are compiled in every flavor and inert in the source build: `ComposerGate` and
+  `ComposerGating`, `NotchServices.sendGate`, `UsageReportThrottle`, `StatusItemController.extraMenuItems` and
+  `BuildInfoFooter`.
+- The paid build shares the source build's bundle id on purpose: moving to the signed app keeps preferences, history
+  and the API key, after one Keychain "Always Allow" prompt.
+
+**Configuration.** `Config/Commercial.xcconfig` holds the paid and Setapp builds' public values (site host, support
+email, Polar host, organization, benefit and portal slug, Gumroad product id or `none`, the Sparkle public key); secrets
+never go there. `Config/Paid.xcconfig` and `Config/Setapp.xcconfig` include `Signing.xcconfig` and then it. Every value
+still to be supplied is a `JALEN_MUST_SET_…` placeholder with a loud outcome, never an empty default:
+`scripts/check_commercial_config.sh` runs as the flavor targets' pre-build phase and fails a Release build with one
+`error:` line per problem, or warns in Debug. A Debug build with problems still runs: Settings → License shows them in a
+banner and license requests are refused as `.misconfigured`, while the local trial keeps working.
+`LicenseConfiguration.load(infoDictionary:)` re-validates the Info.plist values at run time with the same rules.
+`scripts/audit_flavor.sh --flavor source|paid|setapp <Otto.app>` checks what a product may contain (linked frameworks,
+API hosts in its strings, license and updater symbols, Info.plist keys, bundle id, the Setapp key, XPC services,
+architectures); CI and `release.sh` call it instead of retyping the checks.
+
+**Files.**
+
+| File | Role |
+|---|---|
+| `Otto/Notch/ComposerGate.swift` | `ComposerGate` (one line above the composer, with up to two choices), `ComposerGating`, `ComposerGateError` |
+| `Otto/App/UsageReportThrottle.swift` | at most one Setapp usage report per 300 s |
+| `Otto/Licensing/LicenseContracts.swift` | records, outcomes, `LicenseBackend`, `LicenseHTTPTransport`, `LicenseStoring`, `LicenseScheduling`, configuration, `LicenseStatus`, `LicenseControlling` |
+| `Otto/Licensing/LicensePolicy.swift` | pure status, check-outcome and clock rules |
+| `Otto/Licensing/LicenseKeyRouter.swift` | key normalization, which store a key's shape belongs to, display keys, random "Mac XXXX" labels |
+| `Otto/Licensing/LicenseCopy.swift` | every license string and the gate table, shared by the engine and the pane |
+| `Otto/Licensing/StaticLicenseModel.swift` | a `LicenseControlling` for tests, snapshots and the self-test |
+| `Otto/Licensing/LicenseConfiguration+Load.swift` | reads and validates the Info.plist values |
+| `Otto/Licensing/LicenseController.swift` | the engine: status, scheduling, activation, checks, deactivation, the trial |
+| `Otto/Licensing/KeychainLicenseStore.swift`, `InMemoryLicenseStore.swift` | the live store and the one demo, `--license-state` and tests use |
+| `Otto/Licensing/URLSessionLicenseTransport.swift`, `TaskLicenseScheduler.swift` | the live HTTP and timer seams |
+| `Otto/Licensing/PolarAPI.swift`, `PolarLicenseBackend.swift` | Polar's customer-portal license endpoints |
+| `Otto/Licensing/GumroadAPI.swift`, `GumroadLicenseBackend.swift` | Gumroad's `verify` endpoint |
+| `Otto/Licensing/LicenseBackends.swift` | builds the enabled backends, Polar first |
+| `Otto/Updates/UpdateContracts.swift` | `UpdaterControlling`, `PendingUpdate`, `StaticUpdaterModel` |
+| `Otto/Updates/SparkleUpdater.swift` | Sparkle in the paid build |
+| `Otto/Updates/SetappUpdater.swift`, `Otto/Setapp/SetappBridge.swift` | Setapp's pending-update API, usage events and release notes |
+| `Otto/UI/Chat/ComposerGateLine.swift` | the gate line |
+| `Otto/UI/Settings/LicensePane.swift`, `UpdatesSection.swift`, `BuildInfoFooter.swift` | Settings → License, the updates section, the General footer |
+
+**Contracts** (trimmed like section 10):
+
+```swift
+@MainActor protocol ComposerGating: AnyObject {        // nil gate = sending allowed; only the paid build installs one
+    var composerGate: ComposerGate? { get }
+    func handleGateAction(_ id: String)                 // "check-now"
+}
+enum LicenseStatus {
+    case trial(endsAt: Date, daysLeft: Int), trialEnded(endedAt: Date)
+    case licensed(LicenseSummary)                                     // last good check ≤ 30 days ago
+    case licensedCheckOverdue(LicenseSummary, sendingPausesAt: Date)  // 30 to 44 days
+    case licensedCheckRequired(LicenseSummary)                        // more than 44 days
+    case unavailable(LicenseStoreError)                               // Keychain unreadable: fail open
+    var allowsSending: Bool { get }                                   // false only for trialEnded and licensedCheckRequired
+}
+protocol LicenseBackend: Sendable {                    // one per merchant: Polar, Gumroad
+    func activate(key: String, label: String, existing: LicenseRecord?) async -> Result<LicenseRecord, LicenseActivationError>
+    func validate(_ record: LicenseRecord) async -> LicenseCheckOutcome        // .valid, .gone(reason), .unavailable(reason)
+    func deactivate(_ record: LicenseRecord) async -> LicenseDeactivationOutcome
+}
+@MainActor protocol LicenseControlling: ComposerGating {
+    var status: LicenseStatus { get }; var activity: LicenseActivity { get }
+    var lastMessage: LicenseMessage? { get }; var lastRemoval: LicenseRemoval? { get }
+    var configuration: LicenseConfiguration { get }
+    func activate(key: String); func checkNow(); func deactivate(); func removeFromThisMac(); func dismissMessage()
+}
+@MainActor protocol UpdaterControlling: AnyObject {    // SparkleUpdater, SetappUpdater, StaticUpdaterModel
+    var source: UpdateSource { get }; var allowsUserSettings: Bool { get }
+    var automaticallyChecks: Bool { get set }; var automaticallyDownloads: Bool { get set }
+    var canCheckNow: Bool { get }; var lastCheck: Date? { get }; var pendingUpdate: PendingUpdate? { get }
+    func start(); func checkNow(); func installPendingUpdate(); func showReleaseNotes()
+}
+```
+
+`LicenseController(configuration:store:backends:scheduler:now:uptime:randomLabel:notificationCenter:)` takes every
+seam, so its tests run on `InMemoryLicenseStore`, fake backends and a manual scheduler with no network, Keychain or
+clock. The fakes live in `OttoTests/Support/LicenseFakes.swift`.
+
+**Status.** `LicensePolicy.status` is pure. It uses `e = max(now, trial.lastSeenAt)`, so setting the clock back never
+extends anything.
+
+| Keychain records | Status | Sending |
+|---|---|---|
+| the license can't be read | `.unavailable` | allowed (fail open; Settings says why) |
+| a license checked ≤ 30 days ago | `.licensed` | allowed |
+| a license checked 30 to 44 days ago | `.licensedCheckOverdue` | allowed, with a quiet line in Settings |
+| a license checked more than 44 days ago | `.licensedCheckRequired` | paused until a check succeeds |
+| no license, no trial record | `.trial` (the first `start()` writes the record) | allowed |
+| no license, trial started less than 14 days ago | `.trial(daysLeft:)` | allowed |
+| no license, trial over | `.trialEnded` | paused |
+| no license, an unreadable trial item | a trial dated from the item's Keychain creation date | allowed until that date plus 14 days |
+
+A license removed during the trial window returns the Mac to its trial for the days that are left. A trial is created
+once, on the first `start()` of a live paid build, and never reset. Nothing is deleted when sending pauses: Settings,
+Recents and demo mode keep working.
+
+**Checks.** With a license present, a background check runs 10 s after `start()`, 30 s after a wake and on an hourly
+tick, each only when the last attempt is at least 24 h old, so a Mac makes at most one background request a day.
+**Check Now** runs at once unless the last attempt was less than 60 s ago. `LicensePolicy.apply` handles the outcome:
+
+- `.valid` sets `lastValidatedAt` and clears any pending revocation.
+- `.unavailable` (offline, timeout, rate limit, server error, a refused API version, a misconfigured build, a record that
+  doesn't match the build) only records the attempt. It never touches `lastValidatedAt` or a pending revocation.
+- `.gone` never acts alone. The first one records a pending revocation; a second at least 20 h later deletes the license
+  item and records why in the trial record.
+
+**Activation.** `LicenseKeyRouter.normalize` strips spaces and line breaks (mail clients wrap keys) and keeps case. A
+Polar-shaped key (`OTTO-<UUID>` or a bare UUID) goes only to Polar and a Gumroad-shaped key (four groups of 8 hex digits)
+only to Gumroad; a key of neither shape tries Polar, then Gumroad. The activation label is "Mac" and 4 random hex
+digits, never the Mac's name. A Polar key entered while a Polar license is on this Mac is first tried as a rotated key on
+the existing activation, which keeps the seat. Activation also works while a revocation is pending, so a buyer who
+rotated a key can enter the new one. Deactivation frees the Polar seat; Gumroad can't free a seat from a client, so it
+removes the license locally and points to support.
+
+**Clock.** `trial.lastSeenAt` is a high-water mark of the wall clock. It moves only through
+`LicensePolicy.nextLastSeen`, called from the hourly tick and `stop()`, and only when at least 5 minutes of
+`CLOCK_MONOTONIC` uptime passed since the previous sample and the wall clock advanced by the same amount within 2
+minutes. A wrong boot date that the network clock corrects a few minutes later is never saved.
+
+**Polar.** `POST https://<host>/v1/customer-portal/license-keys/{activate,validate,deactivate}` with a JSON body and
+exactly `Content-Type`, `Accept`, `Accept-Language: en`, `Polar-Version: 2026-10` and `User-Agent: Otto/<version>`. The
+bodies carry only the key, the organization, the benefit, the activation id and (on activate) the label; customer
+fields in the answers are never decoded. Only a 404 that echoes `polar-version` and says `"error":"ResourceNotFound"`
+counts as "gone". Any other 404 (a removed API version looks like this) is retried once without the pin, and otherwise
+is `.unavailable(.versionRefused)`, so Polar's version rotation can't switch licenses off. A record keeps the host and
+IDs it was activated under and every later check sends those. When the build's own IDs differ, a "gone" answer becomes
+`.unavailable(.recordMismatch)` with a `.fault` log, so a mistyped ID in a later release can't turn existing licenses
+off. `release.sh` probes the pin and validates a canary key with the IDs it is about to build.
+
+**Gumroad.** `POST https://api.gumroad.com/v2/licenses/verify`, form-encoded, always with an explicit
+`increment_uses_count` (Gumroad's default is true). Seats are 3 times the purchase quantity; a key counted once on this
+Mac (a SHA-256 of product id and key in the `gumroad-counted` item) is never counted again. Refunded, charged-back and
+disabled keys read as "gone"; email, name and every other purchase field are never decoded. 1.1.0 ships with
+`OTTO_GUMROAD_PRODUCT_ID = none`, which refuses Gumroad keys with a message that names support. Lemon Squeezy, if it's
+ever needed, is one more `LicenseBackend` file; a backend is never removed while keys it issued are in use.
+
+**Keychain.** Service `com.jalenedusei.otto` for every flavor, generic passwords in the login keychain like the API key,
+values as JSON through `KeychainStore.write(_:account:service:)` and `readResult(account:service:)`. Keychain Access shows
+each item as "Otto (<account>)".
+
+| Account (production · every other build) | Holds |
+|---|---|
+| `license` · `license.sandbox` | `LicenseRecord` |
+| `trial` · `trial.sandbox` | `TrialRecord` |
+| `gumroad-counted` · `gumroad-counted.sandbox` | the Gumroad keys already counted on this Mac |
+
+Only a build configured for Polar's production API with no problems uses the plain names, so a Debug build, the
+licensing-check build and a misconfigured build never read, validate, delete or advance a production record on the same
+Mac. Items are never synchronizable, so they never sync through iCloud Keychain. Deleting `Otto.app` leaves them, which
+is how the trial survives a reinstall. An unreadable item is never overwritten, and values are never logged.
+
+**App surfaces.**
+
+- **Gate line.** On the Chat page, above the composer, `ComposerGateLine` (30 pt) shows why sending is paused:
+  `trial-ended` ("Your 14-day trial has ended."), `license-removed`, `check-required`, and the `checking` and
+  `activating` states. While it's up, send, Regenerate, Retry and a voice auto-send return early and keep the draft,
+  chips and transcript, and the line pulses once. Insert, copy, Recents, the Shelf, Settings and approvals inside a
+  turn that already started are never blocked. `AppComposition` also wraps `makeClient` so a request that starts under
+  a gate throws `ComposerGateError`. Nothing else checks the license.
+- **Settings → License** is the last tab (`checkmark.seal`) in the paid and licensing-check builds. Top to bottom:
+  the problems banner, status, a pending-revocation line, the key field and **Activate**, and for a licensed Mac
+  **Check Now**, **Deactivate This Mac…** (Polar) or **Remove from This Mac…** (Gumroad) and **Manage Macs in
+  Polar…**. Then come the last message, the Terms, Privacy and Refunds links, and in the paid build the updates
+  section. With no license model (demo) the tab says licenses aren't checked.
+- **Status menu.** The paid build appends "License…" (or "Enter License…" while sending is paused), "Check for
+  Updates…" and, while an update waits, "Install Otto {version}…". The Setapp build appends only the install item.
+- **General footer.** `BuildInfoFooter`: "Otto {version} ({build}) · built from source", "signed app" or "Setapp",
+  plus " · demo".
+- **Graphs.** `--demo`, `.inert()` and snapshot graphs build no license controller and no updater. The self-test uses a
+  `StaticLicenseModel`, and step 22 checks the gate. No flavor shows a price in the app.
+- **Debug flags** (paid flavor and the licensing-check build): `--license-state
+  trial|trial-last-day|ended|removed|licensed|overdue|required|keychain-error` runs the live controller on an
+  `InMemoryLicenseStore` seeded for that state, and `--license-clock-offset <hours>` shifts the controller's clock
+  without ever advancing `lastSeenAt`.
+
+**Sparkle (paid).** SPM, `exactVersion: 2.10.0`, linked only by `project-paid.yml`. The feed is
+`https://<OTTO_SITE_HOST>/appcast.xml`, checked once a day. The archive and the feed are both EdDSA-signed
+(`SUVerifyUpdateBeforeExtraction`, `SURequireSignedFeed`); system profiling and JavaScript are off. `SparkleUpdater`
+owns an `SPUStandardUpdaterController`, sets `httpHeaders` to `Accept-Language: en` before it starts, maps the two
+Settings toggles to Sparkle's own settings and uses gentle reminders: a background update shows only in Settings →
+License and the status menu, never in the closed notch. Requests carry `User-Agent: Otto/<version> Sparkle/2.10.0` and
+nothing that identifies the user or the Mac. The paid build isn't sandboxed, so `release.sh` removes Sparkle's XPC
+services and signs `Autoupdate`, `Updater.app`, `Sparkle.framework` and then `Otto.app` in Sparkle's documented order.
+
+**Setapp.** SPM, `exactVersion: 5.5.0`, linked only by `project-setapp.yml`; bundle id `com.jalenedusei.otto-setapp`;
+`Config/Setapp/setappPublicKey.pem` is copied into the bundle. `SetappBridge.reportInteraction(now:)` reports a usage
+event when the notch becomes engaged or a message is sent, at most once per 5 minutes. `SetappUpdater` asks Setapp for a
+pending update 30 s after launch, every 6 hours and when Settings → General appears, then offers "Update and
+Relaunch…". The Setapp build has no trial, license keys, License tab, Sparkle, "Buy a License" or pricing links. It
+keeps the user's own Anthropic key and never routes prompts through Setapp. It shares Otto's data folder and Keychain
+service with the direct build but not its preferences, and the launch guard (section 8) allows one Otto of any flavor
+at a time.
+
+**Network.** The source build contacts none of these.
+
+| Destination | When | Flavor |
+|---|---|---|
+| `api.polar.sh` (`sandbox-api.polar.sh` in Debug) | activate, deactivate, at most one background check a day, Check Now | paid |
+| `api.gumroad.com` | the same, only for a Gumroad key | paid |
+| `<site host>/appcast.xml` | at most once a day, and Check Now | paid |
+| the downloads host (Vercel Blob) | when an update downloads | paid |
+| Setapp, through the Setapp app | a usage event at most every 5 minutes while in use | setapp |
+
+Every license and update request uses an ephemeral `URLSession` (no cookies, cache or credentials) and pins
+`Accept-Language: en`, so none carries the Mac's language list. Logs use the categories `License`, `Updates` and
+`Setapp` and carry the backend, operation, outcome name and HTTP status, never a key, activation id, label or email.
+
+**Tests.** The source suite keeps passing with no flag. Flag-only tests (`LicensePolicyTests`, `LicenseControllerTests`,
+`PolarLicenseBackendTests` and the rest) run in the licensing-check and paid builds; `SparkleUpdaterTests` and
+`UpdatesSectionTests` run only in the paid build. `KeychainLicenseStoreTests` runs only with `OTTO_KEYCHAIN_TESTS=1`,
+against a `com.jalenedusei.otto.tests.<UUID>` service, and `PolarSandboxLiveTests` only with
+`OTTO_POLAR_SANDBOX_TESTS=1` and sandbox credentials. `scripts/snapshot.sh --licensing` and `--paid` render the license
+and updates scenes into `docs/snapshots/licensing/` and `docs/snapshots/paid/`; the Setapp build has no snapshots,
+because its framework starts at launch. CONTRIBUTING.md lists the commands.
