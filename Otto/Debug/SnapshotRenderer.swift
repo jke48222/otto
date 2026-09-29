@@ -684,6 +684,11 @@ private final class SnapshotStage {
         self.chat = chat
 
         var services = NotchServices.inert(settings: settings, chat: chat)
+        // History on a fixed clock, so Recents' day groups and date labels match on whatever day the renders run.
+        let history = HistoryController(settings: settings, chat: chat, store: ConversationStore(location: .inMemory),
+                                        now: { SnapshotFixtures.historyNow })
+        services.history = history
+        services.recents = RecentsState(history: history)
         services.permissions = permissions
         services.approvals = approvals
         services.suggestions = ContextSuggestions(settings: settings, permissions: permissions,
@@ -1849,6 +1854,12 @@ private enum SnapshotFixtures {
     // MARK: History
 
     static let recentsQuery = "actor"
+
+    /// Recents' "now": a Wednesday afternoon in the local calendar, so no row crosses a day boundary between runs.
+    static let historyNow: Date = {
+        let components = DateComponents(year: 2026, month: 9, day: 16, hour: 15)
+        return Calendar.current.date(from: components) ?? Date()
+    }()
 
     /// Six conversations across Today, Yesterday and the previous week; the first is the current one.
     static func recentSummaries(currentID: UUID, now: Date) -> [ConversationSummary] {
