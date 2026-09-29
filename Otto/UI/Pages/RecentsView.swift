@@ -213,11 +213,11 @@ private struct RecentsSearchField: View {
                 .accessibilityLabel(HistoryRecentsText.clearSearch)
             }
         }
-        .padding(.leading, 12)
-        .padding(.trailing, 10)
+        .padding(.leading, 14)
+        .padding(.trailing, 12)
         .frame(height: HistoryRecentsLayout.searchHeight)
-        .clay(cornerRadius: 14, style: .tray)
-        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .clay(in: Capsule(style: .continuous), style: .tray)
+        .contentShape(Capsule(style: .continuous))
         .onTapGesture { isFocused = true }
         .onChange(of: recents.searchFocusRequest) { requestFocus() }
         .onChange(of: isFocused) { _, focused in focusChanged(focused) }
@@ -289,7 +289,10 @@ private struct RecentsList: View {
                         }
                     }
                     .id(item.id)
-                    .listRowInsets(EdgeInsets())
+                    // The macOS table keeps 8 pt of its own inset on each side; negative row insets cancel it so
+                    // the selected row's plate spans the search well's width, 16 pt from each panel edge.
+                    .listRowInsets(EdgeInsets(top: 0, leading: -HistoryRecentsLayout.listSideInset,
+                                              bottom: 0, trailing: -HistoryRecentsLayout.listSideInset))
                     .listRowSeparator(.hidden)
                     .listRowBackground(Color.clear)
                 }
@@ -315,12 +318,14 @@ private struct RecentsSectionTitle: View {
     let title: String
 
     var body: some View {
-        Text(HistoryRecentsText.sectionTitle(title))
-            .font(Theme.font(11.5, .semibold))
-            .tracking(0.4)
+        // Sentence case like the rest of the notch ("Thought process"), not a tracked all-caps register.
+        Text(title)
+            .font(Theme.font(12, .semibold))
             .foregroundStyle(Theme.textTertiary)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 12)
+            // Lines up with the row titles: the row's 12 pt padding, its 6 pt unread dot and the 10 pt gap.
+            .padding(.leading, 28)
+            .padding(.trailing, 12)
             .padding(.top, 8)
             .frame(height: HistoryRecentsLayout.sectionTitleHeight, alignment: .bottomLeading)
             .accessibilityAddTraits(.isHeader)
@@ -373,6 +378,7 @@ private struct RecentsRowView: View {
             Button(HistoryRecentsText.deleteLabel, role: .destructive, action: delete)
         }
         .animation(.easeOut(duration: 0.12), value: isHovering)
+        .animation(.easeOut(duration: 0.15), value: isSelected)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(HistoryRecentsText.accessibilityLabel(for: row, dateLabel: dateLabel))
         .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
@@ -407,7 +413,7 @@ private struct RecentsRowView: View {
     @ViewBuilder
     private var plate: some View {
         if isSelected {
-            ClaySurface(shape: RoundedRectangle(cornerRadius: 14, style: .continuous), style: .chip)
+            SelectionPlate(cornerRadius: 14)
         } else if isHovering {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .fill(Color.white.opacity(0.04))
@@ -469,35 +475,18 @@ private struct RecentsEmptyState: View {
     let turnOnHistory: () -> Void
 
     var body: some View {
-        Group {
-            if state == .loading {
-                MiniSpinner(size: 14, color: Theme.textTertiary)
-            } else {
-                VStack(spacing: 6) {
-                    Image(systemName: symbol)
-                        .font(.system(size: 18, weight: .regular))
-                        .foregroundStyle(Theme.textTertiary)
-                        .accessibilityHidden(true)
-                    Text(title)
-                        .font(Theme.font(14, .medium))
-                        .foregroundStyle(Theme.textPrimary)
-                        .multilineTextAlignment(.center)
-                        .lineLimit(2)
-                    Text(message)
-                        .font(Theme.font(12.5))
-                        .foregroundStyle(Theme.textSecondary)
-                        .multilineTextAlignment(.center)
-                        .fixedSize(horizontal: false, vertical: true)
-                    if state == .historyOff {
-                        RecentsCapsuleButton(title: HistoryRecentsText.turnOnHistory, action: turnOnHistory)
-                            .padding(.top, 4)
-                    }
+        if state == .loading {
+            MiniSpinner(size: 14, color: Theme.textTertiary)
+                .frame(maxWidth: .infinity)
+                .frame(height: HistoryRecentsLayout.emptyStateHeight)
+        } else {
+            PageEmptyState(symbol: symbol, title: title, message: message,
+                           height: HistoryRecentsLayout.emptyStateHeight) {
+                if state == .historyOff {
+                    RecentsCapsuleButton(title: HistoryRecentsText.turnOnHistory, action: turnOnHistory)
                 }
-                .accessibilityElement(children: .contain)
             }
         }
-        .frame(maxWidth: .infinity)
-        .frame(height: HistoryRecentsLayout.emptyStateHeight)
     }
 
     private var symbol: String {
@@ -600,6 +589,7 @@ private struct RecentsFooter: View {
 
     @State private var isHoveringLink = false
 
+    /// No side padding: the first hint's pill and the trailing link end flush with the search capsule's edges.
     var body: some View {
         HStack(spacing: 6) {
             if showsStreamingWarning {
@@ -623,7 +613,6 @@ private struct RecentsFooter: View {
             .buttonStyle(.plain)
             .onHover { isHoveringLink = $0 }
         }
-        .padding(.horizontal, 4)
     }
 }
 
@@ -671,6 +660,5 @@ private struct RecentsUndoBar: View {
                 .foregroundStyle(Theme.textTertiary)
                 .accessibilityHidden(true)
         }
-        .padding(.horizontal, 4)
     }
 }

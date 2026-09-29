@@ -100,7 +100,10 @@ struct ShelfView: View {
                     ForEach(items) { item in
                         ShelfTileView(
                             item: item,
-                            thumbnail: controller.store.thumbnail(for: item.id),
+                            // A picture shows only its own rendering (else a placeholder), never its type's icon.
+                            thumbnail: ShelfPageText.isImage(item)
+                                ? controller.store.renderedThumbnail(for: item.id)
+                                : controller.store.thumbnail(for: item.id),
                             isSelected: controller.selection.contains(item.id),
                             landingIndex: landingOrder[item.id],
                             controller: controller
@@ -171,7 +174,7 @@ struct ShelfView: View {
                 totalBytes: controller.store.totalByteCount
             ))
             .font(Theme.font(12))
-            .foregroundStyle(Theme.textTertiary)
+            .foregroundStyle(Theme.textTertiaryOnClay)
             .monospacedDigit()
             .lineLimit(1)
             Spacer(minLength: 8)
@@ -309,31 +312,33 @@ private struct ShelfTileView: View {
     var body: some View {
         ZStack {
             plate
-            VStack(spacing: 4) {
+            VStack(spacing: ShelfPageLayout.nameGap) {
                 // A missing file dims only its thumbnail; the name and "Moved or deleted" stay readable (AA).
                 ShelfThumbnailWell(item: item, thumbnail: thumbnail)
                     .opacity(isMissing ? 0.45 : 1)
-                    .overlay(alignment: .topTrailing) {
+                    .overlay {
                         if isMissing {
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .font(.system(size: 9, weight: .semibold))
-                                .foregroundStyle(Theme.attention)
-                                .offset(x: 4, y: -4)
-                                .accessibilityHidden(true)
+                            MissingBadge(corner: ShelfThumbnailWell.visibleSize(item: item, thumbnail: thumbnail))
                         }
                     }
                 VStack(spacing: 1) {
                     name
                     if isMissing {
+                        // A fixed caption, never truncated: it may use the tile's padding.
                         Text(ShelfPageText.missingSubtitle)
                             .font(Theme.font(10.5))
                             .foregroundStyle(Theme.textSecondary)
                             .lineLimit(1)
+                            .fixedSize()
+                            .frame(width: ShelfPageLayout.nameMaxWidth)
                     }
                 }
-                Spacer(minLength: 0)
             }
-            .padding(.top, 6)
+            .padding(.horizontal, ShelfPageLayout.tilePadding)
+            .padding(.vertical, ShelfPageLayout.tileVerticalPadding)
+            // Top-aligned in the tile without a Spacer: a Spacer would take another `nameGap` of stack spacing,
+            // push the stack past the 100 pt tile and let the grid's scroll view clip the selected plate's top.
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
             ShelfTileHitArea(id: item.id, interaction: controller)
         }
@@ -354,33 +359,31 @@ private struct ShelfTileView: View {
         .accessibilityAction(named: "Remove from Shelf") { controller.remove([item.id]) }
     }
 
-    /// Up to two wrapped lines when the whole name fits in them; otherwise one line truncated in the middle,
-    /// so the extension stays visible. (SwiftUI only truncates in the middle on a single line.)
+    /// Up to two centered lines, truncated in the middle so the extension stays visible and never broken after a
+    /// hyphen. A missing file keeps one line, leaving room for "Moved or deleted" under it.
     private var name: some View {
-        let text = ShelfPageText.displayName(item)
+        let text = ShelfPageText.caption(item)
         let lines = isMissing ? 1 : 2
-        return ViewThatFits(in: .vertical) {
-            Text(text)
-                .fixedSize(horizontal: false, vertical: true)
-                .multilineTextAlignment(.center)
-            Text(text)
-                .lineLimit(1)
-                .truncationMode(.middle)
-        }
-        .font(Theme.font(11.5))
-        .foregroundStyle(isMissing ? Theme.textSecondary : Theme.chipLabel)
-        .frame(width: ShelfPageLayout.nameMaxWidth)
-        .frame(maxHeight: ShelfPageLayout.nameLineHeight * CGFloat(lines), alignment: .top)
+        return Text(text)
+            .font(Theme.font(11.5))
+            .foregroundStyle(Theme.textPrimary)
+            .lineLimit(lines)
+            .truncationMode(.middle)
+            .multilineTextAlignment(.center)
+            .fixedSize(horizontal: false, vertical: true)
+            // A fixed slot, so a one-line name and a two-line name leave every thumbnail at the same height.
+            .frame(width: ShelfPageLayout.nameMaxWidth, height: ShelfPageLayout.nameLineHeight * CGFloat(lines),
+                   alignment: .top)
     }
 
     @ViewBuilder
     private var plate: some View {
         let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
         if isSelected {
-            ClaySurface(shape: shape, style: .chip)
-                .overlay { shape.strokeBorder(Theme.sendFill.opacity(0.35), lineWidth: 1) }
+            // The selected Recents row's plate.
+            SelectionPlate(cornerRadius: 14)
         } else if isHovering {
-            shape.fill(Theme.chipLiftedFill)
+            shape.fill(Color.white.opacity(0.04))
         }
     }
 
@@ -396,11 +399,47 @@ private struct ShelfTileView: View {
     }
 }
 
+/// The amber mark on a missing file's thumbnail: a small dark disc centered on the top-trailing corner of what
+/// the thumbnail visibly draws (a page icon is narrower than its well), so it reads as part of the file it marks.
+private struct MissingBadge: View {
+    static let side: CGFloat = 14
+    /// How far the badge's center sits out from and above the corner.
+    static let outset: CGFloat = 3
+
+    /// The visible thumbnail's size; the badge is placed relative to its top-trailing corner.
+    let corner: CGSize
+
+    var body: some View {
+        Image(systemName: "exclamationmark.triangle.fill")
+            .font(.system(size: 8, weight: .semibold))
+            .foregroundStyle(Theme.attention)
+            .frame(width: Self.side, height: Self.side)
+            .background {
+                Circle()
+                    .fill(Color.black.opacity(0.72))
+                    .overlay(Circle().strokeBorder(Color.white.opacity(0.10), lineWidth: 1))
+            }
+            .offset(x: corner.width / 2 + Self.outset, y: -(corner.height / 2 + Self.outset))
+            .accessibilityHidden(true)
+    }
+}
+
 private struct ShelfThumbnailWell: View {
     let item: ShelfItem
     let thumbnail: NSImage?
 
     private var side: CGFloat { ShelfPageLayout.thumbnailSide }
+
+    /// The size of what the well visibly draws, centered in it: a filled image takes the whole well, a file
+    /// icon its page (the shadow's footprint below), an image placeholder the same page, a placeholder symbol
+    /// about its glyph.
+    static func visibleSize(item: ShelfItem, thumbnail: NSImage?) -> CGSize {
+        let side = ShelfPageLayout.thumbnailSide
+        if thumbnail == nil, ShelfPageText.isImage(item) { return ShelfPageLayout.imagePlaceholderSize }
+        guard thumbnail != nil else { return CGSize(width: 32, height: 32) }
+        if ShelfPageText.isImage(item) { return CGSize(width: side, height: side) }
+        return CGSize(width: side * 0.66, height: side * 0.8)
+    }
 
     var body: some View {
         Group {
@@ -429,6 +468,9 @@ private struct ShelfThumbnailWell: View {
                         )
                         .frame(width: side * 0.66, height: side * 0.8)
                     }
+            } else if ShelfPageText.isImage(item) {
+                ImagePlaceholder()
+                    .frame(width: side, height: side)
             } else {
                 Image(systemName: ShelfPageText.placeholderSymbol(for: item))
                     .font(.system(size: 26, weight: .light))
@@ -437,6 +479,26 @@ private struct ShelfThumbnailWell: View {
             }
         }
         .accessibilityHidden(true)
+    }
+}
+
+/// A picture whose rendering hasn't landed (or that Quick Look can't draw): a quiet clay page with a photo glyph,
+/// at a document icon's footprint, so it never passes for a saturated app icon.
+private struct ImagePlaceholder: View {
+    static let fill = Theme.rgb(0x26272A)
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: ShelfPageLayout.imagePlaceholderRadius, style: .continuous)
+        shape
+            .fill(Self.fill)
+            .overlay { shape.strokeBorder(Color.white.opacity(0.08), lineWidth: 1) }
+            .overlay {
+                Image(systemName: "photo")
+                    .font(.system(size: 15, weight: .regular))
+                    .foregroundStyle(Theme.textSecondary)
+            }
+            .frame(width: ShelfPageLayout.imagePlaceholderSize.width,
+                   height: ShelfPageLayout.imagePlaceholderSize.height)
     }
 }
 
@@ -519,23 +581,8 @@ private struct ShareAnchorView: NSViewRepresentable {
 
 private struct ShelfEmptyState: View {
     var body: some View {
-        VStack(spacing: 6) {
-            Image(systemName: "tray")
-                .font(.system(size: 20, weight: .regular))
-                .foregroundStyle(Theme.textTertiary)
-                .accessibilityHidden(true)
-            Text(ShelfPageText.emptyTitle)
-                .font(Theme.font(13.5, .medium))
-                .foregroundStyle(Theme.textSecondary)
-            Text(ShelfPageText.emptyBody)
-                .font(Theme.font(12))
-                .foregroundStyle(Theme.textTertiary)
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: 340)
-        }
-        .frame(maxWidth: .infinity)
-        .frame(height: ShelfPageLayout.emptyStateHeight)
-        .accessibilityElement(children: .combine)
+        PageEmptyState(symbol: "tray", title: ShelfPageText.emptyTitle, message: ShelfPageText.emptyBody,
+                       height: ShelfPageLayout.emptyStateHeight)
+            .accessibilityElement(children: .combine)
     }
 }

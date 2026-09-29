@@ -12,6 +12,8 @@ import Foundation
 enum HistoryRecentsLayout {
     static let rowHeight: CGFloat = 50
     static let sectionTitleHeight: CGFloat = 26
+    /// The inset the macOS plain `List` adds on each side on its own, which `RecentsList` cancels.
+    static let listSideInset: CGFloat = 8
     /// Top and bottom content inset of the list.
     static let listContentInset: CGFloat = 2
     static let searchHeight: CGFloat = 36
@@ -144,7 +146,8 @@ enum HistoryRecentsText {
         "No matches for “\(DisplayText.sanitized(query, maxLength: maxQueryLength))”"
     }
 
-    /// Section labels are drawn in small caps style: "TODAY", "PREVIOUS 7 DAYS", "AUGUST 2025".
+    /// The all-caps form of a section label ("TODAY", "PREVIOUS 7 DAYS", "AUGUST 2025"). The list draws the
+    /// title as written, in sentence case.
     static func sectionTitle(_ title: String) -> String {
         title.uppercased()
     }

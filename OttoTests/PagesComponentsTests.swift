@@ -371,6 +371,19 @@ final class PagesComponentsTests: XCTestCase {
 
     // MARK: - Drop wells
 
+    /// Tile captions never break right after a hyphen: hyphens are non-breaking, and a name without a space may
+    /// break before its extension instead.
+    func testShelfCaptionsNeverBreakAtAHyphen() {
+        let hyphenated = ShelfPageText.caption(PagesFixtures.shelfItem("meeting-notes.txt"))
+        XCTAssertFalse(hyphenated.contains("-"))
+        XCTAssertEqual(hyphenated, "meeting\u{2011}notes\u{200B}.txt")
+        XCTAssertEqual(ShelfPageText.caption(PagesFixtures.shelfItem("Q3 roadmap.pdf")), "Q3 roadmap.pdf",
+                       "a name with a space breaks there")
+        XCTAssertEqual(ShelfPageText.caption(PagesFixtures.shelfItem("Assets.v2", isDirectory: true)), "Assets.v2")
+        XCTAssertEqual(ShelfPageText.caption(PagesFixtures.shelfItem(".env")), ".env")
+        XCTAssertEqual(ShelfPageLayout.imagePlaceholderSize, CGSize(width: 37, height: 45))
+    }
+
     func testTheWellUnderThePointerIsLit() {
         let overShelf = DropSession(zone: .shelf, itemCount: 2, acceptsShelf: true)
         let overAsk = DropSession(zone: .ask, itemCount: 2, acceptsShelf: true)
@@ -382,7 +395,7 @@ final class PagesComponentsTests: XCTestCase {
 
         XCTAssertEqual(ShelfDropWell.active.scale, 1.02)
         XCTAssertFalse(ShelfDropWell.active.isDashed)
-        XCTAssertEqual(ShelfDropWell.active.strokeWidth, 1.5)
+        XCTAssertEqual(ShelfDropWell.active.strokeWidth, 1, "the dock cards' top-lit 1 pt ring")
         XCTAssertEqual(ShelfDropWell.inactive.opacity, 0.55)
         XCTAssertTrue(ShelfDropWell.inactive.isDashed)
     }

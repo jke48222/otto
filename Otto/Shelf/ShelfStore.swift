@@ -414,6 +414,15 @@ enum ShelfError: LocalizedError, Equatable {
         return icon(for: item)
     }
 
+    /// Only a real rendering of the file (Quick Look's, or the one cached on disk), never the type's icon: nil until
+    /// it lands and for files Quick Look can't render. Image tiles use it, so a picture never shows as its icon.
+    func renderedThumbnail(for id: UUID) -> NSImage? {
+        _ = thumbnailRevision
+        if let cached = thumbnailCache.object(forKey: id as NSUUID) { return cached }
+        if item(for: id) != nil { startThumbnail(for: id) }
+        return nil
+    }
+
     // MARK: - Saving
 
     /// Synchronous final save (applicationWillTerminate). Waits for any write already queued.

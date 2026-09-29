@@ -17,14 +17,31 @@ enum ShelfPageLayout {
     static let tileWidth: CGFloat = 92
     static let tileHeight: CGFloat = 100
     static let spacing: CGFloat = 8
-    static let thumbnailSide: CGFloat = 60
-    static let nameMaxWidth: CGFloat = 88
-    /// One line of a tile's 11.5 pt caption.
+    /// Inset of a tile's thumbnail and name from its plate's sides.
+    static let tilePadding: CGFloat = 8
+    /// Inset from the plate's top and bottom: 6 + 56 thumbnail + 4 gap + two 14 pt name lines + 6 = the 100 pt tile.
+    static let tileVerticalPadding: CGFloat = 6
+    static let thumbnailSide: CGFloat = 56
+    /// Space between the thumbnail and the name.
+    static let nameGap: CGFloat = 4
+    /// A name's inset from the plate's sides: half the thumbnail's, since a name only nears the edge at its widest
+    /// line, where the plate's side is straight.
+    static let nameInset: CGFloat = 4
+    /// The tile less the name's inset (context-io.md §5.1 allows 88), so "meeting-notes" or "hero-draft.png" keeps
+    /// to one line and a name never touches the selected plate's edge.
+    static let nameMaxWidth: CGFloat = tileWidth - 2 * nameInset
+    /// An image with no rendering yet: a clay placeholder the size of a document icon's page (not the whole well),
+    /// so it reads as a picture still to come rather than an app icon.
+    static let imagePlaceholderSize = CGSize(width: (thumbnailSide * 0.66).rounded(),
+                                             height: (thumbnailSide * 0.8).rounded())
+    static let imagePlaceholderRadius: CGFloat = 8
+    /// One line of a tile's 11.5 pt name (up to two lines).
     static let nameLineHeight: CGFloat = 14
     /// Two rows plus a 24 pt peek of the third.
     static let maxGridHeight: CGFloat = 2 * tileHeight + spacing + 24
     static let actionBarHeight: CGFloat = 40
-    static let emptyStateHeight: CGFloat = 120
+    /// The shared page empty state's height (`PageEmptyState`, the same as Recents).
+    static let emptyStateHeight: CGFloat = 132
     /// Fade at the top and bottom of the scrolling grid.
     static let fadeLength: CGFloat = 14
     /// Delay between tiles in the landing pulse after a Shelf drop.
@@ -105,6 +122,18 @@ enum ShelfPageText {
         DisplayText.sanitized(item.name, maxLength: maxNameLength)
     }
 
+    /// The name as the tile draws it: `displayName` with its hyphens made non-breaking (U+2011), so a name too wide
+    /// for one line never breaks right after a hyphen ("hero-" / "draft.png"). It breaks at a space, or, in a name
+    /// without one, before its extension ("meeting-notes" / ".txt", through a zero-width space).
+    static func caption(_ item: ShelfItem) -> String {
+        var name = displayName(item).replacingOccurrences(of: "-", with: "\u{2011}")
+        if !item.isDirectory, !name.contains(where: \.isWhitespace),
+           let dot = name.lastIndex(of: "."), dot > name.startIndex {
+            name.insert("\u{200B}", at: dot)
+        }
+        return name
+    }
+
     /// VoiceOver: "Q3 plan.png", "notes.md, moved or deleted", "Assets, folder, selected".
     static func accessibilityLabel(for item: ShelfItem, isSelected: Bool) -> String {
         var parts = [displayName(item)]
@@ -153,6 +182,11 @@ enum ShelfPageFocus {
 /// The two wells shown while files are dragged over the open notch: "Keep on Shelf" on the left, "Ask Otto"
 /// on the right. The well under the pointer brightens; the other dims with a dashed edge.
 enum ShelfDropWell {
+    /// How a well draws (context-io.md §5.1). `DropWellView` applies `opacity` to the idle well's chrome (its
+    /// dashed outline) and never to its text, which switches to dimmer tokens instead; `scale` grows the active
+    /// well from its outer edge toward the gap, so it stays inside the panel's gutter, and is dropped under
+    /// Reduce Motion. The idle stroke is `Theme.sendFill` at `strokeOpacity`; the active one is the dock cards'
+    /// top-lit ring (`DockCardChrome.ringGradient`) at `strokeOpacity`.
     struct Appearance: Equatable {
         var isActive: Bool
         var scale: CGFloat
@@ -163,7 +197,7 @@ enum ShelfDropWell {
     }
 
     static let active = Appearance(isActive: true, scale: 1.02, opacity: 1, isDashed: false,
-                                   strokeOpacity: 0.85, strokeWidth: 1.5)
+                                   strokeOpacity: 1, strokeWidth: 1)
     static let inactive = Appearance(isActive: false, scale: 1, opacity: 0.55, isDashed: true,
                                      strokeOpacity: 0.45, strokeWidth: 1)
 
