@@ -172,14 +172,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     #if DEBUG || OTTO_TOOLS
     private func renderSnapshots(to directory: URL) {
         Self.logger.info("Rendering snapshots to \(directory.path, privacy: .public)")
-        // Watchdog on a background queue: if rendering wedges the main thread, still exit non-zero.
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 180) {
+        // Watchdog on a background queue: if rendering wedges the main thread, still exit non-zero. _exit skips
+        // atexit handlers and static destructors, which would otherwise run while the main thread is still inside
+        // SwiftUI and can turn a timeout into a crash. scripts/snapshot.sh matches the message text.
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 240) {
             FileHandle.standardError.write(Data("Snapshot rendering timed out.\n".utf8))
-            exit(1)
+            _exit(1)
         }
         Task { @MainActor in
-            await SnapshotRenderer.renderAll(to: directory)
-            exit(0)
+            let allRendered = await SnapshotRenderer.renderAll(to: directory)
+            exit(allRendered ? 0 : 1)
         }
     }
     #endif

@@ -184,7 +184,11 @@ only, so run them from `scripts/build.sh` output:
   `docs/snapshots/`. They cover the closed notch in each glance state, the open notch with chips, a
   conversation, streaming, approval and permission cards, voice, Recents, the Shelf, and every Settings tab
   (the full list is in section 18 of [`docs/SPEC.md`](docs/SPEC.md)). Run it before and after a visual change and
-  compare the PNGs. Include before/after images in your PR.
+  compare the PNGs. Include before/after images in your PR. It renders into a temporary folder and copies
+  into `docs/snapshots/` only after a clean run, so a failed run leaves the old pictures as they were. If the
+  renderer crashes or times out, the script tries again in a fresh process, three runs in all
+  (`OTTO_SNAPSHOT_ATTEMPTS` changes that). To skip the build, point `OTTO_SNAPSHOT_BINARY` at a Debug
+  `Otto` binary you already built.
 - **Self-test.** `build/Build/Products/Debug/Otto.app/Contents/MacOS/Otto --selftest <dir>` drives the
   real notch on screen through a scripted session (open, type, send, stream, close mid-reply, reopen,
   attach files, then approvals, the fold, voice, Recents, the Shelf and more) and checks the pointer logic

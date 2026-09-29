@@ -27,8 +27,21 @@ enum SnapshotRenderer {
     /// How long SwiftUI gets to lay out, measure (preference and geometry round-trips) and settle.
     private static let settleTime: Duration = .milliseconds(400)
 
+    /// Every `report(error:)` of this run, so the process can exit non-zero on its own (scripts/snapshot.sh also
+    /// reads the "snapshot error:" lines).
+    private static let errorCount = SnapshotErrorCount()
+
+    /// Returns false when any scene failed.
     @MainActor
-    static func renderAll(to directory: URL) async {
+    @discardableResult
+    static func renderAll(to directory: URL) async -> Bool {
+        let errorsBefore = errorCount.value
+        await renderEveryScene(to: directory)
+        return errorCount.value == errorsBefore
+    }
+
+    @MainActor
+    private static func renderEveryScene(to directory: URL) async {
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         } catch {
@@ -64,6 +77,9 @@ enum SnapshotRenderer {
                 hoverPoint: scene.hoverPoint,
                 to: directory.appendingPathComponent(scene.fileName)
             )
+            // render(...) already let the previous window's display cycle finish; one more turn before the stage's
+            // models go away.
+            await Task.yield()
             stage.tearDown()
         }
 
@@ -211,9 +227,13 @@ enum SnapshotRenderer {
             image = renderWithImageRenderer(root, size: size)
         }
 
+        // Tear down in a fixed order and let AppKit's display cycle run once more while the window and hosting view
+        // are still alive, so no pending layout runs against a hosting view whose graph is being released.
         window.orderOut(nil)
         window.contentView = nil
-        window.close()
+        await Task.yield()
+        try? await Task.sleep(for: .milliseconds(50))
+        withExtendedLifetime(hostingView) { window.close() }
 
         guard let image else {
             report(error: "Couldn't render \(url.lastPathComponent).")
@@ -339,9 +359,20 @@ enum SnapshotRenderer {
     }
 
     private static func report(error message: String) {
+        errorCount.increment()
         logger.error("\(message, privacy: .public)")
         FileHandle.standardError.write(Data("snapshot error: \(message)\n".utf8))
     }
+}
+
+/// A thread-safe count of reported snapshot errors.
+private final class SnapshotErrorCount: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    var value: Int { lock.withLock { count } }
+
+    func increment() { lock.withLock { count += 1 } }
 }
 
 // MARK: - Scenes
@@ -678,6 +709,8 @@ private final class SnapshotStage {
     /// Leaves nothing running (a scripted turn, a pending approval) and removes the scene's files.
     func tearDown() {
         chat.reset()
+        viewModel.suggestions.clear()
+        viewModel.inserter.reset()
         try? FileManager.default.removeItem(at: scratchDirectory)
     }
 

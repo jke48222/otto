@@ -849,6 +849,27 @@ final class SelfTest {
         await pressKey(kVK_DownArrow, Self.downArrowCharacters, [.command, .shift], vm, controller)
         check(!vm.isTallMode, "⌘⇧↓ leaves tall mode")
         _ = await waitUntil(3) { vm.renderedShapeSize.height <= NotchMetrics.maxOpenHeight + 0.5 }
+
+        // ⇧↩ in the composer inserts a new line and sends nothing (interaction.md §4.5, the ⌘/ sheet).
+        let draft = "Summarize this in three bullets:"
+        let messagesBefore = chat.messageCount
+        vm.composerText = draft
+        let drafted = await waitUntil(1) { self.composerTextView(panel)?.string == draft }
+        if drafted, let textView = composerTextView(panel), panel.isKeyWindow || !Self.isScreenLocked {
+            textView.setSelectedRange(NSRange(location: (textView.string as NSString).length, length: 0))
+            await pressKey(kVK_Return, "\r", .shift, vm, controller)
+            let brokeLine = await waitUntil(1) { vm.composerText == draft + "\n" }
+            check(brokeLine, "⇧↩ inserts a new line (composer: \(vm.composerText.debugDescription))")
+        } else if Self.isScreenLocked {
+            // With no key window the key can only go through the key map, which never reaches the text view.
+            current?.skipped.append("⇧↩ needs the composer's text view as key, which a locked screen doesn't allow")
+            await pressKey(kVK_Return, "\r", .shift, vm, controller)
+        } else {
+            fail("the composer's text view holds the draft before ⇧↩")
+        }
+        check(chat.messageCount == messagesBefore && !chat.isStreaming,
+              "⇧↩ sends nothing (\(chat.messageCount) messages, was \(messagesBefore))")
+        vm.composerText = ""
     }
 
     /// interaction.md §8.2 step 3: ⌘R answers the last question again and keeps both versions.
