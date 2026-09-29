@@ -41,8 +41,9 @@ MIT licensed; the signed, notarized app will be a one-time purchase.
 - **Voice.** Hold your shortcut or the mic button to talk, or click to start and stop. Speech is turned into
   text on your Mac; replies can be read aloud.
 - **Glanceable closed notch.** Ears show whether Otto is thinking, searching or writing, waiting for your OK,
-  or waiting on System Settings, and a finished reply drops a one-line preview under the camera.
-  Notifications for replies and approvals are optional.
+  or waiting on System Settings, and a finished reply drops a one-line preview under the camera. Hover the
+  preview to keep it on screen, or click it to open that answer. Notifications for replies and approvals are
+  optional.
 - **Now Playing** strip and closed-notch artwork for Music and Spotify, with play, pause and skip.
 - **Next-meeting chip** with the time until it starts and <kbd>⌥</kbd><kbd>⌘</kbd><kbd>J</kbd> to join.
 - **Cost and usage.** Each reply's estimated cost on hover, and totals by day, month and model in
