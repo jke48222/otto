@@ -53,6 +53,8 @@ final class AppComposition {
         var isPinned: Bool
         var isOpen: Bool
         var isEngaged: Bool
+        /// `vm.systemUIWait != nil` (§4.5): pin is suspended so the shortcut never keeps the notch over the dialog.
+        var isWaitingOnSystemUI = false
     }
 
     /// What one tap of the global shortcut does, first match wins.
@@ -67,6 +69,9 @@ final class AppComposition {
         case focus
         /// Open and engaged → close (a user close).
         case close
+        /// Pinned, open and engaged while macOS shows its own UI → fold out of its way (`close(.systemUI)`): the
+        /// pin stays and the notch comes back when the wait ends.
+        case fold
         /// Otherwise → open with focus.
         case open
     }
@@ -294,6 +299,13 @@ final class AppComposition {
         self.tools = tools
         let executor = ToolExecutor(permissions: permissions, approvals: approvals, log: actionLog,
                                     logFullScripts: { [settings] in settings.actions.logFullScripts })
+        // The executor's two hooks (§5): the Settings → Actions safety mode, read at every decision, and the
+        // environment behind the availability pre-check and the re-check right before a call runs (a group or
+        // Actions itself may be turned off while its card waits).
+        executor.safetyMode = { [settings] in settings.actionSafetyMode }
+        executor.makeEnvironment = { [settings, permissions] model in
+            ToolEnvironment(settings: settings, permissions: permissions, model: model, isDemo: isDemo)
+        }
         self.executor = executor
 
         // The conversation, its usage and its history. A request that starts while sending is paused fails on its
@@ -438,6 +450,14 @@ final class AppComposition {
         }
         cancellations.append { retentionLoop.cancel() }
 
+        // While History is off, logged actions stay in memory and never reach Logs.noindex/actions.jsonl.
+        let historyEnabled = settings.history.enabled
+        Task { await actionLog.setPersisting(historyEnabled) }
+        let persistingLoop = ObservationLoop(read: { settings.history.enabled }) { enabled in
+            Task { await actionLog.setPersisting(enabled) }
+        }
+        cancellations.append { persistingLoop.cancel() }
+
         Self.wireDataRemoval(history: history, notifications: notifications, actionLog: actionLog)
 
         guard kind != .inert else { return }
@@ -515,6 +535,9 @@ final class AppComposition {
         }
     }
 
+    /// What a tap of the global shortcut sees right now (§6.5).
+    var hotKeyState: HotKeyState { hotKeyTarget.hotKeyState }
+
     /// One tap of the global shortcut (§6.5).
     func handleHotKeyTap() {
         Self.performTap(on: hotKeyTarget)
@@ -522,12 +545,13 @@ final class AppComposition {
 
     // MARK: - Hot key (§6.5)
 
-    /// Pure: the §6.5 tap table.
+    /// Pure: the §6.5 tap table. While macOS shows its own UI (§4.5) pin is suspended: an open, engaged notch folds
+    /// (keeping the pin) so the next click lands on the dialog, and a closed one opens like a click on it would.
     static func tapAction(for state: HotKeyState) -> HotKeyTapAction {
         if state.isSpeaking { return .stopSpeaking }
         if state.isListeningInToggleMode { return .finishVoiceAndSend }
-        if state.isPinned { return state.isEngaged ? .disengage : .focus }
-        if state.isOpen && state.isEngaged { return .close }
+        if state.isPinned, !state.isWaitingOnSystemUI { return state.isEngaged ? .disengage : .focus }
+        if state.isOpen && state.isEngaged { return state.isPinned ? .fold : .close }
         return .open
     }
 
@@ -538,6 +562,7 @@ final class AppComposition {
         case .disengage: target.disengage()
         case .focus, .open: target.open(reason: .hotkey, focus: true)
         case .close: target.close(.user)
+        case .fold: target.close(.systemUI)
         }
     }
 
@@ -897,12 +922,19 @@ final class AppComposition {
     // MARK: - History removals (§6.12)
 
     /// Every removal clears Otto's delivered and pending notifications (they may name a deleted conversation);
-    /// Delete All History and turning History off also clear the actions activity log.
+    /// Delete All History and turning History off also clear the actions activity log, and any other removal
+    /// prunes the log's expired entries.
     static func wireDataRemoval(history: HistoryController, notifications: NotificationPresenter?,
                                 actionLog: ActionLog?) {
         history.onDataRemoved = { [weak notifications] removal in
             notifications?.clearDelivered()
-            guard removal == .all, let actionLog else { return }
+            guard let actionLog else { return }
+            guard removal == .all else {
+                // Retention's maintenance tick (and single deletions): expired action titles leave the disk on the
+                // same schedule as the conversations they belong to, even when nothing else touches the log.
+                Task { await actionLog.prune(now: Date()) }
+                return
+            }
             Task {
                 do {
                     try await actionLog.clear()
@@ -992,7 +1024,8 @@ final class AppComposition {
                                           isListeningInToggleMode: isToggleSession && isListening,
                                           isPinned: viewModel.isPinned,
                                           isOpen: viewModel.isOpen,
-                                          isEngaged: viewModel.isEngaged)
+                                          isEngaged: viewModel.isEngaged,
+                                          isWaitingOnSystemUI: viewModel.systemUIWait != nil)
     }
 
     func open(reason: NotchViewModel.OpenReason, focus: Bool) { viewModel?.open(reason: reason, focus: focus) }

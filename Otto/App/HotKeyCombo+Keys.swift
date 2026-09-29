@@ -141,6 +141,7 @@ extension HotKeyCombo {
             (kVK_ANSI_N, command), (kVK_ANSI_Y, command), (kVK_ANSI_D, command), (kVK_ANSI_P, command),
             (kVK_ANSI_R, command), (kVK_ANSI_1, command), (kVK_ANSI_2, command), (kVK_ANSI_3, command),
             (kVK_ANSI_Slash, command), (kVK_ANSI_Slash, commandShift), (kVK_ANSI_Period, command),
+            (kVK_ANSI_Period, commandShift),
             (kVK_ANSI_Comma, command), (kVK_ANSI_F, command), (kVK_ANSI_Z, command), (kVK_ANSI_V, command),
             (kVK_ANSI_A, command), (kVK_ANSI_C, command), (kVK_ANSI_C, commandShift),
             (kVK_UpArrow, commandShift), (kVK_DownArrow, commandShift),

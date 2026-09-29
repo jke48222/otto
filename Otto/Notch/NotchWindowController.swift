@@ -110,7 +110,8 @@ final class NotchWindowController {
                     isMenuPresented: viewModel.isMenuPresented,
                     renderedShapeSize: viewModel.renderedShapeSize,
                     openHeightLimit: viewModel.openHeightLimit,
-                    isPinned: viewModel.isPinned
+                    isPinned: viewModel.isPinned,
+                    isWaitingOnSystemUI: viewModel.systemUIWait != nil
                 )
             }) { [weak self] state in
                 self?.observedStateDidChange(state)
@@ -436,6 +437,7 @@ final class NotchWindowController {
             isSecureInputActive: { IsSecureEventInputEnabled() },
             hoverOpenEnabled: settings.notch.hoverToOpen,
             isPinned: viewModel.isPinned,
+            isWaitingOnSystemUI: viewModel.systemUIWait != nil,
             openShapeLimit: CGSize(width: NotchMetrics.openWidth, height: viewModel.openHeightLimit)
         )
         trackPointerEntry(context)
@@ -527,6 +529,13 @@ final class NotchWindowController {
             viewModel.stopSpeaking()
         }
 
+        // Soft focus on the Shelf: the keys that act on tiles or the clipboard hand the keyboard back instead of
+        // engaging, so they can never remove a tile, overwrite the clipboard or open Quick Look.
+        if NotchKeyCommands.releasesShelfSoftFocus(keyCode: keyCode, characters: event.charactersIgnoringModifiers,
+                                                   flags: flags, context: context) {
+            return viewModel.perform(.releaseSoftFocus, input: InputProvenance.evidence(for: event, mouseDown: nil))
+        }
+
         // Rule 2: a typing key promotes soft focus to engagement. The Return that promotes is
         // consumed (it never sends, confirms or answers); every other typing key reaches the composer.
         switch NotchKeyCommands.softFocusPromotion(keyCode: keyCode, flags: flags,
@@ -557,13 +566,23 @@ final class NotchWindowController {
         return consumed
     }
 
-    /// Rule 3 of §4.4. Returns true when it finished listening.
+    /// Rule 3 of §4.4. Returns true when it finished listening. The words heard so far go in at the composer's
+    /// caret right now, so the key (which the caller lets through) lands after them, never before a late transcript.
     @discardableResult
     private func finishListeningIfTyping(keyCode: UInt16, flags: NSEvent.ModifierFlags, isListening: Bool) -> Bool {
         guard isListening, NotchKeyCommands.isTypingKey(keyCode: keyCode, flags: flags),
               !Self.returnAndEscapeKeyCodes.contains(Int(keyCode)) else { return false }
-        viewModel.finishVoice(send: false)
-        return true
+        let composer = viewModel.route == .chat ? panel.firstResponder as? NSTextView : nil
+        return viewModel.endVoiceForTyping { transcript in
+            guard let composer, composer.isEditable else { return false }
+            // Through the field editor, so the text field's binding (composerText) sees the change like typing.
+            let range = composer.selectedRange()
+            let text = composer.string as NSString
+            let preceding = range.location <= text.length ? text.substring(to: range.location).last : nil
+            composer.insertText(NotchViewModel.voiceTextForCaret(transcript, after: preceding),
+                                replacementRange: range)
+            return true
+        }
     }
 
     private static let returnAndEscapeKeyCodes: Set<Int> = [kVK_Return, kVK_ANSI_KeypadEnter, kVK_Escape]
@@ -599,6 +618,7 @@ private extension NotchWindowController {
         var renderedShapeSize: CGSize
         var openHeightLimit: CGFloat
         var isPinned: Bool
+        var isWaitingOnSystemUI: Bool
     }
 }
 

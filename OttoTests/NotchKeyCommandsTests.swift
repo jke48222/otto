@@ -57,8 +57,12 @@ final class NotchKeyCommandsTests: XCTestCase {
         [("⌘↩", .returnKey, command), ("⌘⌅", .enter, command), ("⌥⌘↩", .returnKey, optionCommand),
          ("⌘R", .r, command), ("⌘N", .n, command), ("⌘1", .one, command), ("⌘2", .two, command),
          ("⌘3", .three, command), ("⌘⇧C", Key(keyCode: kVK_ANSI_C, characters: "C"), commandShift),
-         ("⌘.", .period, command), ("⌥⌘J", .j, optionCommand), ("⌘⌫", .delete, command)]
+         ("⌘.", .period, command), ("⌘⇧. (AZERTY ⌘.)", azertyPeriod, commandShift),
+         ("⌥⌘J", .j, optionCommand), ("⌘⌫", .delete, command)]
     }
+
+    /// AZERTY types "." as ⇧ on the key a US keyboard calls ",".
+    private var azertyPeriod: Key { Key(keyCode: kVK_ANSI_Comma, characters: ".") }
 
     func testConsequentialChordsOnlyReleaseSoftFocus() {
         let states: [Context] = [
@@ -75,6 +79,35 @@ final class NotchKeyCommandsTests: XCTestCase {
                 XCTAssertEqual(map(key, flags, state), .releaseSoftFocus, "\(label) in \(state)")
             }
         }
+    }
+
+    func testSoftFocusedShelfKeysOnlyReleaseSoftFocus() {
+        let shelf = context { $0.isEngaged = false; $0.route = .shelf }
+        let forwardDelete = Key(keyCode: kVK_ForwardDelete, characters: "\u{F728}")
+        let space = Key(keyCode: kVK_Space, characters: " ")
+        let registered = Key(keyCode: kVK_ANSI_R, characters: "®")
+        let keys: [(String, Key, NSEvent.ModifierFlags)] = [
+            ("⌫", .delete, []), ("⌦", forwardDelete, []), ("Space", space, []), ("⌘C", .c, command),
+            ("⌘A", .a, command), ("⌥⌘R", .r, optionCommand), ("⌥⌘R as ®", registered, optionCommand),
+        ]
+        for (label, key, flags) in keys {
+            XCTAssertEqual(map(key, flags, shelf), .releaseSoftFocus, label)
+            XCTAssertTrue(NotchKeyCommands.releasesShelfSoftFocus(keyCode: UInt16(key.keyCode),
+                                                                  characters: key.characters, flags: flags,
+                                                                  context: shelf), label)
+            let engaged = context { $0.route = .shelf }
+            XCTAssertNotEqual(map(key, flags, engaged), .releaseSoftFocus, "engaged: \(label)")
+            XCTAssertFalse(NotchKeyCommands.releasesShelfSoftFocus(keyCode: UInt16(key.keyCode),
+                                                                   characters: key.characters, flags: flags,
+                                                                   context: engaged), "engaged: \(label)")
+            let chat = context { $0.isEngaged = false }
+            XCTAssertFalse(NotchKeyCommands.releasesShelfSoftFocus(keyCode: UInt16(key.keyCode),
+                                                                   characters: key.characters, flags: flags,
+                                                                   context: chat), "chat: \(label)")
+        }
+        // A plain letter still promotes soft focus on the Shelf (rule 2), so typing reaches Otto.
+        XCTAssertFalse(NotchKeyCommands.releasesShelfSoftFocus(keyCode: UInt16(kVK_ANSI_K), characters: "k", flags: [],
+                                                               context: shelf))
     }
 
     func testSoftFocusedApprovalIsNeverApprovedByCommandReturn() {
@@ -94,6 +127,30 @@ final class NotchKeyCommandsTests: XCTestCase {
         XCTAssertEqual(map(.slash, command, soft), .toggleShortcutSheet)
         XCTAssertEqual(map(.w, command, soft), .close)
         XCTAssertEqual(map(.comma, command, soft), .openSettings)
+    }
+
+    func testSoftFocusedEscapeOnlyClosesOrStops() {
+        // Esc meant for the user's own app must never deny an approval, drop an edit or cancel an insert.
+        let discarding: [Context] = [
+            context { $0.isEngaged = false; $0.prompt = .approval },
+            context { $0.isEngaged = false; $0.prompt = .other },
+            context { $0.isEngaged = false; $0.hasInsertConfirmation = true },
+            context { $0.isEngaged = false; $0.isEditing = true },
+            context { $0.isEngaged = false; $0.overlay = .shortcutSheet },
+            context { $0.isEngaged = false; $0.route = .shelf },
+            context { $0.isEngaged = false; $0.prompt = .approval; $0.isEditing = true; $0.hasInsertConfirmation = true },
+        ]
+        for state in discarding {
+            XCTAssertEqual(map(.escape, [], state), .close, "\(state)")
+        }
+        XCTAssertEqual(map(.escape, [], context { $0.isEngaged = false; $0.isListening = true; $0.prompt = .approval }),
+                       .cancelVoice)
+        XCTAssertEqual(map(.escape, [], context { $0.isEngaged = false; $0.isSpeaking = true; $0.prompt = .approval }),
+                       .stopSpeaking)
+        XCTAssertNil(map(.escape, [], context { $0.isEngaged = false; $0.hasMarkedText = true; $0.prompt = .approval }),
+                     "the input method still cancels its composition")
+        XCTAssertEqual(map(.escape, [], context { $0.prompt = .approval }), .promptSecondary,
+                       "engaged, Esc still declines")
     }
 
     // MARK: - Esc ladder
@@ -274,6 +331,13 @@ final class NotchKeyCommandsTests: XCTestCase {
         XCTAssertEqual(map(.period, command, context { $0.isStreaming = true }), .stop)
         XCTAssertEqual(map(.period, command, context { $0.isListening = true }), .stop)
         XCTAssertEqual(map(.period, command, Context()), .stop, "consumed even when nothing is running")
+    }
+
+    func testCommandPeriodOnLayoutsThatShiftThePeriod() {
+        XCTAssertEqual(map(azertyPeriod, commandShift, context { $0.isStreaming = true }), .stop)
+        XCTAssertEqual(map(azertyPeriod, commandShift, context { $0.isSpeaking = true }), .stopSpeaking)
+        XCTAssertEqual(map(Key(keyCode: kVK_ANSI_Period, characters: ">"), commandShift), .stop, "US ⌘⇧. too")
+        XCTAssertEqual(map(azertyPeriod, commandShift, context { $0.isEngaged = false }), .releaseSoftFocus)
     }
 
     func testRegenerate() {

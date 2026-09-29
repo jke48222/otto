@@ -112,7 +112,7 @@ final class NotchPointerMachineTests: XCTestCase {
         XCTAssertFalse(h.isOpen, "must not reopen under the resting pointer")
         XCTAssertFalse(h.isHovering)
 
-        h.move(to: CGPoint(x: 756, y: 700))
+        h.move(to: CGPoint(x: 100, y: 100))
         h.move(to: Self.notchCenter)
         h.advance(by: 0.1)
         XCTAssertTrue(h.isOpen, "hover works again after the pointer left once")
@@ -448,6 +448,62 @@ final class NotchPointerMachineTests: XCTestCase {
         XCTAssertTrue(h.softFocusActions.isEmpty)
     }
 
+    func testProgrammaticOpenUnderARestingPointerNeverTakesSoftFocus() {
+        // The unfold after a macOS dialog: the user just clicked Allow where the panel reappears.
+        var h = Harness()
+        h.move(to: CGPoint(x: h.openShapeRect.midX, y: h.openShapeRect.midY))
+        h.openExternally(.programmatic)
+        XCTAssertTrue(h.machine.softFocusAwaitsEntry)
+        XCTAssertNil(h.timers[.softFocus])
+        h.advance(by: 2)
+        XCTAssertTrue(h.softFocusActions.isEmpty, "the user's app keeps the keyboard")
+        XCTAssertTrue(h.isOpen)
+
+        // Drifting within the panel is not coming to it either.
+        h.move(to: CGPoint(x: h.openShapeRect.midX + 40, y: h.openShapeRect.midY))
+        h.advance(by: 2)
+        XCTAssertTrue(h.softFocusActions.isEmpty)
+    }
+
+    func testProgrammaticOpenTakesSoftFocusOnceThePointerLeavesAndComesBack() {
+        var h = Harness()
+        let inside = CGPoint(x: h.openShapeRect.midX, y: h.openShapeRect.midY)
+        h.move(to: inside)
+        h.openExternally(.programmatic)
+        h.move(to: CGPoint(x: 100, y: 100))
+        XCTAssertFalse(h.machine.softFocusAwaitsEntry, "seen outside the shape, away from where it opened")
+        h.move(to: inside)
+        h.advance(by: 0.16)
+        XCTAssertEqual(h.softFocusActions, [.takeSoftFocus])
+    }
+
+    func testStaleClosedSizeAtOpenDoesNotCountAsLeaving() {
+        // Right after an open the UI may still report the closed size: the resting pointer is "outside"
+        // that stale shape without having moved.
+        var h = Harness()
+        let inside = CGPoint(x: h.openShapeRect.midX, y: h.openShapeRect.midY)
+        h.move(to: inside)
+        h.isOpen = true
+        h.openReason = .programmatic
+        h.renderedShapeSize = h.geometry.closedSize
+        h.send(.refresh)
+        h.renderedShapeSize = h.openSize
+        h.send(.refresh)
+        XCTAssertTrue(h.machine.softFocusAwaitsEntry)
+        h.advance(by: 2)
+        XCTAssertTrue(h.softFocusActions.isEmpty)
+    }
+
+    func testOtherUnfocusedOpensAlsoWaitForEntry() {
+        for reason in [NotchViewModel.OpenReason.drag, .voice, .click] {
+            var h = Harness()
+            h.move(to: CGPoint(x: h.openShapeRect.midX, y: h.openShapeRect.midY))
+            h.openExternally(reason)
+            h.advance(by: 2)
+            XCTAssertTrue(h.softFocusActions.isEmpty, "\(reason)")
+        }
+    }
+
     // MARK: - Open on hover (F10)
 
     func testHoverOpenDisabledNeverOpensOnRestButClicksStillOpen() {
@@ -501,6 +557,46 @@ final class NotchPointerMachineTests: XCTestCase {
         h.isPinned = true
         h.advance(by: 1)
         XCTAssertTrue(h.isOpen)
+    }
+
+    func testPinIsSuspendedWhileSystemUIWaits() {
+        // Pinned, folded for System Settings, then reopened by a click on the closed notch (§4.5).
+        var h = Harness()
+        h.isPinned = true
+        h.isWaitingOnSystemUI = true
+        h.openExternally(.click, focus: true)
+
+        // One click in System Settings goes straight back to it.
+        h.move(to: CGPoint(x: 100, y: 100))
+        h.send(.mouseDown(.left, .elsewhere))
+        XCTAssertFalse(h.isOpen)
+        XCTAssertEqual(h.closeReasons, [.outsideClick])
+    }
+
+    func testPinDoesNotKeepAnUnengagedPanelOpenOverSystemUI() {
+        var h = Harness()
+        h.openExternally(.hover)
+        h.isPinned = true
+        h.isWaitingOnSystemUI = true
+        h.move(to: CGPoint(x: 100, y: 100))
+        XCTAssertNotNil(h.timers[.exitClose], "leaving the panel closes it as if it weren't pinned")
+        h.advance(by: 0.35)
+        XCTAssertFalse(h.isOpen)
+        XCTAssertEqual(h.closeReasons, [.pointerExit])
+    }
+
+    func testPinHoldsAgainOnceTheSystemUIIsGone() {
+        var h = Harness()
+        h.openExternally(.hover)
+        h.isPinned = true
+        h.isWaitingOnSystemUI = true
+        h.send(.refresh)
+        h.isWaitingOnSystemUI = false
+        h.move(to: CGPoint(x: 100, y: 100))
+        h.advance(by: 1)
+        h.send(.mouseDown(.left, .elsewhere))
+        XCTAssertTrue(h.isOpen)
+        XCTAssertEqual(h.closeCount, 0)
     }
 
     func testPinnedSoftFocusIsReleasedButThePanelStays() {
@@ -583,7 +679,7 @@ final class NotchPointerMachineTests: XCTestCase {
         XCTAssertFalse(h.ignoresMouseEvents)
 
         // After leaving and coming back, hover opens as usual.
-        h.move(to: CGPoint(x: 756, y: 700))
+        h.move(to: CGPoint(x: 100, y: 100))
         h.move(to: belowNotch)
         XCTAssertTrue(h.isHovering)
         h.advance(by: 0.1)
@@ -619,7 +715,7 @@ final class NotchPointerMachineTests: XCTestCase {
     func testPointerMovingOntoAGrownDropHoverOpens() {
         var h = Harness()
         h.renderedShapeSize = CGSize(width: 380, height: 32 + ReplyPreviewMetrics.dropHeight)
-        h.move(to: CGPoint(x: 756, y: 700))
+        h.move(to: CGPoint(x: 100, y: 100))
         h.move(to: CGPoint(x: 756, y: 935))
         h.advance(by: 0.1)
         XCTAssertEqual(h.opens, [.hover], "a pointer that moves onto the drop opens it")
@@ -641,7 +737,7 @@ final class NotchPointerMachineTests: XCTestCase {
     func testStaleTimerAfterCancelIsIgnored() {
         var h = Harness()
         h.move(to: Self.notchCenter)
-        h.move(to: CGPoint(x: 756, y: 700))
+        h.move(to: CGPoint(x: 100, y: 100))
         h.now += 1
         h.send(.timerFired(.hoverOpen))
         XCTAssertFalse(h.isOpen)
@@ -693,6 +789,7 @@ private struct Harness {
     var secureInput = false
     var hoverOpenEnabled = true
     var isPinned = false
+    var isWaitingOnSystemUI = false
     var openShapeLimit = CGSize(width: NotchMetrics.openWidth, height: NotchMetrics.maxOpenHeight)
 
     var ignoresMouseEvents = true
@@ -735,6 +832,7 @@ private struct Harness {
             isSecureInputActive: { secure },
             hoverOpenEnabled: hoverOpenEnabled,
             isPinned: isPinned,
+            isWaitingOnSystemUI: isWaitingOnSystemUI,
             openShapeLimit: openShapeLimit
         )
     }

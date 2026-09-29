@@ -173,6 +173,79 @@ final class AppCompositionTests: XCTestCase {
         XCTAssertEqual(AppComposition.tapAction(for: state()), .open)
     }
 
+    func testPinIsSuspendedForTheTapWhileSystemUIWaits() {
+        func waiting(open: Bool, engaged: Bool) -> AppComposition.HotKeyState {
+            AppComposition.HotKeyState(isSpeaking: false, isListeningInToggleMode: false, isPinned: true,
+                                       isOpen: open, isEngaged: engaged, isWaitingOnSystemUI: true)
+        }
+        // Open and engaged over System Settings: the tap folds it (keeping the pin) so the next click lands on the
+        // dialog, and it comes back when the wait ends.
+        XCTAssertEqual(AppComposition.tapAction(for: waiting(open: true, engaged: true)), .fold)
+        // Folded (closed but still pinned): it opens as a click on the closed notch would.
+        XCTAssertEqual(AppComposition.tapAction(for: waiting(open: false, engaged: false)), .open)
+        XCTAssertEqual(AppComposition.tapAction(for: waiting(open: true, engaged: false)), .open)
+    }
+
+    func testFoldTapFoldsInsteadOfClosing() {
+        let target = HotKeyTargetFake()
+        target.hotKeyState = AppComposition.HotKeyState(isSpeaking: false, isListeningInToggleMode: false,
+                                                        isPinned: true, isOpen: true, isEngaged: true,
+                                                        isWaitingOnSystemUI: true)
+        AppComposition.performTap(on: target)
+        XCTAssertEqual(target.calls, [.close(.systemUI)], "a fold keeps the pin; a user close would drop it")
+
+        target.calls = []
+        target.hotKeyState.isPinned = false
+        AppComposition.performTap(on: target)
+        XCTAssertEqual(target.calls, [.close(.user)])
+    }
+
+    func testHotKeyStateReportsTheSystemUIWait() async {
+        let vm = composition.viewModel
+        vm.open(reason: .click, focus: true)
+        vm.togglePin()
+        XCTAssertTrue(vm.isPinned)
+        vm.automationPromptInFlight = .automation(bundleID: "com.apple.Music", appName: "Music")
+        let folded = await waitUntil { vm.systemUIWait != nil }
+        XCTAssertTrue(folded)
+        let state = composition.hotKeyState
+        XCTAssertTrue(state.isWaitingOnSystemUI)
+        XCTAssertTrue(state.isPinned, "the fold keeps the pin")
+        vm.automationPromptInFlight = nil
+    }
+
+    // MARK: - Tool executor hooks
+
+    func testExecutorSafetyModeFollowsSettings() {
+        let graph = composition!
+        graph.settings.actionSafetyMode = .safer
+        XCTAssertEqual(graph.executor.safetyMode(), .safer)
+        graph.settings.actionSafetyMode = .fewerPrompts
+        XCTAssertEqual(graph.executor.safetyMode(), .fewerPrompts, "Fewer prompts reaches the executor")
+        graph.settings.actionSafetyMode = .safer
+        XCTAssertEqual(graph.executor.safetyMode(), .safer)
+    }
+
+    func testExecutorEnvironmentFollowsSettings() throws {
+        let graph = composition!
+        let makeEnvironment = try XCTUnwrap(graph.executor.makeEnvironment,
+                                            "the availability pre-check and pre-run re-check need it")
+        let environment = makeEnvironment(.sonnet5)
+        XCTAssertTrue(environment.settings === graph.settings)
+        XCTAssertTrue((environment.permissions as? PermissionsCenter) === graph.permissions)
+        XCTAssertEqual(environment.model, .sonnet5)
+        XCTAssertTrue(environment.isDemo, "the inert graph runs on demo services")
+
+        // AppleScript follows Settings even in demo graphs: a switch turned off while its card waits is seen by
+        // the re-check right before the call runs.
+        let script = try XCTUnwrap(graph.tools.allTools.first { $0.group == .appleScript })
+        graph.settings.actions.enabled = true
+        graph.settings.actions.groups.insert(.appleScript)
+        XCTAssertTrue(script.isAvailable(in: makeEnvironment(.opus5)))
+        graph.settings.actions.enabled = false
+        XCTAssertFalse(script.isAvailable(in: makeEnvironment(.opus5)))
+    }
+
     func testTapPerformsTheTableOnTheTarget() {
         let target = HotKeyTargetFake()
         let cases: [(AppComposition.HotKeyState, HotKeyTargetFake.Call)] = [

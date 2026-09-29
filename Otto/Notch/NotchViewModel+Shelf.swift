@@ -34,12 +34,43 @@ extension NotchViewModel {
             open(reason: .drag, focus: false)
         }
         navigate(to: .shelf)
+        // Loading can outlast the drag-open's drop settle (a Photos export, a promised file from a browser): the
+        // landing hold covers the load too, so a drag-opened notch never folds up before its tiles land. The hold
+        // belongs to this drop and is let go when it lands, fails or times out; one stalled drop never keeps the
+        // notch held after later drops have landed.
+        let dropID = UUID()
+        shelfDropsInFlight.insert(dropID)
+        setHold(.shelfLanding, true)
         let shelf = self.shelf
-        Task {
-            let result = await shelf.add(providers: providers)
-            shelf.beginLandingHold(selecting: result.added)
+        nonisolated(unsafe) let items = providers
+        let timeout = attachmentLoadTimeout
+        let name = Self.shelfDropName(providers)
+        Task { [weak self] in
+            let result = await Self.race({ await shelf.add(providers: items) }, timeout: timeout)
+            if let result {
+                shelf.beginLandingHold(selecting: result.added)
+            } else {
+                self?.transientError = AttachmentError.unreadable(name: name).localizedDescription
+            }
+            self?.shelfDropDidSettle(dropID)
         }
         return true
+    }
+
+    /// The Shelf's own landing hold has taken over (or the load failed or timed out): the drop lets go of its hold,
+    /// and the last one in flight releases `.shelfLanding`. A drop a close already let go of changes nothing.
+    private func shelfDropDidSettle(_ dropID: UUID) {
+        guard shelfDropsInFlight.remove(dropID) != nil else { return }
+        if shelfDropsInFlight.isEmpty {
+            setHold(.shelfLanding, false)
+        }
+    }
+
+    private static func shelfDropName(_ providers: [NSItemProvider]) -> String {
+        guard providers.count == 1, let name = providers.first?.suggestedName, !name.isEmpty else {
+            return "the dropped items"
+        }
+        return name
     }
 
     // MARK: - Shelf page

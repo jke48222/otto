@@ -4,7 +4,7 @@
 //
 //  Turns the global shortcut's press and release into a tap or a hold. With hold-to-talk off a tap acts on
 //  press (no added latency); with it on, a press held for 300 ms or more begins a hold and its release ends
-//  it, and a shorter press is a tap on release.
+//  it, and any other press is a tap on release (a release that beats a late hold check included).
 //
 
 import Foundation
@@ -47,15 +47,19 @@ struct HoldGestureMachine: Equatable {
         return [.holdBegan]
     }
 
-    /// Holding → `[.holdEnded]`; down for less than the threshold → `[.tap]`; otherwise nothing.
-    mutating func release(at now: TimeInterval) -> [Output] {
-        guard let pressedAt else { return [] }
+    /// Holding → `[.holdEnded]`; the press already tapped → nothing; otherwise `[.tap]`.
+    ///
+    /// A release that comes at or past the threshold before the hold check was delivered (the check's task ran
+    /// late because the main actor was busy, or the release was handled first) is still a tap: no voice session
+    /// began, so the press must not vanish. The user gets the open they asked for instead of nothing.
+    mutating func release(at _: TimeInterval) -> [Output] {
+        guard pressedAt != nil else { return [] }
         let wasHolding = isHolding
         let tapped = tappedOnPress
         reset()
         if wasHolding { return [.holdEnded] }
         if tapped { return [] }
-        return now - pressedAt < holdThreshold ? [.tap] : []
+        return [.tap]
     }
 
     mutating func reset() {
@@ -93,6 +97,8 @@ final class GlobalShortcutRouter {
         perform(machine.press(at: Self.now()))
     }
 
+    /// A hold check still pending is cancelled: listening never started, so the release is a tap (see
+    /// `HoldGestureMachine.release`) rather than nothing, or a voice session that would begin and end at once.
     func released() {
         holdCheckTask?.cancel()
         holdCheckTask = nil
@@ -122,4 +128,5 @@ final class GlobalShortcutRouter {
     }
 
     private static func now() -> TimeInterval { ProcessInfo.processInfo.systemUptime }
+
 }

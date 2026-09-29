@@ -14,6 +14,10 @@ enum NotchKeyCommands {
     /// `flags` = deviceIndependentFlagsMask minus capsLock/numericPad/function. nil = let the event through.
     static func command(keyCode: UInt16, characters: String?, flags: NSEvent.ModifierFlags,
                         context: NotchKeyContext) -> NotchKeyCommand? {
+        // Soft focus on the Shelf: keys that act on its tiles only hand the keyboard back (⌦ and Space have no Key).
+        if releasesShelfSoftFocus(keyCode: keyCode, characters: characters, flags: flags, context: context) {
+            return .releaseSoftFocus
+        }
         let modifiers = flags.intersection(chordModifiers)
         guard let key = Key(keyCode: keyCode, characters: characters, shifted: modifiers.contains(.shift)) else {
             return nil
@@ -26,6 +30,10 @@ enum NotchKeyCommands {
 
         // While an input method is composing, bare editing keys belong to it.
         if context.hasMarkedText, modifiers.isEmpty, key.isEditingKey { return nil }
+
+        // A soft-focused Esc was most likely meant for the user's own app: it closes the notch (the key goes back
+        // through close) or stops listening or speaking, and never denies, cancels an edit or cancels an insert.
+        if !context.isEngaged, chord == Chord(.escape) { return softFocusEscapeCommand(context) }
 
         switch chord {
         case Chord(.escape):
@@ -53,7 +61,8 @@ enum NotchKeyCommands {
             return context.route == .history ? .historyDeleteSelected : nil
         case Chord(.delete):
             return context.route == .history && context.historySearchIsEmpty ? .historyDeleteSelected : nil
-        case Chord(.character("."), .command):
+        case Chord(.character("."), .command), Chord(.character("."), [.command, .shift]):
+            // ⌘⇧. too: layouts that type "." only with ⇧ (AZERTY's ⇧;) report it that way.
             return context.isSpeaking ? .stopSpeaking : .stop
         case Chord(.character("r"), .command):
             return context.route == .chat && context.hasUserMessage ? .regenerate : nil
@@ -108,6 +117,21 @@ enum NotchKeyCommands {
         return !nonTypingKeyCodes.contains(Int(keyCode))
     }
 
+    /// Soft focus on the Shelf page: the keys that act on its tiles (⌫ and ⌦ remove, Space opens Quick Look, ⌘C
+    /// copies, ⌘A selects all, ⌥⌘R reveals) only hand the keyboard back. The window controller checks this before
+    /// rule 2, so a key meant for the user's own app neither engages the notch nor changes the Shelf or clipboard.
+    static func releasesShelfSoftFocus(keyCode: UInt16, characters: String?, flags: NSEvent.ModifierFlags,
+                                       context: NotchKeyContext) -> Bool {
+        guard !context.isEngaged, context.route == .shelf else { return false }
+        let modifiers = flags.intersection(chordModifiers)
+        if modifiers.isEmpty, shelfBareReleaseKeyCodes.contains(Int(keyCode)) { return true }
+        // ⌥⌘R types "®" on a US layout; Key falls back to the key code's "r".
+        guard let key = Key(keyCode: keyCode, characters: characters, shifted: modifiers.contains(.shift)) else {
+            return false
+        }
+        return shelfSoftFocusReleaseChords.contains(Chord(key, modifiers))
+    }
+
     enum SoftFocusPromotion: Equatable, Sendable { case none, engageAndPassThrough, engageAndConsume }
 
     /// Rule 2 of §4.4 (pure; the window controller applies it): a typing key while soft-focused and not engaged
@@ -129,6 +153,13 @@ enum NotchKeyCommands {
         if context.hasInsertConfirmation { return .cancelInsertConfirmation }
         if context.isEditing { return .cancelEditing }
         if context.route != .chat { return .backToChat }
+        return .close
+    }
+
+    /// Esc while only soft-focused (interaction.md §2.6): nothing in the panel is discarded.
+    private static func softFocusEscapeCommand(_ context: NotchKeyContext) -> NotchKeyCommand {
+        if context.isListening { return .cancelVoice }
+        if context.isSpeaking { return .stopSpeaking }
         return .close
     }
 
@@ -161,13 +192,23 @@ enum NotchKeyCommands {
 
     private static let chordModifiers: NSEvent.ModifierFlags = [.command, .option, .control, .shift]
 
-    /// ⌘↩ ⌥⌘↩ ⌘R ⌘N ⌘1 ⌘2 ⌘3 ⌘⇧C ⌘. ⌥⌘J ⌘⌫.
+    /// ⌘↩ ⌥⌘↩ ⌘R ⌘N ⌘1 ⌘2 ⌘3 ⌘⇧C ⌘. (and ⌘⇧., see the ⌘. row) ⌥⌘J ⌘⌫.
     private static let softFocusReleaseChords: Set<Chord> = [
         Chord(.returnKey, .command), Chord(.returnKey, [.option, .command]),
         Chord(.character("r"), .command), Chord(.character("n"), .command),
         Chord(.character("1"), .command), Chord(.character("2"), .command), Chord(.character("3"), .command),
         Chord(.character("c"), [.command, .shift]), Chord(.character("."), .command),
+        Chord(.character("."), [.command, .shift]),
         Chord(.character("j"), [.option, .command]), Chord(.delete, .command),
+    ]
+
+    /// Delete, Forward Delete and Space with no modifier (Shelf soft focus only).
+    private static let shelfBareReleaseKeyCodes: Set<Int> = [kVK_Delete, kVK_ForwardDelete, kVK_Space]
+
+    /// ⌘C ⌘A ⌥⌘R (Shelf soft focus only).
+    private static let shelfSoftFocusReleaseChords: Set<Chord> = [
+        Chord(.character("c"), .command), Chord(.character("a"), .command),
+        Chord(.character("r"), [.option, .command]),
     ]
 
     private static let nonTypingKeyCodes: Set<Int> = [

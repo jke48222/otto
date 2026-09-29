@@ -330,6 +330,82 @@ final class NotchViewModelTests: XCTestCase {
         await waitUntil { vm.pendingAttachmentLoads == 0 }
     }
 
+    // MARK: Attachment loads that never finish
+
+    /// A file promise that never arrives: its load handler never calls back.
+    private func stalledFileProvider(named name: String? = nil) -> NSItemProvider {
+        let provider = NSItemProvider()
+        provider.registerItem(forTypeIdentifier: UTType.fileURL.identifier) { _, _, _ in }
+        provider.suggestedName = name
+        return provider
+    }
+
+    private func temporaryTextFile(_ name: String) throws -> URL {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("OttoPendingLoadTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: folder) }
+        let url = folder.appendingPathComponent(name)
+        try "hello".write(to: url, atomically: true, encoding: .utf8)
+        return url
+    }
+
+    func testStalledDropItemTimesOutWithoutHoldingUpTheOthers() async throws {
+        let vm = makeViewModel()
+        vm.attachmentLoadTimeout = .milliseconds(300)
+        vm.open(reason: .click, focus: true)
+        let ready = try temporaryTextFile("ready.txt")
+
+        XCTAssertTrue(vm.handleDrop([stalledFileProvider(named: "Promised.pdf"), NSItemProvider(object: ready as NSURL)]))
+        XCTAssertEqual(vm.pendingAttachmentLoads, 2)
+        await waitUntil { vm.attachments.count == 1 }
+        XCTAssertEqual(vm.attachments.first?.displayName, "ready.txt")
+        XCTAssertEqual(vm.pendingAttachmentLoads, 1, "the ready file landed without waiting for the stalled one")
+        vm.composerText = "What's in these?"
+        XCTAssertFalse(vm.canSend, "still loading")
+
+        await waitUntil { vm.pendingAttachmentLoads == 0 }
+        XCTAssertTrue(vm.canSend, "the deadline frees Send")
+        XCTAssertEqual(vm.transientError, AttachmentError.unreadable(name: "Promised.pdf").localizedDescription)
+    }
+
+    func testDismissingAPendingChipGivesUpItsLoad() async throws {
+        let vm = makeViewModel()
+        vm.open(reason: .click, focus: true)
+        XCTAssertTrue(vm.handleDrop([stalledFileProvider()]))
+        XCTAssertEqual(vm.pendingAttachmentLoads, 1)
+        vm.composerText = "Never mind the file"
+        XCTAssertFalse(vm.canSend)
+
+        let id = try XCTUnwrap(vm.pendingAttachmentLoadIDs.first)
+        vm.dismissPendingAttachmentLoad(id: id)
+        XCTAssertEqual(vm.pendingAttachmentLoads, 0)
+        XCTAssertTrue(vm.canSend)
+        XCTAssertNil(vm.transientError, "dismissed, not failed")
+        vm.dismissPendingAttachmentLoad(id: id)
+        XCTAssertEqual(vm.pendingAttachmentLoads, 0, "a second dismiss is a no-op")
+    }
+
+    func testDroppedItemsKeepTheirOrderWhicheverLoadsFirst() async throws {
+        let vm = makeViewModel()
+        vm.open(reason: .click, focus: true)
+        let first = try temporaryTextFile("first.txt")
+        let second = try temporaryTextFile("second.txt")
+        let slow = NSItemProvider()
+        slow.registerItem(forTypeIdentifier: UTType.fileURL.identifier) { completion, _, _ in
+            DispatchQueue.global().asyncAfter(deadline: .now() + 0.4) {
+                completion?(first as NSURL, nil)
+            }
+        }
+
+        XCTAssertTrue(vm.handleDrop([slow, NSItemProvider(object: second as NSURL)]))
+        await waitUntil { vm.attachments.count == 1 }
+        XCTAssertEqual(vm.attachments.map(\.displayName), ["second.txt"])
+        await waitUntil { vm.attachments.count == 2 }
+        XCTAssertEqual(vm.attachments.map(\.displayName), ["first.txt", "second.txt"])
+        XCTAssertEqual(vm.pendingAttachmentLoads, 0)
+    }
+
     func testCanSendAndSendClearsComposer() async {
         let client = ScriptedLLMClient([reply("Hi!")])
         let vm = makeViewModel(client)
@@ -588,8 +664,134 @@ final class NotchViewModelTests: XCTestCase {
         vm.automationPromptInFlight = nil
         await waitUntil { vm.systemUIWait == nil }
         XCTAssertEqual(vm.openHeightLimit, 800)
-        XCTAssertTrue(vm.isOpen)
+        await waitUntil { vm.isOpen }
         XCTAssertEqual(limits, [800, NotchMetrics.maxOpenHeight, 800])
+    }
+
+    func testBackToBackSystemDialogsFoldOnceAndReopenOnce() async {
+        // The first voice use: macOS asks for the Microphone, then for Speech Recognition right after.
+        let harness = CoreHarness(self)
+        let vm = harness.vm
+        vm.open(reason: .click, focus: true)
+        var presentations: [NotchViewModel.Presentation] = []
+        vm.onPresentationChange = { presentations.append($0) }
+
+        vm.updateSystemUIWait(.systemPrompt(.microphone))
+        XCTAssertTrue(vm.isFolded)
+        XCTAssertFalse(vm.isOpen)
+
+        vm.updateSystemUIWait(nil)
+        XCTAssertFalse(vm.isOpen, "the reopen waits out the grace period")
+        XCTAssertTrue(vm.isFolded)
+        try? await Task.sleep(for: .milliseconds(40))
+        vm.updateSystemUIWait(.systemPrompt(.speechRecognition))
+        try? await Task.sleep(for: vm.unfoldGrace + .milliseconds(150))
+        XCTAssertFalse(vm.isOpen, "the second dialog keeps the notch folded")
+        XCTAssertTrue(vm.isFolded)
+
+        vm.updateSystemUIWait(nil)
+        await waitUntil { vm.isOpen }
+        XCTAssertFalse(vm.isFolded)
+        XCTAssertFalse(vm.isEngaged, "the reopen leaves the keyboard with the user's app")
+        XCTAssertEqual(vm.openReason, .programmatic)
+        XCTAssertEqual(presentations, [.closed, .open], "one fold, one reopen")
+    }
+
+    func testClosingDuringTheUnfoldGraceCancelsTheReopen() async {
+        let harness = CoreHarness(self)
+        let vm = harness.vm
+        vm.open(reason: .click, focus: true)
+        vm.updateSystemUIWait(.systemPrompt(.microphone))
+        vm.updateSystemUIWait(nil)
+        vm.close(.user)
+        XCTAssertFalse(vm.isFolded, "the user took the fold over")
+        try? await Task.sleep(for: vm.unfoldGrace + .milliseconds(150))
+        XCTAssertFalse(vm.isOpen)
+    }
+
+    func testPinDoesNotKeepTheNotchOverSystemUI() async {
+        let harness = CoreHarness(self)
+        let vm = harness.vm
+        vm.open(reason: .hover, focus: false)
+        vm.togglePin()
+        XCTAssertTrue(vm.shouldStayOpen)
+        vm.updateSystemUIWait(.systemSettings(.calendars))
+        XCTAssertTrue(vm.isPinned, "the fold keeps the pin")
+        // The user clicks the closed notch to read the waiting card, then moves back to System Settings.
+        vm.open(reason: .hover, focus: false)
+        XCTAssertFalse(vm.shouldStayOpen, "pin is suspended while macOS shows its own UI")
+        vm.updateSystemUIWait(nil)
+        XCTAssertTrue(vm.shouldStayOpen)
+    }
+
+    func testPinnedNotchDismissedDuringTheWaitFoldsAndComesBackPinned() async {
+        for reason in [CloseReason.outsideClick, .pointerExit] {
+            let harness = CoreHarness(self)
+            let vm = harness.vm
+            vm.open(reason: .click, focus: true)
+            vm.togglePin()
+            vm.updateSystemUIWait(.systemSettings(.accessibility))
+            XCTAssertTrue(vm.isFolded)
+            // The user clicks the folded notch to read "Waiting for System Settings…"…
+            vm.open(reason: .click, focus: true)
+            XCTAssertFalse(vm.isFolded)
+            // …then clicks the switch in System Settings: the pointer machine reports an outside click.
+            vm.close(reason)
+            XCTAssertFalse(vm.isOpen)
+            XCTAssertTrue(vm.isPinned, "\(reason): pin is suspended by the wait, not given up")
+            XCTAssertTrue(vm.isFolded, "\(reason): folded again")
+
+            vm.updateSystemUIWait(nil)
+            await waitUntil { vm.isOpen }
+            XCTAssertTrue(vm.isOpen, "\(reason): back when the permission is granted")
+            XCTAssertTrue(vm.isPinned)
+            XCTAssertFalse(vm.isEngaged, "the reopen leaves the keyboard with the user's app")
+            XCTAssertTrue(vm.shouldStayOpen, "pinned again once nothing waits")
+        }
+    }
+
+    func testEscDuringTheWaitStillUnpins() async {
+        let harness = CoreHarness(self)
+        let vm = harness.vm
+        vm.open(reason: .click, focus: true)
+        vm.togglePin()
+        vm.updateSystemUIWait(.systemSettings(.accessibility))
+        vm.open(reason: .click, focus: true)
+        vm.close(.user)
+        XCTAssertFalse(vm.isPinned)
+        XCTAssertFalse(vm.isFolded)
+        vm.updateSystemUIWait(nil)
+        try? await Task.sleep(for: vm.unfoldGrace + .milliseconds(150))
+        XCTAssertFalse(vm.isOpen)
+    }
+
+    func testUnpinnedOutsideClickDuringTheWaitIsAPlainClose() async {
+        let harness = CoreHarness(self)
+        let vm = harness.vm
+        vm.open(reason: .click, focus: true)
+        vm.updateSystemUIWait(.systemSettings(.accessibility))
+        vm.open(reason: .click, focus: true)
+        vm.close(.outsideClick)
+        XCTAssertFalse(vm.isFolded, "the user took the fold over")
+        vm.updateSystemUIWait(nil)
+        try? await Task.sleep(for: vm.unfoldGrace + .milliseconds(150))
+        XCTAssertFalse(vm.isOpen)
+    }
+
+    func testShortcutFoldDuringTheWaitKeepsThePin() async {
+        let harness = CoreHarness(self)
+        let vm = harness.vm
+        vm.open(reason: .click, focus: true)
+        vm.togglePin()
+        vm.updateSystemUIWait(.systemSettings(.screenRecording))
+        vm.open(reason: .hotkey, focus: true)
+        // What `AppComposition.performTap` does for `.fold`.
+        vm.close(.systemUI)
+        XCTAssertTrue(vm.isPinned)
+        XCTAssertTrue(vm.isFolded)
+        vm.updateSystemUIWait(nil)
+        await waitUntil { vm.isOpen }
+        XCTAssertTrue(vm.isPinned)
     }
 
     func testTheFoldKeepsRoutePinTallModeAndPrompt() async {
@@ -653,12 +855,15 @@ final class NotchViewModelTests: XCTestCase {
             for await _ in gate { break }
             return nil
         }
+        harness.clock.uptime = 300
         vm.captureScreenshot()
         XCTAssertNil(vm.approvalVisibility)
+        harness.clock.uptime = 310
         release.finish()
         await waitUntil { captureEnded }
-        vm.noteApprovalReviewed(callID: "call-1")
-        XCTAssertNotNil(vm.approvalVisibility)
+        // The card stayed on screen through the capture, so its review stands and arming restarts on its own.
+        XCTAssertEqual(vm.approvalVisibility?.callID, "call-1")
+        XCTAssertEqual(vm.approvalVisibility?.sinceUptime, 310, "restamped once the capture ended")
 
         // Close clears it.
         vm.close(.outsideClick)

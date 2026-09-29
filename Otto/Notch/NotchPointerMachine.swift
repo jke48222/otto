@@ -80,6 +80,9 @@ struct NotchPointerMachine {
         var hoverOpenEnabled = true
         /// Pinned open: no exit-close and no outside-click close.
         var isPinned = false
+        /// `vm.systemUIWait != nil` (§4.5): macOS shows its own UI near the notch. Pin is suspended meanwhile, so an
+        /// outside click (or leaving the panel) closes normally and one click goes straight back to that UI.
+        var isWaitingOnSystemUI = false
         /// Largest open shape the UI may draw (tall mode raises the height).
         var openShapeLimit = CGSize(width: NotchMetrics.openWidth, height: NotchMetrics.maxOpenHeight)
     }
@@ -148,6 +151,13 @@ struct NotchPointerMachine {
     private(set) var lastCloseReason: CloseReason?
     /// Where and when the pointer came to rest on the open panel; the soft-focus dwell counts from here.
     private var softRestAnchor: (point: CGPoint, time: TimeInterval)?
+    /// The notch opened for a reason other than hover (the unfold after a system dialog, a drag, voice…): the
+    /// panel came to the pointer, not the pointer to the panel, so a pointer resting where the panel appeared
+    /// (on the Allow button it just clicked) is no sign of wanting to type into Otto. Soft focus stays off
+    /// until the pointer has been seen outside the open shape, away from where it was at the open, and comes
+    /// back in. Holds the pointer location at the open.
+    private(set) var softFocusEntryOrigin: CGPoint?
+    var softFocusAwaitsEntry: Bool { softFocusEntryOrigin != nil }
     /// The closed shape's size and the pointer location at the previous closed-notch event, so a
     /// shape that grows under a stationary pointer (a reply drop) can be told from a pointer that
     /// moved onto the notch.
@@ -230,15 +240,23 @@ struct NotchPointerMachine {
         if context.isOpen {
             cancel(.hoverOpen, &effects)
             restAnchor = nil
-            // For a hover-open the pointer is already resting on the panel: the soft-focus dwell
-            // counts from the moment of opening.
-            softRestAnchor = (context.point, context.now)
+            if context.openReason == .hover {
+                // For a hover-open the pointer came to the notch and is already resting on the panel:
+                // the soft-focus dwell counts from the moment of opening.
+                softRestAnchor = (context.point, context.now)
+                softFocusEntryOrigin = nil
+            } else {
+                // Any other open put the panel under wherever the pointer happened to be.
+                softRestAnchor = nil
+                softFocusEntryOrigin = context.point
+            }
             lastClosedShapeSize = nil
             lastClosedPoint = nil
         } else {
             cancel(.exitClose, &effects)
             cancel(.dropSettle, &effects)
             stopSoftDwell(&effects)
+            softFocusEntryOrigin = nil
             isDragOpenActive = false
             if closedHotZone(context).containsInclusive(context.point) {
                 hoverSuppressedUntilExit = true
@@ -323,7 +341,12 @@ struct NotchPointerMachine {
 
     /// Hover-exit never closes while the view model wants the notch kept open or it is pinned.
     private func keepsOpen(_ context: Context) -> Bool {
-        context.shouldStayOpen || context.isPinned
+        context.shouldStayOpen || isPinEffective(context)
+    }
+
+    /// Pin holds the notch open except while system UI waits (§4.5): then it must not cover that UI.
+    private func isPinEffective(_ context: Context) -> Bool {
+        context.isPinned && !context.isWaitingOnSystemUI
     }
 
     /// A closed shape that grows under a stationary pointer (a reply drop sliding out below the
@@ -349,6 +372,9 @@ struct NotchPointerMachine {
     /// Soft focus (SPEC-v2 §6.2): a pointer resting on the open, unengaged panel takes the keyboard
     /// after `softFocusDwell`; leaving the shape (plus slack) while soft-focused hands it back.
     private mutating func softFocusAction(_ context: Context, overShape: Bool, _ effects: inout [Effect]) -> Effect? {
+        // Tracked whatever the setting or engagement, so turning "Type after hovering" on mid-open or a
+        // resign never skips the entry rule.
+        noteSoftFocusEntry(context, overShape: overShape)
         guard context.softFocusEnabled, !context.isEngaged else {
             stopSoftDwell(&effects)
             return nil
@@ -364,8 +390,9 @@ struct NotchPointerMachine {
             )
             return stillOver ? nil : .releaseSoftFocus
         }
-        // Key for another reason (the file picker just closed, a click engaged and resigned…).
-        guard !context.isPanelKey, overShape, !context.isButtonPressed else {
+        // Key for another reason (the file picker just closed, a click engaged and resigned…), or the
+        // panel opened under a pointer that has not left and come back yet.
+        guard !context.isPanelKey, overShape, !context.isButtonPressed, !softFocusAwaitsEntry else {
             stopSoftDwell(&effects)
             return nil
         }
@@ -378,6 +405,16 @@ struct NotchPointerMachine {
             schedule(.softFocus, at: anchor.time + configuration.softFocusDwell, &effects)
         }
         return nil
+    }
+
+    /// Clears the entry rule once the pointer is seen outside the open shape, away from where it rested
+    /// when the panel appeared. Both conditions matter: right after an open the UI may still report the closed
+    /// size, and a pointer that never moved must not count as having left just because of that stale size.
+    private mutating func noteSoftFocusEntry(_ context: Context, overShape: Bool) {
+        guard let origin = softFocusEntryOrigin, !overShape,
+              origin.distance(to: context.point) > configuration.restTolerance
+        else { return }
+        softFocusEntryOrigin = nil
     }
 
     private mutating func stopSoftDwell(_ effects: inout [Effect]) {
@@ -395,8 +432,9 @@ struct NotchPointerMachine {
         case .elsewhere:
             // A click in another app (or on the menu bar) dismisses the notch. While a menu, the
             // file picker or another system sheet the view model reports is up, the click belongs
-            // to that UI instead. A pinned notch stays: the click only moves the keyboard.
-            guard context.isOpen, !context.isMenuPresented, !context.isPinned else { return nil }
+            // to that UI instead. A pinned notch stays: the click only moves the keyboard (except while system
+            // UI waits, when the click is on its way to that UI).
+            guard context.isOpen, !context.isMenuPresented, !isPinEffective(context) else { return nil }
             lastCloseReason = .outsideClick
             return .close
         case .otherOttoWindow:
@@ -469,7 +507,8 @@ struct NotchPointerMachine {
 
     private mutating func softFocusDwellElapsed(_ context: Context, _ effects: inout [Effect]) -> Effect? {
         guard context.isOpen, context.softFocusEnabled, !context.isEngaged, !context.isSoftFocused,
-              !context.isPanelKey, !context.isButtonPressed, openShapeContains(context.point, context),
+              !context.isPanelKey, !context.isButtonPressed, !softFocusAwaitsEntry,
+              openShapeContains(context.point, context),
               let anchor = softRestAnchor
         else {
             return updatePointer(context, &effects)

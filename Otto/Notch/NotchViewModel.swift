@@ -100,7 +100,14 @@ struct NotchDebugSeed {
     /// Ghost chip for the current browser tab.
     private(set) var suggestedTab: Attachment?
     var isDropTargeted = false
-    private(set) var pendingAttachmentLoads = 0
+    /// Placeholder chips for attachment loads in flight, oldest first. Each settles on its own: when its item
+    /// loads or fails, when `attachmentLoadTimeout` passes, or when the user dismisses its chip.
+    private(set) var pendingAttachmentLoadIDs: [UUID] = []
+    var pendingAttachmentLoads: Int { pendingAttachmentLoadIDs.count }
+    /// How long one dropped, pasted or picked item may take to load. A file promise that never arrives or a read
+    /// from a share that just went away never completes (nor can it be cancelled), so this deadline is what frees
+    /// its placeholder, and with it Send and the hover-exit close.
+    @ObservationIgnored var attachmentLoadTimeout: Duration = .seconds(45)
 
     /// Short user-facing error under the composer; clears itself after `transientErrorLifetime`.
     var transientError: String? {
@@ -144,10 +151,11 @@ struct NotchDebugSeed {
     /// +1 per blocked send, regenerate or voice send; the gate line pulses once for each.
     private(set) var gateAttention = 0
 
-    /// Hover-exit and the drop-settle fold-up never close while true.
+    /// Hover-exit and the drop-settle fold-up never close while true. Pin counts only while no system UI waits
+    /// (§4.5): nothing may keep the notch over System Settings or a macOS dialog.
     var shouldStayOpen: Bool {
-        isEngaged || isMenuPresented || isDropTargeted || pendingAttachmentLoads > 0 || isPinned
-            || !stayOpenHolds.isEmpty
+        isEngaged || isMenuPresented || isDropTargeted || pendingAttachmentLoads > 0
+            || (isPinned && systemUIWait == nil) || !stayOpenHolds.isEmpty
     }
 
     /// The closed notch grows "ears" while a reply streams or an unread reply waits.
@@ -243,6 +251,9 @@ struct NotchDebugSeed {
     @ObservationIgnored var grantedCardLifetime: Duration = .milliseconds(900)
     /// The longest a permission flow waits for a switch in System Settings (the center caps it too).
     @ObservationIgnored var permissionWaitTimeout: Duration = .seconds(180)
+    /// How long a folded notch waits after the system UI closes before it reopens. Back-to-back macOS dialogs (the
+    /// Microphone alert, then Speech Recognition's) then fold it once instead of springing it open between them.
+    @ObservationIgnored var unfoldGrace: Duration = .milliseconds(250)
     @ObservationIgnored var now: () -> Date = { Date() }
     /// System uptime, the clock `NSEvent.timestamp` uses (approval arming vs. the approving key press).
     @ObservationIgnored var uptime: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
@@ -283,6 +294,11 @@ struct NotchDebugSeed {
     @ObservationIgnored private var reviewedApprovalCallID: String?
     @ObservationIgnored private var observedApprovalCallID: String?
     @ObservationIgnored private var notchRequestsInFlight: [Permission: Int] = [:]
+    /// The reopen after a fold, waiting out `unfoldGrace`; a new wait cancels it.
+    @ObservationIgnored private var unfoldTask: Task<Void, Never>?
+    /// Shelf drops still loading (§4.7): each holds the notch open until its tiles land and the landing hold starts,
+    /// or until `attachmentLoadTimeout` gives it up. A close lets go of all of them (it drops the hold too).
+    @ObservationIgnored var shelfDropsInFlight: Set<UUID> = []
 
     // Permission flows (driven by NotchViewModel+Prompts).
     @ObservationIgnored private var permissionContinuation: CheckedContinuation<Bool, Never>?
@@ -292,6 +308,8 @@ struct NotchDebugSeed {
 
     /// File URLs currently loading, so the same file dropped twice is loaded once.
     @ObservationIgnored private var loadingFileURLs: Set<URL> = []
+    /// What dismissing each pending chip does (settles its batch); keyed like `pendingAttachmentLoadIDs`.
+    @ObservationIgnored private var pendingAttachmentLoadDismissals: [UUID: @MainActor () -> Void] = [:]
 
     /// The last app other than Otto that was frontmost (the one the user is working in).
     @ObservationIgnored private var lastExternalApp: NSRunningApplication?
@@ -408,7 +426,11 @@ struct NotchDebugSeed {
 
     func close(_ reason: CloseReason = .programmatic) {
         let wasOpen = isOpen
-        let isFold = reason == .systemUI
+        let isFold = reason == .systemUI || foldsInsteadOfClosing(reason)
+        if isFold, systemUIWait != nil {
+            // Folded out of the way of the macOS UI: reopen (unfocused, still pinned) once it is answered.
+            isFolded = true
+        }
         presentation = .closed
         openReason = nil
         isEngaged = false
@@ -443,6 +465,7 @@ struct NotchDebugSeed {
             if voice.isActive { voice.cancel() }
         }
         manualStayOpenHolds.subtract([.voiceReplyHold, .shelfLanding])
+        shelfDropsInFlight.removeAll()
         voiceReplyHold = false
         landingHoldReleased = shelf.isHoldingLanding
 
@@ -599,6 +622,18 @@ struct NotchDebugSeed {
 
     // MARK: - Fold for system UI
 
+    /// Pin is only *suspended* while system UI waits (§4.5): an outside click or the pointer leaving still takes
+    /// the notch out of the way, so the next click lands on the dialog or System Settings. For a pinned notch the
+    /// user opened during the wait (to see "Waiting for System Settings…"), that close is a fold, not an unpin:
+    /// the pin stays and the notch comes back when the wait ends. Esc, ⌘W and the status item stay user closes.
+    private func foldsInsteadOfClosing(_ reason: CloseReason) -> Bool {
+        guard isPinned, systemUIWait != nil else { return false }
+        switch reason {
+        case .outsideClick, .pointerExit: return true
+        case .user, .programmatic, .systemUI: return false
+        }
+    }
+
     /// Keeps `systemUIWait` current and folds or unfolds the notch around it (§4.5).
     func updateSystemUIWait(_ wait: SystemUIWait?) {
         pruneNotchPermissionRequests()
@@ -610,17 +645,47 @@ struct NotchDebugSeed {
         }
         systemUIWait = wait
 
+        if wait != nil {
+            // Another dialog followed the last one: the notch stays folded through both.
+            cancelPendingUnfold()
+        }
         if previous == nil, let wait, isOpen {
             Self.logger.info("Folding the notch while macOS shows its own UI")
             isFolded = true
             close(.systemUI)
             announce("Otto moved out of the way. \(wait.dropText)")
         } else if wait == nil, isFolded {
-            isFolded = false
-            if !isOpen {
-                Self.logger.info("Reopening the notch after the system UI closed")
-                open(reason: .programmatic, focus: false)
+            scheduleUnfold()
+        }
+        refreshApprovalVisibility()
+    }
+
+    /// The wait ended: reopen (unfocused) after `unfoldGrace`, unless another wait starts or the user opens or closes
+    /// the notch first.
+    private func scheduleUnfold() {
+        cancelPendingUnfold()
+        let grace = unfoldGrace
+        unfoldTask = Task { @MainActor [weak self] in
+            if grace > .zero {
+                do { try await Task.sleep(for: grace) } catch { return }
             }
+            guard !Task.isCancelled, let self else { return }
+            self.unfoldTask = nil
+            self.unfoldIfStillFolded()
+        }
+    }
+
+    private func cancelPendingUnfold() {
+        unfoldTask?.cancel()
+        unfoldTask = nil
+    }
+
+    private func unfoldIfStillFolded() {
+        guard systemUIWait == nil, isFolded else { return }
+        isFolded = false
+        if !isOpen {
+            Self.logger.info("Reopening the notch after the system UI closed")
+            open(reason: .programmatic, focus: false)
         }
         refreshApprovalVisibility()
     }
@@ -828,11 +893,15 @@ struct NotchDebugSeed {
             if approvalVisibility != nil { approvalVisibility = nil }
             return
         }
-        let onScreen = isOpen && !isFolded && route == .chat && !isCapturingScreen
-            && currentPrompt == .approval(approval)
-        guard onScreen else {
-            // Off screen: the card reports its review again when it reappears.
+        let cardIsShown = isOpen && !isFolded && route == .chat && currentPrompt == .approval(approval)
+        guard cardIsShown else {
+            // The card view is gone: it reports its review again when it reappears.
             reviewedApprovalCallID = nil
+            if approvalVisibility != nil { approvalVisibility = nil }
+            return
+        }
+        guard !isCapturingScreen else {
+            // The card survives a capture, so its review stands; arming restarts once the capture ends.
             if approvalVisibility != nil { approvalVisibility = nil }
             return
         }
@@ -1147,29 +1216,29 @@ struct NotchDebugSeed {
         }
         guard !accepted.isEmpty else { return }
 
-        pendingAttachmentLoads += accepted.count
         loadingFileURLs.formUnion(accepted)
 
-        // Load concurrently (AttachmentLoader works off the main actor), but commit in the order the
-        // user picked so the chips appear in that order.
-        let loads = accepted.map { url in
-            (url, Task { try await AttachmentLoader.load(fileURL: url) })
-        }
-        Task { [weak self] in
-            var failures: [Error] = []
-            for (url, load) in loads {
-                let result = await load.result
-                guard let self else { continue }
-                self.pendingAttachmentLoads = max(0, self.pendingAttachmentLoads - 1)
+        // Load concurrently (AttachmentLoader works off the main actor). Each file commits as soon as it is read,
+        // at its place in the order the user picked, so one stalled read never holds up the others.
+        let batch = AttachmentLoadBatch(count: accepted.count)
+        for (index, url) in accepted.enumerated() {
+            startAttachmentLoad({ () async -> Result<Attachment, Error> in
+                do { return .success(try await AttachmentLoader.load(fileURL: url)) } catch { return .failure(error) }
+            }) { [weak self] end in
+                guard let self else { return }
                 self.loadingFileURLs.remove(url)
-                switch result {
-                case .success(let attachment):
-                    self.addAttachment(attachment)
-                case .failure(let error):
-                    failures.append(error)
+                switch end {
+                case .loaded(.success(let attachment)):
+                    self.commit(attachment, in: batch, at: index)
+                case .loaded(.failure(let error)):
+                    batch.failures.append(error)
+                case .timedOut:
+                    batch.failures.append(AttachmentError.unreadable(name: url.lastPathComponent))
+                case .dismissed:
+                    break
                 }
+                self.settle(batch)
             }
-            self?.report(failures)
         }
     }
 
@@ -1276,6 +1345,7 @@ struct NotchDebugSeed {
             }
             guard let self else { return }
             self.isCapturingScreen = false
+            self.refreshApprovalVisibility()
             self.onEndScreenCapture?()
             switch result {
             case .success(let attachment?):
@@ -1283,7 +1353,7 @@ struct NotchDebugSeed {
             case .success(nil):
                 break // The user cancelled the selection.
             case .failure(let error):
-                Self.logger.error("Screen capture failed: \(error.localizedDescription, privacy: .public)")
+                Self.logger.error("Screen capture failed: \(LoggedError(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
                 self.transientError = error.localizedDescription
             }
             self.open(reason: .programmatic, focus: true)
@@ -1314,21 +1384,30 @@ struct NotchDebugSeed {
         // Pasted images are each read and encoded, so only load as many as there is room for (at
         // least one, so a full notch still says why nothing was added).
         let limit = max(1, remainingCapacity)
-        if reservesPlaceholder {
-            pendingAttachmentLoads += 1
-        }
-        Task { [weak self] in
-            let (content, errors) = await AttachmentLoader.load(pasteboard: pasteboard, limit: limit)
-            guard let self else { return }
-            if reservesPlaceholder {
-                self.pendingAttachmentLoads = max(0, self.pendingAttachmentLoads - 1)
-            }
+        nonisolated(unsafe) let source = pasteboard
+        let finish: @MainActor (NotchViewModel, PasteboardContent, [Error]) -> Void = { vm, content, errors in
             let receivedAnything = !content.attachments.isEmpty
                 || !(content.inlineText ?? "").isEmpty || !errors.isEmpty
             if receivedAnything {
-                self.integrate(content, errors: errors)
+                vm.integrate(content, errors: errors)
             } else {
-                self.transientError = "There's nothing on the clipboard to attach."
+                vm.transientError = "There's nothing on the clipboard to attach."
+            }
+        }
+        guard reservesPlaceholder else {
+            Task { [weak self] in
+                let (content, errors) = await AttachmentLoader.load(pasteboard: source, limit: limit)
+                guard let self else { return }
+                finish(self, content, errors)
+            }
+            return
+        }
+        startAttachmentLoad({ await AttachmentLoader.load(pasteboard: source, limit: limit) }) { [weak self] end in
+            guard let self else { return }
+            switch end {
+            case .loaded(let (content, errors)): finish(self, content, errors)
+            case .timedOut: self.report([AttachmentError.unreadable(name: "the clipboard")])
+            case .dismissed: break
             }
         }
     }
@@ -1355,15 +1434,92 @@ struct NotchDebugSeed {
             open(reason: .drag, focus: true)
         }
 
-        let placeholders = loadable.count
-        pendingAttachmentLoads += placeholders
-        Task { [weak self] in
-            let (content, errors) = await AttachmentLoader.load(providers: loadable)
-            guard let self else { return }
-            self.pendingAttachmentLoads = max(0, self.pendingAttachmentLoads - placeholders)
-            self.integrate(content, errors: errors)
+        // One load (and one placeholder chip) per item, each with its own deadline: a promised file that never
+        // arrives must not hold up the others, block Send, or keep the notch open.
+        let batch = AttachmentLoadBatch(count: loadable.count)
+        for (index, provider) in loadable.enumerated() {
+            let name = provider.suggestedName.flatMap { $0.isEmpty ? nil : $0 } ?? "the dropped item"
+            nonisolated(unsafe) let item = provider
+            startAttachmentLoad({ await AttachmentLoader.load(providers: [item]) }) { [weak self] end in
+                guard let self else { return }
+                switch end {
+                case .loaded(let (content, errors)):
+                    for attachment in content.attachments {
+                        self.commit(attachment, in: batch, at: index)
+                    }
+                    if let text = content.inlineText, !text.isEmpty {
+                        self.appendToComposer(text)
+                        self.focusRequest += 1
+                    }
+                    batch.failures += errors
+                case .timedOut:
+                    batch.failures.append(AttachmentError.unreadable(name: name))
+                case .dismissed:
+                    break
+                }
+                self.settle(batch)
+            }
         }
         return true
+    }
+
+    // MARK: - Pending attachment loads
+
+    /// The chip's ✕ on a placeholder: gives up that load (its result, if it ever comes, is dropped).
+    func dismissPendingAttachmentLoad(id: UUID) {
+        guard let index = pendingAttachmentLoadIDs.firstIndex(of: id) else { return }
+        pendingAttachmentLoadIDs.remove(at: index)
+        pendingAttachmentLoadDismissals.removeValue(forKey: id)?()
+    }
+
+    enum PendingLoadEnd<Value> {
+        case loaded(Value)
+        case timedOut
+        case dismissed
+    }
+
+    /// Reserves a placeholder chip and runs `load` raced against `attachmentLoadTimeout`. `settle` runs once on the
+    /// main actor: with the value, `.timedOut`, or `.dismissed` (from `dismissPendingAttachmentLoad(id:)`).
+    private func startAttachmentLoad<Value: Sendable>(
+        _ load: @escaping @Sendable () async -> Value,
+        settle: @escaping @MainActor (PendingLoadEnd<Value>) -> Void
+    ) {
+        let id = UUID()
+        pendingAttachmentLoadIDs.append(id)
+        pendingAttachmentLoadDismissals[id] = { settle(.dismissed) }
+        let timeout = attachmentLoadTimeout
+        Task { [weak self] in
+            let value = await Self.race(load, timeout: timeout)
+            guard let self, let index = self.pendingAttachmentLoadIDs.firstIndex(of: id) else { return }
+            self.pendingAttachmentLoadIDs.remove(at: index)
+            self.pendingAttachmentLoadDismissals[id] = nil
+            settle(value.map { .loaded($0) } ?? .timedOut)
+        }
+    }
+
+    /// `work`'s value, or nil once `timeout` passes first. Work that never finishes (an NSItemProvider completion
+    /// that never fires) is left behind rather than awaited: a task group would wait for it forever.
+    nonisolated static func race<Value: Sendable>(_ work: @escaping @Sendable () async -> Value,
+                                                  timeout: Duration) async -> Value? {
+        await ContextDeadline.race(fallback: nil as Value?, deadline: timeout) { resolve in
+            Task.detached { resolve(await work()) }
+        }
+    }
+
+    /// Inserts one loaded attachment of `batch` before any attachment of an item that comes after it, so chips
+    /// keep the order the user picked or dropped them in whatever order the loads finish.
+    private func commit(_ attachment: Attachment, in batch: AttachmentLoadBatch, at index: Int) {
+        if insert(attachment, beforeAnyOf: batch.committedIDs(after: index)) == .added {
+            batch.committed[index, default: []].append(attachment.id)
+        }
+    }
+
+    /// One item of `batch` settled; the last one reports the batch's failures together.
+    private func settle(_ batch: AttachmentLoadBatch) {
+        batch.remaining -= 1
+        if batch.remaining == 0 {
+            report(batch.failures)
+        }
     }
 
     // MARK: - Snapshots
@@ -1421,8 +1577,9 @@ struct NotchDebugSeed {
         max(0, Self.maxAttachments - attachments.count - pendingAttachmentLoads)
     }
 
+    /// `beforeAnyOf`: the new chip goes in front of the first of these already attached (else at the end).
     @discardableResult
-    func insert(_ attachment: Attachment) -> AttachmentInsertOutcome {
+    func insert(_ attachment: Attachment, beforeAnyOf later: Set<UUID> = []) -> AttachmentInsertOutcome {
         if let url = attachment.sourceURL, attachments.contains(where: { Self.isSameSource($0.sourceURL, url) }) {
             return .duplicate
         }
@@ -1436,7 +1593,11 @@ struct NotchDebugSeed {
             transientError = problem.localizedDescription
             return .rejected
         }
-        attachments.append(attachment)
+        if !later.isEmpty, let position = attachments.firstIndex(where: { later.contains($0.id) }) {
+            attachments.insert(attachment, at: position)
+        } else {
+            attachments.append(attachment)
+        }
         if let suggestion = suggestedTab, Self.isSameSource(suggestion.sourceURL, attachment.sourceURL) {
             suggestedTab = nil
         }
@@ -1723,5 +1884,21 @@ private final class NotificationObservation {
 
     deinit {
         center.removeObserver(token)
+    }
+}
+
+/// One addFiles/drop batch: its items settle independently; failures are reported together once all have.
+@MainActor final class AttachmentLoadBatch {
+    var remaining: Int
+    var failures: [Error] = []
+    /// Attachment IDs committed per item, by the item's position in the batch.
+    var committed: [Int: [UUID]] = [:]
+
+    init(count: Int) {
+        remaining = count
+    }
+
+    func committedIDs(after index: Int) -> Set<UUID> {
+        Set(committed.filter { $0.key > index }.values.joined())
     }
 }

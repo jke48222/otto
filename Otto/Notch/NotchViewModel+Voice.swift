@@ -59,6 +59,30 @@ extension NotchViewModel {
         voice.finish(send: send)
     }
 
+    /// Rule 3 of §4.4, a typing key while listening: the words heard so far go into the composer now and the key
+    /// follows them. The session ends at once instead of waiting for the recognizer's final result, which would
+    /// otherwise land after whatever was typed meanwhile. `insertAtCaret` puts the text at the composer's caret (the
+    /// window controller's field editor) and returns false when it can't; the text is then appended. Returns false
+    /// when no session was running.
+    @discardableResult
+    func endVoiceForTyping(insertAtCaret: (String) -> Bool = { _ in false }) -> Bool {
+        guard voice.isActive else { return false }
+        let heard = voice.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Reports onFinished(nil, false), which handleVoiceResult ignores: nothing arrives later.
+        voice.cancel()
+        guard !heard.isEmpty else { return true }
+        if !insertAtCaret(heard) {
+            appendVoiceText(heard)
+        }
+        return true
+    }
+
+    /// What goes in at the caret for `transcript`: a space first when it would otherwise run into a word.
+    static func voiceTextForCaret(_ transcript: String, after preceding: Character?) -> String {
+        guard let preceding, !preceding.isWhitespace else { return transcript }
+        return " " + transcript
+    }
+
     /// Esc, ⌘.: discards what was heard.
     func cancelVoice() {
         voice.cancel()

@@ -11,6 +11,7 @@
 
 import AppKit
 import Carbon.HIToolbox
+import UniformTypeIdentifiers
 import XCTest
 @testable import Otto
 
@@ -447,6 +448,53 @@ final class NotchViewModelFeatureTests: XCTestCase {
         XCTAssertFalse(vm.voiceReplyHold)
     }
 
+    func testTypingWhileListeningPutsTheSpokenWordsBeforeTheKeys() async {
+        let harness = NotchFeatureHarness(self)
+        let vm = harness.vm
+        await harness.enableVoice()
+        harness.engines.script = [(.zero, "what's the weather", 0.5)]
+        vm.open(reason: .click, focus: true)
+        vm.beginVoice(.toggle(.micButton))
+        await notchWaitUntil { vm.voice.transcript == "what's the weather" }
+
+        // Rule 3: the transcript lands now, not after the recognizer's final result.
+        XCTAssertTrue(vm.endVoiceForTyping())
+        XCTAssertEqual(vm.voice.phase, .idle, "no final result is pending that could land after the typed keys")
+        XCTAssertEqual(vm.composerText, "what's the weather")
+
+        // The key and the ones after it reach the composer, after the words.
+        vm.composerText += " in Paris"
+        await harness.advanceVoice(.seconds(2))
+        try? await Task.sleep(for: .milliseconds(30))
+        XCTAssertEqual(vm.composerText, "what's the weather in Paris")
+        XCTAssertNil(harness.chat.lastUserMessage, "typing never sends")
+        XCTAssertFalse(vm.endVoiceForTyping(), "nothing to end any more")
+    }
+
+    func testTypingWhileListeningInsertsAtTheCaretWhenTheComposerCan() async {
+        let harness = NotchFeatureHarness(self)
+        let vm = harness.vm
+        await harness.enableVoice()
+        harness.engines.script = [(.zero, "tomorrow at noon", 0.5)]
+        vm.open(reason: .click, focus: true)
+        vm.composerText = "Lunch with Sam"
+        vm.beginVoice(.toggle(.micButton))
+        await notchWaitUntil { !vm.voice.transcript.isEmpty }
+
+        var inserted: [String] = []
+        XCTAssertTrue(vm.endVoiceForTyping { inserted.append($0); return true })
+        XCTAssertEqual(inserted, ["tomorrow at noon"])
+        XCTAssertEqual(vm.composerText, "Lunch with Sam", "the field editor put it at the caret; no second copy")
+        XCTAssertEqual(vm.voice.phase, .idle)
+    }
+
+    func testVoiceTextForTheCaretKeepsWordsApart() {
+        XCTAssertEqual(NotchViewModel.voiceTextForCaret("in Paris", after: nil), "in Paris")
+        XCTAssertEqual(NotchViewModel.voiceTextForCaret("in Paris", after: " "), "in Paris")
+        XCTAssertEqual(NotchViewModel.voiceTextForCaret("in Paris", after: "\n"), "in Paris")
+        XCTAssertEqual(NotchViewModel.voiceTextForCaret("in Paris", after: "r"), " in Paris")
+    }
+
     func testEmptyTranscriptShowsANoticeAndSendsNothing() async {
         let harness = NotchFeatureHarness(self)
         let vm = harness.vm
@@ -769,6 +817,83 @@ final class NotchViewModelFeatureTests: XCTestCase {
         XCTAssertEqual(vm.shelf.store.items.first?.name, "photo-notes.txt")
         await notchWaitUntil { vm.stayOpenHolds.contains(.shelfLanding) }
         XCTAssertTrue(vm.attachments.isEmpty)
+    }
+
+    func testSlowShelfDropHoldsADragOpenedNotchUntilTheTilesLand() async throws {
+        // A Photos export or a browser's promised file: loading outlasts the drag-open's 0.25 s drop settle.
+        let harness = NotchFeatureHarness(self)
+        let vm = harness.vm
+        let file = try harness.temporaryFile("export.txt", testCase: self)
+        vm.shelf.landingHoldDuration = .milliseconds(100)
+        vm.open(reason: .drag, focus: false)
+        XCTAssertFalse(vm.shouldStayOpen)
+
+        let provider = NSItemProvider()
+        provider.registerItem(forTypeIdentifier: UTType.fileURL.identifier) { completion, _, _ in
+            DispatchQueue.global().asyncAfter(deadline: .now() + 0.5) {
+                completion?(file as NSURL, nil)
+            }
+        }
+        XCTAssertTrue(vm.performDrop([provider], zone: .shelf))
+        XCTAssertTrue(vm.shouldStayOpen, "held from the drop itself, before anything loaded")
+        XCTAssertTrue(vm.stayOpenHolds.contains(.shelfLanding))
+
+        // Past the drop settle, still loading: the machine's .dropSettle refresh sees shouldStayOpen and keeps it.
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertTrue(vm.shelf.store.items.isEmpty, "still loading")
+        XCTAssertTrue(vm.shouldStayOpen)
+
+        await notchWaitUntil { !vm.shelf.store.items.isEmpty }
+        XCTAssertTrue(vm.isOpen)
+        // The Shelf's own landing hold took over; once it ends nothing holds the notch any more.
+        await notchWaitUntil { !vm.shouldStayOpen }
+        XCTAssertTrue(vm.stayOpenHolds.isEmpty)
+        XCTAssertTrue(vm.shelfDropsInFlight.isEmpty)
+    }
+
+    func testStalledShelfDropLetsGoOfTheNotchAfterTheTimeout() async throws {
+        let harness = NotchFeatureHarness(self)
+        let vm = harness.vm
+        vm.attachmentLoadTimeout = .milliseconds(300)
+        vm.shelf.landingHoldDuration = .milliseconds(100)
+        vm.open(reason: .drag, focus: false)
+
+        // A promised file that never arrives, then an ordinary drop that lands at once.
+        let stalled = NSItemProvider()
+        stalled.registerItem(forTypeIdentifier: UTType.fileURL.identifier) { _, _, _ in }
+        XCTAssertTrue(vm.performDrop([stalled], zone: .shelf))
+        let file = try harness.temporaryFile("later.txt", testCase: self)
+        XCTAssertTrue(vm.performDrop([NSItemProvider(object: file as NSURL)], zone: .shelf))
+        XCTAssertEqual(vm.shelfDropsInFlight.count, 2)
+
+        await notchWaitUntil { !vm.shelf.store.items.isEmpty }
+        await notchWaitUntil { vm.shelfDropsInFlight.isEmpty }
+        await notchWaitUntil { !vm.shouldStayOpen }
+        XCTAssertTrue(vm.stayOpenHolds.isEmpty, "no drop keeps the notch held after the tiles landed")
+        XCTAssertTrue(vm.isOpen)
+    }
+
+    func testClosingLetsGoOfShelfDropsInFlight() async throws {
+        let harness = NotchFeatureHarness(self)
+        let vm = harness.vm
+        vm.shelf.landingHoldDuration = .milliseconds(100)
+        vm.open(reason: .drag, focus: false)
+        let stalled = NSItemProvider()
+        stalled.registerItem(forTypeIdentifier: UTType.fileURL.identifier) { _, _, _ in }
+        XCTAssertTrue(vm.performDrop([stalled], zone: .shelf))
+        XCTAssertTrue(vm.stayOpenHolds.contains(.shelfLanding))
+
+        vm.close(.user)
+        XCTAssertTrue(vm.shelfDropsInFlight.isEmpty)
+        XCTAssertFalse(vm.stayOpenHolds.contains(.shelfLanding))
+
+        // The next drop's hold is its own: it ends once its tiles land.
+        vm.open(reason: .drag, focus: false)
+        let file = try harness.temporaryFile("next.txt", testCase: self)
+        XCTAssertTrue(vm.performDrop([NSItemProvider(object: file as NSURL)], zone: .shelf))
+        await notchWaitUntil { !vm.shelf.store.items.isEmpty }
+        await notchWaitUntil { !vm.shouldStayOpen }
+        XCTAssertTrue(vm.stayOpenHolds.isEmpty)
     }
 
     func testAskDropAttachesOnChatAndShelfOffRoutesToAsk() async throws {

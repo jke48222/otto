@@ -42,10 +42,19 @@ final class HoldGestureMachineTests: XCTestCase {
         XCTAssertEqual(machine.holdCheck(at: 10.31), [.holdBegan])
     }
 
-    func testReleaseAfterTheThresholdBeforeTheCheckRanDoesNothing() {
+    func testReleaseJustPastTheThresholdBeforeTheCheckRanIsATap() {
+        // The hold check was coalesced or the main actor was busy: the release got there first.
+        var machine = HoldGestureMachine(holdEnabled: true)
+        _ = machine.press(at: 0)
+        XCTAssertEqual(machine.release(at: 0.31), [.tap], "listening never began, so the press still opens")
+        XCTAssertEqual(machine.holdCheck(at: 0.31), [], "the late check finds the key up")
+        XCTAssertNil(machine.pressedAt)
+    }
+
+    func testLongReleaseBeforeTheCheckRanIsATap() {
         var machine = HoldGestureMachine(holdEnabled: true)
         _ = machine.press(at: 10)
-        XCTAssertEqual(machine.release(at: 10.4), [])
+        XCTAssertEqual(machine.release(at: 10.4), [.tap])
         XCTAssertEqual(machine.holdCheck(at: 10.4), [])
     }
 
