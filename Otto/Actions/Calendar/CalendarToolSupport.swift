@@ -19,6 +19,24 @@ struct CalendarToolClock: Sendable {
     static let live = CalendarToolClock(now: { Date() }, timeZone: { TimeZone.current }, locale: .autoupdatingCurrent)
 }
 
+/// Identifiers a create tool's Undo already removed in this process. Undo checks it before the title-and-date
+/// fallback, so a second Undo of the same item (or of an item whose fallback match was removed) reports "already
+/// removed" instead of searching again and deleting a lookalike the user made.
+final class UndoneCalendarItems: @unchecked Sendable {
+    private let lock = NSLock()
+    private var identifiers: Set<String> = []
+
+    init() {}
+
+    func contains(_ identifier: String) -> Bool {
+        lock.withLock { identifiers.contains(identifier) }
+    }
+
+    func insert(_ identifiers: String...) {
+        lock.withLock { self.identifiers.formUnion(identifiers) }
+    }
+}
+
 enum CalendarToolSupport {
     static let logger = Logger(subsystem: "com.jalenedusei.otto", category: "Actions")
 

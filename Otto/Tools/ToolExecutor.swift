@@ -17,6 +17,8 @@ import os
     /// Declines in earlier rounds of a reply after which later card-requiring calls are declined without asking.
     /// (The approval timeout is `ToolLimits.approvalTimeout`.)
     static let maxDeclinesBeforeFatigue = 2
+    /// Undo notes kept waiting for their conversation's next message; the oldest go first.
+    static let maxQueuedContextNotes = 50
 
     /// The dock's current tool-loop prompt.
     private(set) var pendingApproval: PendingApproval?
@@ -29,7 +31,8 @@ import os
     @ObservationIgnored var makeEnvironment: (@MainActor (ModelOption) -> ToolEnvironment)?
 
     /// Settings → Actions safety policy; AppComposition: `{ settings.actionSafetyMode }`. `.fewerPrompts` lets an
-    /// "Always allow" shortcut run after outside content and returns no web pause.
+    /// "Always allow" shortcut run after web content (not after a fresh file, image, clipboard, browser tab or
+    /// tool output) and returns no web pause.
     @ObservationIgnored var safetyMode: @MainActor () -> ActionSafetyMode = { .safer }
 
     @ObservationIgnored private let permissions: PermissionProviding
@@ -41,9 +44,18 @@ import os
 
     @ObservationIgnored private var declines = 0
     @ObservationIgnored private var declinesBeforeRound = 0
-    @ObservationIgnored private var contextNotes: [String] = []
-    /// Every tool seen in a round, by name (undo can arrive after the turn ended).
+    /// Per-reply counters as each reply's last round left them, so Retry continues a failed reply with its
+    /// spent limits and declines (`resumeTurn`). Only the latest `maxRememberedTurns` replies are kept.
+    @ObservationIgnored private var turnCounters: [(messageID: UUID, counters: TurnCounters)] = []
+    static let maxRememberedTurns = 20
+    /// Undo notes, each with the assistant message whose action was undone (so it only reaches that conversation).
+    @ObservationIgnored private var contextNotes: [(messageID: UUID, text: String)] = []
+    /// Every tool Undo may resolve a token's tool from, by name: those registered (`registerUndoTools`, the
+    /// whole registry, so an action restored from History can be undone after a relaunch) and those seen in a round.
     @ObservationIgnored private var knownTools: [String: any OttoTool] = [:]
+    /// Calls whose undo is running: a second click (a double-click) must not undo again, because a second
+    /// `tool.undo` finds the item gone and falls back to deleting a same-looking one.
+    @ObservationIgnored private var undoInFlight: Set<String> = []
     @ObservationIgnored private var approvalWait: ApprovalWait?
     @ObservationIgnored private var runs: [String: CallRun] = [:]
     @ObservationIgnored private var active: ActiveRound?
@@ -70,13 +82,29 @@ import os
         declinesBeforeRound = 0
     }
 
+    func resumeTurn(messageID: UUID, calls: [ToolCall]) {
+        let counters = turnCounters.last(where: { $0.messageID == messageID })?.counters
+            ?? TurnCounters(recountingFrom: calls)
+        limiter.resumeTurn(runs: counters.runs)
+        declines = counters.declines
+        declinesBeforeRound = counters.declines
+    }
+
+    func registerUndoTools(_ tools: [any OttoTool]) {
+        for tool in tools where knownTools[tool.name] == nil { knownTools[tool.name] = tool }
+    }
+
     func execute(_ round: ToolRound, store: ToolCallStore) async throws -> ToolRoundOutcome {
         try Task.checkCancellation()
+        for (name, tool) in round.knownTools where knownTools[name] == nil { knownTools[name] = tool }
         for (name, tool) in round.tools { knownTools[name] = tool }
         let state = ActiveRound(round: round, store: store)
         active = state
         declinesBeforeRound = declines
-        defer { if active === state { active = nil } }
+        defer {
+            if active === state { active = nil }
+            rememberCounters(for: round.messageID)
+        }
 
         do {
             let outcome = try await withTaskCancellationHandler {
@@ -159,23 +187,35 @@ import os
     }
 
     func undo(callID: String, messageID: UUID, store: ToolCallStore) async -> String? {
+        // Single flight: a repeat click while this call's undo runs is ignored (the first one reports the outcome).
+        guard !undoInFlight.contains(callID) else { return nil }
         guard let call = store.toolCall(callID, in: messageID) else { return "Otto no longer has this action" }
         guard call.status == .succeeded, let token = call.undo else { return "there's nothing to undo" }
         guard now() < token.expires else { return "the time to undo it has passed" }
         guard let tool = knownTools[token.toolName] else { return "this action can't be undone" }
+        undoInFlight.insert(callID)
+        defer { undoInFlight.remove(callID) }
+        // Hide [Undo] while it runs (the card shows it only with a token); a failed undo gives the token back.
+        store.updateToolCall(callID, in: messageID) { $0.undo = nil }
         do {
             try await tool.undo(token)
         } catch let error as ToolError {
+            store.updateToolCall(callID, in: messageID) { $0.undo = token }
             return Self.reasonText(error.userMessage)
         } catch {
+            store.updateToolCall(callID, in: messageID) { $0.undo = token }
             Self.logger.error("Undo failed: \(error.localizedDescription, privacy: .private)")
             return "it didn't work"
         }
         store.updateToolCall(callID, in: messageID) { call in
             call.status = .undone
             call.presentation.doneTitle = token.doneTitle
+            call.undo = token
         }
-        contextNotes.append("[Note: the user undid an action — \(token.noteForClaude).]")
+        contextNotes.append((messageID, "[Note: the user undid an action — \(token.noteForClaude).]"))
+        if contextNotes.count > Self.maxQueuedContextNotes {
+            contextNotes.removeFirst(contextNotes.count - Self.maxQueuedContextNotes)
+        }
         Self.logger.info("Undid \(token.toolName, privacy: .public)")
         return nil
     }
@@ -187,16 +227,65 @@ import os
 
     func consumeContextNotes() -> [String] {
         defer { contextNotes = [] }
-        return contextNotes
+        return contextNotes.map(\.text)
+    }
+
+    func consumeContextNotes(forMessages messageIDs: Set<UUID>) -> [String] {
+        let taken = contextNotes.filter { messageIDs.contains($0.messageID) }
+        contextNotes.removeAll { messageIDs.contains($0.messageID) }
+        return taken.map(\.text)
+    }
+
+    // MARK: - Per-reply counters
+
+    /// What a reply has spent of its per-reply allowances.
+    struct TurnCounters: Equatable {
+        var runs: [String: Int] = [:]
+        var declines = 0
+
+        init(runs: [String: Int] = [:], declines: Int = 0) {
+            self.runs = runs
+            self.declines = declines
+        }
+
+        /// The counters a reply's calls imply, when this process never ran it (a History restore): every call that
+        /// got past its checks counts as a run (conservatively, a failed one too), and every call the user declined
+        /// on its card counts as a decline.
+        init(recountingFrom calls: [ToolCall]) {
+            for call in calls {
+                switch call.status {
+                case .succeeded, .undone, .failed, .running, .waitingForSystem:
+                    runs[call.name, default: 0] += 1
+                case .denied:
+                    let text = call.result?.parts.first.flatMap { part -> String? in
+                        if case .text(let text) = part { return text }
+                        return nil
+                    } ?? ""
+                    if text.hasPrefix(Copy.declinedPrefix) { declines += 1 }
+                default:
+                    break
+                }
+            }
+        }
+    }
+
+    private func rememberCounters(for messageID: UUID) {
+        turnCounters.removeAll { $0.messageID == messageID }
+        turnCounters.append((messageID, TurnCounters(runs: limiter.turnRuns, declines: declines)))
+        if turnCounters.count > Self.maxRememberedTurns {
+            turnCounters.removeFirst(turnCounters.count - Self.maxRememberedTurns)
+        }
     }
 
     // MARK: - The round
 
     private func executeRound(_ round: ToolRound, store: ToolCallStore, state: ActiveRound) async throws -> ToolRoundOutcome {
-        let untrusted = round.tools.values.filter(\.producesUntrustedOutput)
+        // Earlier results of tools not offered this turn are still in the transcript, so they are classified too.
+        let classifying = round.classifyingTools
+        let untrusted = classifying.values.filter(\.producesUntrustedOutput)
             .reduce(into: [String: ProvenanceSource.Severity]()) { $0[$1.name] = Self.severity(of: $1) }
         let trust = TrustLedger.assess(transcript: round.transcript, untrustedTools: untrusted)
-        let privateSources = round.tools.compactMapValues(\.privateDataSource)
+        let privateSources = classifying.compactMapValues(\.privateDataSource)
         let privates = EchoDetector.privateStrings(in: round.transcript, sources: privateSources)
 
         var seen = Set<String>()
@@ -284,11 +373,13 @@ import os
             return nil
         }
         // c. Invalid JSON.
-        guard let input = call.input else {
+        guard let rawInput = call.input else {
             finish(.failed("Couldn't read the request"), Copy.invalidJSON(call.invalidInput ?? ""),
                    decision: "auto", outcome: "error:invalid_input", tool: tool)
             return nil
         }
+        // Strict schemas make optional keys nullable: an unused one arrives as null and counts as absent.
+        let input = ToolSchema.removingNullOptionals(rawInput, schema: tool.inputSchema)
         // d. Schema.
         if let problem = JSONSchemaValidator.validate(input, against: tool.inputSchema) {
             finish(.failed("Invalid request"), Copy.invalidInput(problem), decision: "auto",
@@ -307,6 +398,7 @@ import os
         let caution = trust.caution || echo != nil
         let provenance = trust.primaryFreshSource.map { "after \($0.phrase)" }
         store.updateToolCall(call.id, in: messageID) { updated in
+            updated.input = input
             updated.presentation = presentation
             updated.provenance = provenance
             updated.caution = caution
@@ -368,12 +460,17 @@ import os
     }
 
     /// §5.4 k: a remembered "Always allow" runs without a card only with no echo, input that is the user's own words,
-    /// and (in the safer mode) no fresh medium/high content and no web page or search anywhere in context.
+    /// and no fresh medium/high content. The safer mode also needs no web page or search anywhere in context; fewer
+    /// prompts drops only the web conditions, so a fresh file, image, clipboard, browser tab or tool output still
+    /// asks.
     private func mayHonor(_ scope: ApprovalScope?, tool: any OttoTool, input: JSONValue, trust: TrustAssessment,
                           echo: EchoFinding?) -> Bool {
         guard let scope, approvals.isRemembered(scope), echo == nil, !tool.inheritsOttoPermissions else { return false }
-        if safetyMode() == .safer {
+        switch safetyMode() {
+        case .safer:
             guard !trust.caution, !trust.hasHighSource else { return false }
+        case .fewerPrompts:
+            guard !trust.hasFreshNonWebCaution else { return false }
         }
         let userText = Self.normalizedForComparison(trust.latestUserText)
         return tool.egressStrings(in: input)
@@ -753,6 +850,7 @@ import os
     private static func severity(of tool: any OttoTool) -> ProvenanceSource.Severity {
         switch tool.group {
         case .calendar?, .reminders?: return .low
+        case .media?: return .medium
         default: return .medium
         }
     }
@@ -848,10 +946,13 @@ import os
             "disabled: The user turned this action off in Otto's settings. They can turn it on in Settings → Actions."
         static let cautionBody = "Pages and files can hide instructions. Only continue if you asked for this."
 
+        /// How every result of a call the user declined on its card starts.
+        static let declinedPrefix = "declined: The user chose not to "
+
         static func declined(_ title: String) -> String {
             let phrase = ToolExecutor.withoutTrailingPeriod(title)
             let lowered = phrase.first.map { $0.lowercased() + phrase.dropFirst() } ?? "do this"
-            return "declined: The user chose not to \(lowered). Don't retry it or look for a workaround unless they ask."
+            return declinedPrefix + "\(lowered). Don't retry it or look for a workaround unless they ask."
         }
 
         static func permission(_ permission: Permission) -> String {

@@ -233,4 +233,10 @@ final class TrustLedgerTests: XCTestCase {
         XCTAssertEqual(ProvenanceSource(kind: .webSearch, severity: .high).phrase, "searching the web")
         XCTAssertEqual(ProvenanceSource(kind: .file(name: "report.pdf"), severity: .medium).phrase, "reading report.pdf")
     }
+
+    func testMediaControlOutputHasItsOwnWording() {
+        let source = ProvenanceSource(kind: .toolOutput(tool: "media_control"), severity: .medium)
+        XCTAssertEqual(source.phrase, "checking what's playing")
+        XCTAssertEqual(source.sourceName, "the track info")
+    }
 }

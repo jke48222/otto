@@ -23,6 +23,16 @@ struct ProvenanceSource: Equatable, Sendable {
 
     let kind: Kind; let severity: Severity
 
+    /// A page Otto fetched or a web search: the "untrusted web content" `.fewerPrompts` stops counting against an
+    /// "Always allow" shortcut. Everything else (files, images, the clipboard, the browser tab block, tool output)
+    /// still does.
+    var isWeb: Bool {
+        switch kind {
+        case .webFetch, .webSearch: return true
+        default: return false
+        }
+    }
+
     /// "reading example.com", "searching the web", "reading report.pdf".
     var phrase: String {
         switch kind {
@@ -42,6 +52,7 @@ struct ProvenanceSource: Equatable, Sendable {
             case "run_applescript": return "running a script"
             case "calendar_list_events": return "reading your calendar"
             case "reminders_list": return "reading your reminders"
+            case "media_control": return "checking what's playing"
             default: return "using \(tool)"
             }
         }
@@ -66,6 +77,7 @@ struct ProvenanceSource: Equatable, Sendable {
             case "run_applescript": return "a script's output"
             case "calendar_list_events": return "your calendar"
             case "reminders_list": return "your reminders"
+            case "media_control": return "the track info"
             default: return "\(tool)'s output"
             }
         }
@@ -82,6 +94,9 @@ struct TrustAssessment: Equatable, Sendable {
 
     /// Any fresh source with severity ≥ .medium.
     var caution: Bool { fresh.contains { $0.severity >= .medium } }
+
+    /// Any fresh source with severity ≥ .medium that is not web content (see `ProvenanceSource.isWeb`).
+    var hasFreshNonWebCaution: Bool { fresh.contains { $0.severity >= .medium && !$0.isWeb } }
 
     /// Any source in `all` with severity .high (a page or search anywhere in context).
     var hasHighSource: Bool { all.contains { $0.severity == .high } }

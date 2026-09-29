@@ -13,10 +13,14 @@ import Foundation
 struct CalendarCreateEventTool: OttoTool {
     let eventKit: any EventKitProviding
     let clock: CalendarToolClock
+    /// Shared by copies of this tool, so the registry's instance remembers every Undo it ran.
+    let undone: UndoneCalendarItems
 
-    init(eventKit: any EventKitProviding, clock: CalendarToolClock = .live) {
+    init(eventKit: any EventKitProviding, clock: CalendarToolClock = .live,
+         undone: UndoneCalendarItems = UndoneCalendarItems()) {
         self.eventKit = eventKit
         self.clock = clock
+        self.undone = undone
     }
 
     var name: String { "calendar_create_event" }
@@ -220,14 +224,19 @@ struct CalendarCreateEventTool: OttoTool {
     }
 
     /// Removes the event by identifier; when a sync or calendar move changed the identifier, searches its calendar
-    /// for exactly one event with the same title and dates.
+    /// for exactly one event with the same title and dates. An event this tool's Undo already removed is never
+    /// searched for again.
     func undo(_ token: UndoToken) async throws {
         do {
-            if try await eventKit.removeEvent(identifier: token.itemID) { return }
+            if try await eventKit.removeEvent(identifier: token.itemID) {
+                undone.insert(token.itemID)
+                return
+            }
         } catch {
             throw CalendarToolSupport.removeError(error, noun: "event", app: "Calendar")
         }
-        guard let fallback = token.fallback, let start = fallback.start, let end = fallback.end else {
+        guard !undone.contains(token.itemID), let fallback = token.fallback, let start = fallback.start,
+              let end = fallback.end else {
             throw CalendarToolSupport.alreadyRemoved("event")
         }
         let candidates: [CalendarEventRecord]
@@ -239,7 +248,7 @@ struct CalendarCreateEventTool: OttoTool {
         }
         let matches = candidates.filter {
             $0.title == fallback.title && CalendarToolSupport.sameInstant($0.start, start)
-                && CalendarToolSupport.sameInstant($0.end, end)
+                && CalendarToolSupport.sameInstant($0.end, end) && !undone.contains($0.id)
         }
         guard matches.count <= 1 else { throw CalendarToolSupport.severalMatches("event", app: "Calendar") }
         guard let match = matches.first else { throw CalendarToolSupport.alreadyRemoved("event") }
@@ -250,6 +259,7 @@ struct CalendarCreateEventTool: OttoTool {
         } catch {
             throw CalendarToolSupport.removeError(error, noun: "event", app: "Calendar")
         }
+        undone.insert(token.itemID, match.id)
         CalendarToolSupport.logger.info("Undo found the event again under \(match.id, privacy: .public)")
     }
 

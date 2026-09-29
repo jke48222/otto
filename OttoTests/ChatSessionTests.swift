@@ -1654,6 +1654,94 @@ final class ChatSessionToolSurfaceTests: XCTestCase {
         XCTAssertEqual(late.requests.count, 1, "a rejection after output is not retried")
     }
 
+    // MARK: Oversized live context
+
+    private func liveConversation(assistantText: String, extra: [JSONValue]) -> [ChatMessage] {
+        let user = ChatMessage(role: .user, text: "Summarize the PDF", apiContent: [textBlock("Summarize the PDF")])
+        let assistant = ChatMessage(role: .assistant, text: assistantText,
+                                    apiContent: extra + [textBlock(assistantText)], model: "claude-opus-5")
+        return [user, assistant]
+    }
+
+    /// An earlier reply holding a fetched 31 MB PDF must not block every later turn of a live conversation.
+    func testOversizedEarlierWebResultIsCompactedInALiveConversation() async {
+        let fetch: [JSONValue] = [
+            ["type": "server_tool_use", "id": "srvtoolu_f", "name": "web_fetch",
+             "input": ["url": "https://example.com/report.pdf"]],
+            ["type": "web_fetch_tool_result", "tool_use_id": "srvtoolu_f", "content": [
+                "type": "web_fetch_result", "url": "https://example.com/report.pdf",
+                "content": ["type": "document", "source": [
+                    "type": "base64", "media_type": "application/pdf",
+                    "data": .string(String(repeating: "A", count: 31_000_000)),
+                ]],
+            ]],
+        ]
+        let client = ScriptedLLMClient([reply("Sure."), reply("Again.")])
+        let chat = plainSession(client)
+        chat.debugSeed(messages: liveConversation(assistantText: "It covers the budget.", extra: fetch), isStreaming: false)
+
+        chat.send(text: "Thanks, one more question", attachments: [])
+        await waitForReply(chat)
+        XCTAssertEqual(chat.messages.last?.state, .complete)
+        XCTAssertEqual(client.requests.count, 1, "compacted before sending, so nothing is rejected")
+        XCTAssertEqual(client.requests[0].messages[1], entry("assistant", [textBlock("It covers the budget.")]))
+        XCTAssertTrue(chat.messages[2].includeInContext)
+
+        chat.send(text: "Hello?", attachments: [])
+        await waitForReply(chat)
+        XCTAssertEqual(chat.messages.last?.state, .complete)
+        XCTAssertEqual(client.requests[1].messages[1], entry("assistant", [textBlock("It covers the budget.")]),
+                       "the compacted turn stays compacted")
+    }
+
+    /// "prompt is too long" (e.g. after switching to Haiku 4.5) compacts the earlier turns and resends once.
+    func testPromptTooLongCompactsEarlierTurnsAndResends() async {
+        let tooLong = LLMError.http(status: 400, type: "invalid_request_error",
+                                    message: "prompt is too long: 250000 tokens > 200000 maximum")
+        let client = ScriptedLLMClient([.failure(tooLong, after: []), reply("Sure.")])
+        let chat = plainSession(client)
+        let thinking = [thinkingBlock("long thoughts")]
+        chat.debugSeed(messages: liveConversation(assistantText: "Earlier answer.", extra: thinking), isStreaming: false)
+
+        chat.send(text: "Hello?", attachments: [])
+        await waitForReply(chat)
+        XCTAssertEqual(chat.messages.last?.state, .complete)
+        XCTAssertEqual(client.requests.count, 2)
+        XCTAssertEqual(client.requests[0].messages[1]["content"]?.arrayValue?.count, 2, "sent as it was first")
+        XCTAssertEqual(client.requests[1].messages[1], entry("assistant", [textBlock("Earlier answer.")]))
+    }
+
+    /// When even the compacted conversation is too long, the copy says so and keeps the message in the chat.
+    func testConversationTooLongAfterCompactionSaysSo() async {
+        let tooLong = LLMError.http(status: 400, type: "invalid_request_error",
+                                    message: "prompt is too long: 250000 tokens > 200000 maximum")
+        let client = ScriptedLLMClient([.failure(tooLong, after: []), .failure(tooLong, after: []), reply("Unused.")])
+        let chat = plainSession(client)
+        let answer = String(repeating: "A long earlier answer. ", count: 40)
+        chat.debugSeed(messages: liveConversation(assistantText: answer, extra: []), isStreaming: false)
+
+        chat.send(text: "Hello?", attachments: [])
+        await waitForReply(chat)
+        XCTAssertEqual(client.requests.count, 2, "compacted and resent once")
+        guard case .failed(let description)? = chat.messages.last?.state else { return XCTFail("expected a failure") }
+        XCTAssertEqual(description, ChatSession.conversationTooLongDescription)
+        XCTAssertFalse(description.contains(ChatSession.excludedFromContextNote))
+        XCTAssertTrue(chat.messages[2].includeInContext, "the new message isn't the problem, so it stays")
+    }
+
+    /// A new message whose own attachments are too large still gets the attachment copy.
+    func testNewMessageOverflowKeepsTheAttachmentCopy() async {
+        let tooLong = LLMError.http(status: 400, type: "invalid_request_error", message: "prompt is too long")
+        let client = ScriptedLLMClient([.failure(tooLong, after: []), .failure(tooLong, after: [])])
+        let chat = plainSession(client)
+        chat.send(text: "Read this", attachments: [textAttachment("big.txt", String(repeating: "x", count: 20_000))])
+        await waitForReply(chat)
+        XCTAssertEqual(client.requests.count, 1, "nothing earlier to compact")
+        guard case .failed(let description)? = chat.messages.last?.state else { return XCTFail("expected a failure") }
+        XCTAssertTrue(description.hasSuffix(ChatSession.excludedFromContextNote))
+        XCTAssertFalse(chat.messages[0].includeInContext)
+    }
+
     func testTextOnlyRestoredTurnsAreCompactedFromTheStart() async {
         let client = ScriptedLLMClient([reply("Fine.")])
         let chat = plainSession(client)

@@ -657,6 +657,49 @@ final class CalendarToolsTests: XCTestCase {
         }
     }
 
+    func testASecondUndoNeverRemovesALookalike() async throws {
+        let fake = FakeEventKit()
+        let tool = CalendarCreateEventTool(eventKit: fake, clock: Self.clock)
+        let result = try await tool.run(["title": "Dentist", "start": "2026-09-29T15:00", "end": "2026-09-29T16:00",
+                                         "calendar": "Home"], context: context())
+        let token = try XCTUnwrap(result.undo)
+        try await tool.undo(token)
+
+        // The user adds the same event by hand; a repeated Undo must not take it.
+        await fake.seedEvents([event("user-copy", "Dentist", at("2026-09-29T15:00"), at("2026-09-29T16:00"),
+                                     calendar: Self.home)])
+        do {
+            try await tool.undo(token)
+            XCTFail("a second undo must report the event as removed")
+        } catch let error as ToolError {
+            XCTAssertEqual(error.code, .notFound)
+        }
+        let remaining = await fake.storedEvents.map(\.id)
+        XCTAssertEqual(remaining, ["user-copy"])
+    }
+
+    func testReminderFallbackSkipsCompletedAndOlderLookalikes() async throws {
+        let fake = FakeEventKit()
+        let tool = CalendarCreateReminderTool(eventKit: fake, clock: Self.clock)
+        await fake.seedReminders([
+            reminder("older", "Buy milk", list: Self.errands, created: Self.now.addingTimeInterval(-86_400)),
+            reminder("done", "Buy milk", list: Self.errands, completed: Self.now, created: Self.now),
+        ])
+        let token = UndoToken(toolName: tool.name, itemID: "synced-away",
+                              fallback: UndoFallback(title: "Buy milk", start: nil, end: nil,
+                                                     calendarIdentifier: Self.errands.id, created: Self.now),
+                              expires: Self.now.addingTimeInterval(600), doneTitle: "Removed “Buy milk”",
+                              noteForClaude: "the reminder “Buy milk” was removed")
+        do {
+            try await tool.undo(token)
+            XCTFail("neither the older nor the completed reminder is the one Otto created")
+        } catch let error as ToolError {
+            XCTAssertEqual(error.code, .notFound)
+        }
+        let remaining = await fake.storedReminders.map(\.id)
+        XCTAssertEqual(remaining.sorted(), ["done", "older"])
+    }
+
     // MARK: - WYSIWYG
 
     /// Every string the model wrote (except formatted dates) is shown verbatim on the card, so what the user approves

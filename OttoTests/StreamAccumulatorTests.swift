@@ -402,20 +402,59 @@ final class StreamAccumulatorTests: XCTestCase {
     func testOtherServerToolResultFinishesItsActivity() throws {
         let run = try replay(events: [
             ["type": "content_block_start", "index": 0,
-             "content_block": ["type": "server_tool_use", "id": "srvtoolu_c", "name": "code_execution", "input": [:]]],
-            ["type": "content_block_delta", "index": 0,
-             "delta": ["type": "input_json_delta", "partial_json": "{\"code\": \"print(1)\"}"]],
+             "content_block": ["type": "server_tool_use", "id": "srvtoolu_o", "name": "tool_search", "input": [:]]],
             ["type": "content_block_stop", "index": 0],
             ["type": "content_block_start", "index": 1, "content_block": [
-                "type": "code_execution_tool_result", "tool_use_id": "srvtoolu_c",
-                "content": ["type": "code_execution_result", "stdout": "1\n", "stderr": "", "return_code": 0],
+                "type": "tool_search_tool_result", "tool_use_id": "srvtoolu_o", "content": [],
             ]],
             ["type": "content_block_stop", "index": 1],
         ])
         XCTAssertEqual(run.descriptions, [
-            "toolActivity(srvtoolu_c|other|code_execution|running)",
-            "toolActivity(srvtoolu_c|other|code_execution|done)",
+            "toolActivity(srvtoolu_o|other|tool_search|running)",
+            "toolActivity(srvtoolu_o|other|tool_search|done)",
         ])
+    }
+
+    /// Dynamic web filtering streams several `code_execution` calls around a search: they fold into one
+    /// "Filtering search results" row (never a raw tool name), which finishes with the last running call.
+    func testCodeExecutionCallsFoldIntoOneFilteringRow() throws {
+        func call(_ index: Int, _ id: String) -> [JSONValue] {
+            [["type": "content_block_start", "index": .int(Int64(index)),
+              "content_block": ["type": "server_tool_use", "id": .string(id), "name": "code_execution", "input": [:]]],
+             ["type": "content_block_delta", "index": .int(Int64(index)),
+              "delta": ["type": "input_json_delta", "partial_json": "{\"code\": \"print(1)\"}"]],
+             ["type": "content_block_stop", "index": .int(Int64(index))]]
+        }
+        func result(_ index: Int, _ id: String) -> [JSONValue] {
+            [["type": "content_block_start", "index": .int(Int64(index)), "content_block": [
+                "type": "code_execution_tool_result", "tool_use_id": .string(id),
+                "content": ["type": "code_execution_result", "stdout": "1\n", "stderr": "", "return_code": 0],
+            ]],
+             ["type": "content_block_stop", "index": .int(Int64(index))]]
+        }
+        let search: [JSONValue] = [
+            ["type": "content_block_start", "index": 2, "content_block": [
+                "type": "server_tool_use", "id": "srvtoolu_s", "name": "web_search", "input": ["query": "swift"]]],
+            ["type": "content_block_stop", "index": 2],
+            ["type": "content_block_start", "index": 3, "content_block": [
+                "type": "web_search_tool_result", "tool_use_id": "srvtoolu_s", "content": []]],
+            ["type": "content_block_stop", "index": 3],
+        ]
+        let events = call(0, "srvtoolu_c1") + result(1, "srvtoolu_c1") + search
+            + call(4, "srvtoolu_c2") + call(5, "srvtoolu_c3") + result(6, "srvtoolu_c2") + result(7, "srvtoolu_c3")
+        let run = try replay(events: events)
+        XCTAssertEqual(run.descriptions, [
+            "toolActivity(srvtoolu_c1|webSearch|Filtering search results|running)",
+            "toolActivity(srvtoolu_c1|webSearch|Filtering search results|done)",
+            "toolActivity(srvtoolu_s|webSearch|Searching \u{201C}swift\u{201D}|running)",
+            "toolActivity(srvtoolu_s|webSearch|Searching \u{201C}swift\u{201D}|done)",
+            "toolActivity(srvtoolu_c1|webSearch|Filtering search results|running)",
+            "toolActivity(srvtoolu_c1|webSearch|Filtering search results|running)",
+            "toolActivity(srvtoolu_c1|webSearch|Filtering search results|done)",
+        ], "one row for every filtering call; it finishes only when the last running call does")
+        XCTAssertFalse(run.descriptions.contains { $0.contains("|code_execution|") })
+        XCTAssertEqual(StreamAccumulator.makeActivity(id: "x", name: "bash_code_execution", input: nil).label,
+                       StreamAccumulator.filteringLabel)
     }
 
     func testPauseTurnContinuationKeepsPriorToolLabels() throws {

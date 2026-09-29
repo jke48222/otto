@@ -85,6 +85,9 @@ struct ToolRateLimit: Equatable, Sendable {
 /// Loop-wide limits shared by ChatSession (tool loop) and ToolExecutor.
 enum ToolLimits {
     static let maxCallsPerTurn = 25
+    /// A response still streaming client calls past this many is cancelled on the spot (a runaway repeating one call
+    /// until max_tokens). Up to it, the round limit answers with a wrap-up request once the response completes.
+    static let maxStreamedCallsPerResponse = maxCallsPerTurn * 2
     static let approvalTimeout: Duration = .seconds(600)
     /// Characters of raw JSON echoed back as INVALID_JSON.
     static let maxInvalidInputEcho = 2_000
@@ -226,7 +229,8 @@ extension OttoTool {
     }
 
     /// {"name","description","input_schema": ToolSchema.wireSchema(inputSchema, strict: isStrict),
-    ///  "eager_input_streaming": true, "strict": true (only when isStrict)}
+    ///  "eager_input_streaming": true, "strict": true (only when isStrict)}. A strict schema lists every property as
+    /// required, the optional ones nullable; the executor drops their nulls before a tool sees the input.
     func definition() -> JSONValue {
         var object: [String: JSONValue] = [
             "name": .string(name),
@@ -426,6 +430,15 @@ struct ToolRound: Sendable {
     /// The turn's snapshot, by name.
     let tools: [String: any OttoTool]
     let model: ModelOption
+    /// Every registered tool by name, offered this turn or not. Earlier rounds of a tool that is no longer offered
+    /// still sit in the transcript (as `<earlier_action_result>` blocks), and their private data and untrusted
+    /// text still count; `tools` wins where both name a tool.
+    var knownTools: [String: any OttoTool] = [:]
+
+    /// `knownTools` with this turn's snapshot on top.
+    var classifyingTools: [String: any OttoTool] {
+        knownTools.merging(tools) { _, offered in offered }
+    }
 }
 
 /// Implemented by ChatSession; the executor mutates calls only through it (no-op when the turn is no longer active).
@@ -440,6 +453,10 @@ struct ToolRound: Sendable {
     var onAttentionNeeded: ((PendingApproval) -> Void)? { get set }
     /// Per-turn counters (rate limits, declines).
     func beginTurn()
+    /// Instead of `beginTurn()` when a failed reply is continued (Retry): the per-reply counters (per-tool runs,
+    /// declines) carry on from where the reply `messageID` left them, recounted from its `calls` when this process
+    /// no longer knows them. The default starts fresh counters.
+    func resumeTurn(messageID: UUID, calls: [ToolCall])
     /// Runs one round; every call ends with a terminal status and a `result`. Throws CancellationError when
     /// the turn is cancelled (pending approval resolved .cancelled, running tools cancelled).
     func execute(_ round: ToolRound, store: ToolCallStore) async throws -> ToolRoundOutcome
@@ -448,12 +465,31 @@ struct ToolRound: Sendable {
     /// became visible (and fully reviewed) on screen, reported by the VM; nil = not visible now.
     func resolve(_ decision: ApprovalDecision, callID: String, hardwareConfirmed: Bool, visibleSince: Date?)
     func cancelAll()
-    /// nil on success; else a short user-facing reason ("the event was already removed").
+    /// nil on success; else a short user-facing reason ("the event was already removed"). Single flight per call:
+    /// a repeat request while that call's undo runs does nothing and returns nil.
     func undo(callID: String, messageID: UUID, store: ToolCallStore) async -> String?
+    /// Tools Undo may resolve a token's tool from (ChatSession passes its whole registry), so an action restored
+    /// from History can be undone before any round ran in this process. The default does nothing.
+    func registerUndoTools(_ tools: [any OttoTool])
     /// [Stop] on one running call.
     func stop(callID: String)
     /// Notes queued for the next user message ("[Note: the user undid an action — …]"); cleared on read.
     func consumeContextNotes() -> [String]
+    /// The queued notes about actions of the given assistant messages (the conversation being continued); only
+    /// those are cleared, so a note never reaches another conversation. The default returns every note.
+    func consumeContextNotes(forMessages messageIDs: Set<UUID>) -> [String]
+}
+
+extension ToolExecuting {
+    func consumeContextNotes(forMessages messageIDs: Set<UUID>) -> [String] {
+        consumeContextNotes()
+    }
+
+    func registerUndoTools(_ tools: [any OttoTool]) {}
+
+    func resumeTurn(messageID: UUID, calls: [ToolCall]) {
+        beginTurn()
+    }
 }
 
 /// What the loop must know after a round (the executor owns TrustLedger/EchoDetector; the loop never imports them).

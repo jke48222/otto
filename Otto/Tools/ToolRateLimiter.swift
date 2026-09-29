@@ -27,6 +27,15 @@ import Foundation
         turnCounts = [:]
     }
 
+    /// Runs counted per tool name in the current reply, so a reply continued after a failure keeps its spent limits.
+    var turnRuns: [String: Int] { turnCounts }
+
+    /// Starts a reply that continues an earlier one: its per-reply counts become `runs` (the hourly windows keep
+    /// running and already hold those runs).
+    func resumeTurn(runs: [String: Int]) {
+        turnCounts = runs
+    }
+
     /// nil = allowed (and counted). Counts per tool name per turn and per rolling hour. (The 25-calls-per-reply
     /// cap, `ToolLimits.maxCallsPerTurn`, is enforced by the loop.) A refused call isn't counted.
     func check(_ tool: any OttoTool) -> ToolError? {

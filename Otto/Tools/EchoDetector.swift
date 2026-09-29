@@ -24,8 +24,10 @@ enum EchoDetector {
     static let maxPhrases = 4_000
 
     /// Private phrases come from (a) tool_results of tools with a privateDataSource (tool name → phrase: calendar and
-    /// reminders tools, run_applescript "your Mac", run_shortcut "a shortcut's output") and (b) user document blocks
-    /// titled "Selection from …" or "Clipboard.txt" (text ≤ 64 KB; "your selection" / "your clipboard").
+    /// reminders tools, run_applescript "your Mac", run_shortcut "a shortcut's output"), (b) the same tools' results
+    /// downgraded to `<earlier_action_result tool="…">` user text blocks (a round of a tool that is no longer offered;
+    /// error results are skipped) and (c) user document blocks titled "Selection from …" or "Clipboard.txt"
+    /// (text ≤ 64 KB; "your selection" / "your clipboard").
     /// Each phrase is kept as its skeleton and must be ≥ 2 tokens or ≥ 8 characters.
     static func privateStrings(in transcript: [JSONValue], sources: [String: String]) -> [(phrase: String, source: String)] {
         var toolNames: [String: String] = [:]
@@ -54,6 +56,11 @@ enum EchoDetector {
                           let id = block["tool_use_id"]?.stringValue, let name = toolNames[id],
                           let source = sources[name] else { continue }
                     add(resultStrings(block["content"]), source: source)
+                case ("user", "text"?):
+                    guard let text = block["text"]?.stringValue,
+                          let earlier = earlierActionResult(text), let source = sources[earlier.tool],
+                          !isErrorText(earlier.payload) else { continue }
+                    add(resultStrings(.string(earlier.payload)), source: source)
                 case ("user", "document"?):
                     guard let source = documentSource(title: block["title"]?.stringValue),
                           block["source"]?["type"]?.stringValue == "text",
@@ -120,7 +127,38 @@ enum EchoDetector {
         return nil
     }
 
-    /// The text of a tool_result's content. JSON results contribute their string values (except "status");
+    /// The tool and unescaped payload of a `<earlier_action_result tool="‹name›" …>‹payload›</earlier_action_result>`
+    /// block (`ToolHistory.earlierActionResult`); nil for any other text.
+    static func earlierActionResult(_ text: String) -> (tool: String, payload: String)? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let closing = "</earlier_action_result>"
+        guard trimmed.hasPrefix("<earlier_action_result"), trimmed.hasSuffix(closing),
+              let tagEnd = trimmed.firstIndex(of: ">") else { return nil }
+        let tag = trimmed[trimmed.startIndex..<tagEnd]
+        guard let start = tag.range(of: " tool=\""),
+              let end = tag[start.upperBound...].firstIndex(of: "\"") else { return nil }
+        let tool = unescaped(String(tag[start.upperBound..<end]))
+        let payloadStart = trimmed.index(after: tagEnd)
+        let payloadEnd = trimmed.index(trimmed.endIndex, offsetBy: -closing.count)
+        guard !tool.isEmpty, payloadStart <= payloadEnd else { return nil }
+        return (tool, unescaped(String(trimmed[payloadStart..<payloadEnd])))
+    }
+
+    /// A result the loop or a tool wrote as an error ("declined: …", "permission_denied: …").
+    private static func isErrorText(_ text: String) -> Bool {
+        guard let colon = text.firstIndex(of: ":") else { return false }
+        return ToolError.Code(rawValue: String(text[text.startIndex..<colon])) != nil
+    }
+
+    private static func unescaped(_ text: String) -> String {
+        text.replacingOccurrences(of: "&quot;", with: "\"")
+            .replacingOccurrences(of: "&lt;", with: "<")
+            .replacingOccurrences(of: "&gt;", with: ">")
+            .replacingOccurrences(of: "&amp;", with: "&")
+    }
+
+    /// The text of a tool_result's content. JSON results contribute their string values (except "status"); JSON
+    /// cut short (a downgraded result keeps its first 2,000 characters) contributes its complete string values;
     /// other text contributes itself.
     private static func resultStrings(_ content: JSONValue?) -> [String] {
         let texts: [String]
@@ -134,12 +172,25 @@ enum EchoDetector {
         }
         return texts.flatMap { text -> [String] in
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.hasPrefix("{") || trimmed.hasPrefix("["), let json = try? JSONValue.decode(trimmed) {
+            guard trimmed.hasPrefix("{") || trimmed.hasPrefix("[") else { return [text] }
+            if let json = try? JSONValue.decode(trimmed) {
                 var strings: [String] = []
                 collectStrings(json, key: nil, into: &strings)
                 return strings
             }
-            return [text]
+            let literals = stringLiterals(in: trimmed)
+            return literals.isEmpty ? [text] : literals
+        }
+    }
+
+    /// The complete JSON string values (not keys) of JSON text that doesn't parse, decoded.
+    private static func stringLiterals(in text: String) -> [String] {
+        guard let expression = try? NSRegularExpression(pattern: #""((?:[^"\\]|\\.)*)"(\s*:)?"#) else { return [] }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        return expression.matches(in: text, range: range).compactMap { match in
+            guard match.range(at: 2).location == NSNotFound, let whole = Range(match.range, in: text),
+                  case .string(let value)? = try? JSONValue.decode(String(text[whole])) else { return nil }
+            return value
         }
     }
 

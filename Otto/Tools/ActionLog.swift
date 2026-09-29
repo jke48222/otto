@@ -5,7 +5,9 @@
 //  The local activity log of the tool loop: one line per call with the tool, how it was decided,
 //  how it ended, its title, the host or shortcut it touched and (for scripts) a fingerprint. It never
 //  holds inputs, notes or outputs. Kept in Logs.noindex/actions.jsonl (0600, rotated at 1 MB, two
-//  files), follows the History retention and is cleared with History.
+//  files), follows the History retention (expired lines go when it changes, at launch, on rotation and as
+//  soon as an append or a read finds one) and is cleared with History. While History is off it keeps
+//  entries in memory only.
 //
 
 import CryptoKit
@@ -50,7 +52,13 @@ actor ActionLog {
     static let memoryCapacity = 5_000
 
     private let directory: URL?
+    private let now: @Sendable () -> Date
     private var maxAge: TimeInterval?
+    /// False while History is off: entries stay in memory and nothing is written to disk.
+    private var isPersisting = true
+    /// The oldest entry date known to be on disk or in memory (nil = unknown, or nothing logged yet), so an append
+    /// or a read can tell cheaply whether something expired.
+    private var oldestEntryDate: Date?
     /// Entries of an in-memory log, or of a file log that fell back to memory for this session.
     private var memory: [ActionLogEntry] = []
     private var fellBackToMemory = false
@@ -62,8 +70,10 @@ actor ActionLog {
     private static let logger = Logger(subsystem: "com.jalenedusei.otto", category: "Actions")
 
     /// nil directory = in-memory (tests, snapshots, demo). maxAge nil = no time limit (size rotation only).
-    init(directory: URL?, maxAge: TimeInterval? = 30 * 86_400) {
+    /// `now` dates the automatic prunes (tests pin it).
+    init(directory: URL?, maxAge: TimeInterval? = 30 * 86_400, now: @escaping @Sendable () -> Date = { Date() }) {
         self.directory = directory
+        self.now = now
         self.maxAge = maxAge
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
@@ -84,15 +94,25 @@ actor ActionLog {
         self.decoder = decoder
     }
 
-    /// AppComposition keeps it equal to settings.history.retention (`.forever` → 90 days).
+    /// AppComposition keeps it equal to settings.history.retention (`.forever` → 90 days). A shorter age drops
+    /// the entries it expires right away, so logged titles never outlive the conversations they belong to.
     func setMaxAge(_ maxAge: TimeInterval?) {
         self.maxAge = maxAge
+        prune(now: now())
     }
 
-    /// Prunes expired entries whenever it rotates.
+    /// AppComposition keeps it equal to settings.history.enabled. While false, new entries are kept in memory only
+    /// (what is already on disk is cleared with History, not here).
+    func setPersisting(_ isPersisting: Bool) {
+        self.isPersisting = isPersisting
+    }
+
+    /// Prunes expired entries whenever it rotates, and first whenever the oldest known entry has expired.
     func append(_ entry: ActionLogEntry) {
         Self.logger.info("Action \(entry.tool, privacy: .public): \(entry.decision, privacy: .public) → \(entry.outcome, privacy: .public)")
-        guard let folder = writableDirectory() else {
+        pruneIfExpired()
+        oldestEntryDate = min(oldestEntryDate ?? entry.date, entry.date)
+        guard isPersisting, let folder = writableDirectory() else {
             appendToMemory(entry)
             return
         }
@@ -114,18 +134,21 @@ actor ActionLog {
             current.append(line)
             try SecureFile.write(current, to: folder.appendingPathComponent(Self.fileName))
             currentData = current
-            if rotated { prune(now: Date()) }
+            if rotated { prune(now: now()) }
         } catch {
             currentData = nil
             Self.logger.error("Couldn't write the activity log: \(error.localizedDescription, privacy: .public)")
         }
     }
 
-    /// Launch + each rotation: drops entries older than maxAge.
+    /// Launch, retention changes, each rotation, and appends or reads that find an expired entry: drops entries
+    /// older than maxAge.
     func prune(now: Date) {
         guard let maxAge else { return }
         let cutoff = now.addingTimeInterval(-maxAge)
         memory.removeAll { $0.date < cutoff }
+        var oldest = memory.map(\.date).min()
+        defer { oldestEntryDate = oldest }
         guard let folder = writableDirectory() else { return }
         for name in [Self.rotatedFileName, Self.fileName] {
             let url = folder.appendingPathComponent(name)
@@ -133,7 +156,9 @@ actor ActionLog {
             guard !data.isEmpty else { continue }
             let kept = lines(of: data).filter { line in
                 guard let entry = try? decoder.decode(ActionLogEntry.self, from: line) else { return false }
-                return entry.date >= cutoff
+                guard entry.date >= cutoff else { return false }
+                oldest = min(oldest ?? entry.date, entry.date)
+                return true
             }
             let rewritten = kept.reduce(into: Data()) { result, line in
                 result.append(line)
@@ -153,6 +178,7 @@ actor ActionLog {
     /// The newest `limit` entries, newest first.
     func recent(limit: Int) -> [ActionLogEntry] {
         guard limit > 0 else { return [] }
+        pruneIfExpired()
         var entries: [ActionLogEntry] = []
         if let folder = writableDirectory() {
             for name in [Self.rotatedFileName, Self.fileName] {
@@ -168,6 +194,7 @@ actor ActionLog {
     /// Delete All History / History off / Settings "Clear Log".
     func clear() throws {
         memory = []
+        oldestEntryDate = nil
         currentData = nil
         guard let directory else { return }
         var failure: Error?
@@ -188,6 +215,15 @@ actor ActionLog {
 
     // MARK: - Private
 
+    /// A file log prunes when its oldest entry is past maxAge, or when nothing is known about its files yet, so a
+    /// long-running session drops expired titles without waiting for a rotation or a relaunch.
+    private func pruneIfExpired() {
+        guard let maxAge, directory != nil else { return }
+        let date = now()
+        if let oldest = oldestEntryDate, oldest >= date.addingTimeInterval(-maxAge) { return }
+        prune(now: date)
+    }
+
     /// The log folder after the ownership/mode checks; nil for an in-memory log or after a refused folder
     /// (the log then keeps this session's entries in memory).
     private func writableDirectory() -> URL? {
@@ -206,7 +242,7 @@ actor ActionLog {
         memory.append(entry)
         guard memory.count > Self.memoryCapacity else { return }
         memory.removeFirst(memory.count - Self.memoryCapacity)
-        prune(now: Date())
+        prune(now: now())
     }
 
     /// A regular file's contents; empty for a missing file, a symlink or anything else.

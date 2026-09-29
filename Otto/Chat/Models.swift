@@ -673,6 +673,8 @@ struct UndoFallback: Equatable, Sendable, Codable {
     /// Events only.
     let end: Date?
     let calendarIdentifier: String
+    /// Reminders only: when the created reminder was saved, so the fallback never matches an older lookalike.
+    var created: Date? = nil
 }
 
 struct ToolCall: Identifiable, Equatable, Sendable, Codable {

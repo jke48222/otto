@@ -26,6 +26,10 @@ struct StreamAccumulator {
 
     /// Server tool calls by `server_tool_use` id, so their result blocks can reuse kind and label.
     private var activities: [String: ToolActivity] = [:]
+    /// The one row every code-execution call of this response folds into (dynamic web filtering streams several),
+    /// and the calls of it still running: the row is done once none is.
+    private var filterRowID: String?
+    private var runningFilterCalls: Set<String> = []
 
     private var model: String?
     private var usage: JSONValue?
@@ -43,9 +47,15 @@ struct StreamAccumulator {
     mutating func registerPriorToolUses(in messages: [JSONValue]) {
         guard let last = messages.last, last["role"]?.stringValue == "assistant",
               let content = last["content"]?.arrayValue else { return }
+        let finished = Set(content.compactMap { $0["tool_use_id"]?.stringValue })
         for block in content where block.typeName == "server_tool_use" {
             guard let id = block["id"]?.stringValue else { continue }
-            activities[id] = Self.makeActivity(id: id, name: block["name"]?.stringValue, input: block["input"])
+            let name = block["name"]?.stringValue
+            if Self.isCodeExecution(name) {
+                activities[id] = foldedFilterActivity(for: id, running: !finished.contains(id))
+            } else {
+                activities[id] = Self.makeActivity(id: id, name: name, input: block["input"])
+            }
         }
     }
 
@@ -161,6 +171,14 @@ struct StreamAccumulator {
             // finish the matching activity so the UI does not keep a spinner running.
             guard type.hasSuffix("_tool_result"), let toolUseID = block["tool_use_id"]?.stringValue,
                   var activity = activities[toolUseID], !activity.isDone else { return [] }
+            if activity.id == filterRowID {
+                // A folded filtering call: the shared row finishes with the last running one.
+                runningFilterCalls.remove(toolUseID)
+                guard runningFilterCalls.isEmpty else { return [] }
+                activity.isDone = true
+                for (id, folded) in activities where folded.id == activity.id { activities[id]?.isDone = true }
+                return [.toolActivity(activity)]
+            }
             activity.isDone = true
             activities[toolUseID] = activity
             return [.toolActivity(activity)]
@@ -223,7 +241,13 @@ struct StreamAccumulator {
         switch block.typeName {
         case "server_tool_use":
             guard let id = block["id"]?.stringValue else { return [] }
-            let activity = Self.makeActivity(id: id, name: block["name"]?.stringValue, input: block["input"])
+            let name = block["name"]?.stringValue
+            if Self.isCodeExecution(name) {
+                let activity = foldedFilterActivity(for: id, running: true)
+                activities[id] = activity
+                return [.toolActivity(activity)]
+            }
+            let activity = Self.makeActivity(id: id, name: name, input: block["input"])
             activities[id] = activity
             return [.toolActivity(activity)]
         case "tool_use":
@@ -331,6 +355,25 @@ struct StreamAccumulator {
         return value
     }
 
+    /// Label of the single row the code-execution calls behind dynamic web filtering fold into.
+    static let filteringLabel = "Filtering search results"
+
+    /// The code-execution server tools (`code_execution`, `bash_code_execution`, `text_editor_code_execution`):
+    /// on Opus 5 and Sonnet 5 the web tools run them to filter results; they are never offered on their own.
+    static func isCodeExecution(_ name: String?) -> Bool {
+        guard let name else { return false }
+        return name == "code_execution" || name.hasSuffix("_code_execution")
+    }
+
+    /// The shared filtering row for the code-execution call `id` (the first such call's id becomes the row id),
+    /// counting the call as running when `running`.
+    private mutating func foldedFilterActivity(for id: String, running: Bool) -> ToolActivity {
+        let rowID = filterRowID ?? id
+        filterRowID = rowID
+        if running { runningFilterCalls.insert(id) }
+        return ToolActivity(id: rowID, kind: .webSearch, label: Self.filteringLabel, isDone: runningFilterCalls.isEmpty)
+    }
+
     static func makeActivity(id: String, name: String?, input: JSONValue?) -> ToolActivity {
         switch name {
         case "web_search":
@@ -341,6 +384,8 @@ struct StreamAccumulator {
             let url = input?["url"]?.stringValue.flatMap(webURL)
             let label = url.map { "Reading \(displayHost(of: $0))" } ?? "Reading a web page"
             return ToolActivity(id: id, kind: .webFetch, label: label, isDone: false)
+        case let name? where isCodeExecution(name):
+            return ToolActivity(id: id, kind: .webSearch, label: filteringLabel, isDone: false)
         default:
             let label = (name?.isEmpty == false ? name : nil) ?? "Using a tool"
             return ToolActivity(id: id, kind: .other, label: label, isDone: false)

@@ -70,8 +70,14 @@ import os
     @ObservationIgnored private var textOnlyContextIDs: Set<UUID> = []
     /// Ids of the messages that came from `load(_:)`.
     @ObservationIgnored private var restoredMessageIDs: Set<UUID> = []
-    /// Whether requests send the restored messages as text only (after the API rejected them as they were).
+    /// Whether the API already rejected the restored messages as they were stored (they are then compacted once).
     @ObservationIgnored private var compactsRestoredContext = false
+    /// Earlier messages sent compacted for the rest of the conversation, after a request was too large or too long
+    /// for the model (or the API rejected restored turns as stored): assistant turns as their visible text only,
+    /// user turns without their attachments (see `requestHistory`).
+    @ObservationIgnored private var compactedContextIDs: Set<UUID> = []
+    /// What a failed reply had left of its web search and fetch budget, so Retry continues it with that budget.
+    @ObservationIgnored private var failedReplyWebBudgets: [UUID: (searches: Int, fetches: Int)] = [:]
 
     // MARK: Glance
 
@@ -225,7 +231,9 @@ import os
         if !config.tools.isEmpty {
             // Stored in the message, so history stays byte-stable on later turns.
             content += registry.userContextBlocks(tools: config.tools, now: clock(), timeZone: .current)
-            content += (executor?.consumeContextNotes() ?? []).map(Self.textBlock)
+            // Only notes about this conversation's actions: an undo elsewhere must not reach this chat.
+            let messageIDs = Set(messages.lazy.filter { $0.role == .assistant }.map(\.id))
+            content += (executor?.consumeContextNotes(forMessages: messageIDs) ?? []).map(Self.textBlock)
         }
         content.append(Self.textBlock(trimmed.isEmpty ? Self.attachmentsOnlyPrompt : trimmed))
         lastTurnVersions = nil
@@ -254,13 +262,19 @@ import os
         refreshPhase()
     }
 
-    /// Re-runs a failed, cancelled or refused assistant turn in place.
+    /// Re-runs a failed, cancelled or refused assistant turn in place. A failed turn whose actions already ran (it
+    /// stayed in the context) is continued from its last exchange instead, so nothing runs a second time.
     func retry(messageID: UUID) {
         guard !isStreaming, let index = messages.firstIndex(where: { $0.id == messageID }) else { return }
         let message = messages[index]
         guard message.role == .assistant else { return }
         switch message.state {
-        case .failed, .cancelled, .refused:
+        case .failed:
+            if message.includeInContext, !message.toolExchanges.isEmpty {
+                resumeFailedToolTurn(at: index)
+                return
+            }
+        case .cancelled, .refused:
             break
         case .complete, .streaming:
             return
@@ -275,6 +289,35 @@ import os
         // takes its place and only the conversation up to that point is sent (see `requestHistory`);
         // appending it after later turns would make the request end on an assistant message.
         beginAssistantTurn(at: index, config: makeTurnConfig())
+    }
+
+    /// Continues a failed turn whose tool rounds ran (foundation.md §8): the message goes back to streaming with
+    /// whatever came after its last exchange dropped (the partial response that failed, and calls it announced that
+    /// never ran), and the next request re-sends the conversation up to that exchange's results. It is still one
+    /// reply, so everything SPEC §5.9 allows per reply carries over: the round count, a web pause, the web search
+    /// and fetch budget, and (through `ToolExecuting.resumeTurn`) the per-tool limits and declines.
+    private func resumeFailedToolTurn(at index: Int) {
+        var message = messages[index]
+        guard let last = message.toolExchanges.last else { return }
+        let exchanged = Set(message.toolExchanges.flatMap(\.callIDs))
+        message.apiContent = Array(message.apiContent.prefix(max(0, last.contentEnd)))
+        message.text = String(message.text.prefix(max(0, last.textEnd)))
+        message.toolCalls.removeAll { !exchanged.contains($0.id) }
+        message.isThinking = false
+        message.state = .streaming
+        messages[index] = message
+        if let userIndex = messages[..<index].lastIndex(where: { $0.role == .user }) {
+            messages[userIndex].includeInContext = true
+        }
+        var state = LoopState()
+        state.toolRounds = message.toolExchanges.count
+        state.webPaused = message.activities.contains { $0.id == Self.webPausedActivityID }
+        state.resumesReply = true
+        let budget = failedReplyWebBudgets.removeValue(forKey: message.id) ?? Self.webBudgetLeft(in: message.apiContent)
+        state.searchesLeft = budget.searches
+        state.fetchesLeft = budget.fetches
+        Self.toolLogger.info("Continuing a failed reply after \(state.toolRounds, privacy: .public) rounds")
+        startTurn(assistantID: message.id, config: makeTurnConfig(), state: state)
     }
 
     /// Cancels any reply and clears the conversation, which starts a new one with a new id. History hears
@@ -301,6 +344,8 @@ import os
         textOnlyContextIDs = []
         restoredMessageIDs = []
         compactsRestoredContext = false
+        compactedContextIDs = []
+        failedReplyWebBudgets = [:]
         refreshPhase()
         refreshSystemUIToolWait()
     }
@@ -336,6 +381,8 @@ import os
         textOnlyContextIDs = conversation.textOnlyContextMessageIDs
         restoredMessageIDs = Set(conversation.messages.map(\.id))
         compactsRestoredContext = false
+        compactedContextIDs = []
+        failedReplyWebBudgets = [:]
         lastTurnVersions = nil
         isStreaming = false
         updateSummary(recomputeCopyable: true)
@@ -441,6 +488,9 @@ import os
     /// Removes the item a call created. nil on success; else a short reason for the notice.
     func undoToolCall(_ callID: String, in messageID: UUID) async -> String? {
         guard let executor else { return Self.undoUnavailableReason }
+        // Resolve the token's tool from the registry, not only from the rounds this process ran: a call restored
+        // from History (after a relaunch or an update) keeps a live Undo for its window.
+        executor.registerUndoTools(registry.allTools)
         return await executor.undo(callID: callID, messageID: messageID, store: self)
     }
 
@@ -606,14 +656,21 @@ import os
     private enum TurnError: LocalizedError, Equatable {
         case nothingToSend
         case requestTooLarge
+        /// Even with every earlier turn compacted the request is too large or too long for the model.
+        case conversationTooLong
 
         var errorDescription: String? {
             switch self {
             case .nothingToSend: return "There's no message for Otto to reply to."
             case .requestTooLarge: return AttachmentBudget.requestTooLargeDescription
+            case .conversationTooLong: return ChatSession.conversationTooLongDescription
             }
         }
     }
+
+    /// Shown when a conversation no longer fits one request, whatever Otto leaves out of the earlier turns.
+    nonisolated static let conversationTooLongDescription =
+        "This conversation is too long for Otto to continue. Start a new chat (⌘N) to keep going."
 
     /// The configuration a turn started now would use. No executor means no client tools.
     private func makeTurnConfig() -> TurnConfig {
@@ -647,18 +704,22 @@ import os
     private func beginAssistantTurn(at index: Int, config: TurnConfig) {
         let assistant = ChatMessage(role: .assistant, state: .streaming)
         messages.insert(assistant, at: min(max(index, 0), messages.endIndex))
-        activeAssistantID = assistant.id
+        startTurn(assistantID: assistant.id, config: config, state: LoopState())
+    }
+
+    /// Runs the request loop for the streaming assistant message `assistantID`, starting from `state`.
+    private func startTurn(assistantID: UUID, config: TurnConfig, state: LoopState) {
+        activeAssistantID = assistantID
         activeConfig = config
         isStreaming = true
         discardPendingDeltas()
-        updateSummary(recomputeCopyable: false)
+        updateSummary(recomputeCopyable: true)
 
         inFlightUsage = nil
         inFlightRequestedModel = config.model.rawValue
         refreshPhase()
-        let assistantID = assistant.id
         streamTask = Task { [weak self] in
-            await self?.runTurn(assistantID: assistantID, config: config)
+            await self?.runTurn(assistantID: assistantID, config: config, state: state)
         }
     }
 
@@ -674,9 +735,23 @@ import os
         var webPaused = false
         /// The server-tool limits of the last fresh request (a pause_turn continuation reuses them).
         var limits = ServerToolLimits()
+        /// The turn continues a failed reply (Retry): the executor keeps that reply's per-reply counters.
+        var resumesReply = false
     }
 
-    private func runTurn(assistantID: UUID, config: TurnConfig) async {
+    /// The web search and fetch budget a reply's content leaves, counting its server-tool calls (for a reply this
+    /// process no longer has the numbers of).
+    static func webBudgetLeft(in content: [JSONValue]) -> (searches: Int, fetches: Int) {
+        let names = content.filter { $0.typeName == "server_tool_use" }.compactMap { $0["name"]?.stringValue }
+        let searches = names.filter { $0 == "web_search" }.count
+        let fetches = names.filter { $0 == "web_fetch" }.count
+        return (max(0, ToolLimits.webSearchesPerTurn - searches), max(0, ToolLimits.webFetchesPerTurn - fetches))
+    }
+
+    /// Ends a response that streamed more client calls than `ToolLimits.maxStreamedCallsPerResponse`.
+    private struct TooManyToolCalls: Error {}
+
+    private func runTurn(assistantID: UUID, config: TurnConfig, state initialState: LoopState) async {
         guard isActive(assistantID) else { return }
 
         let client: LLMClient
@@ -687,13 +762,18 @@ import os
             return
         }
 
-        executor?.beginTurn()
-        var state = LoopState()
+        if initialState.resumesReply, let message = messages.last(where: { $0.id == assistantID }) {
+            executor?.resumeTurn(messageID: assistantID, calls: message.toolCalls)
+        } else {
+            executor?.beginTurn()
+        }
+        var state = initialState
         do {
             while true {
                 try Task.checkCancellation()
                 flushPendingDeltas()
                 inFlightUsage = nil
+                responseDeliveredEvent = false
                 if !state.resuming {
                     // A pause_turn continuation resumes that response, so it keeps its server tools and limits.
                     state.limits = state.webPaused
@@ -710,10 +790,25 @@ import os
                     compacting: compactingIDs()
                 )
                 // The whole request must stay under the API's size limit: earlier turns' attachments
-                // give way first; if the new message alone is too big it can't be sent at all.
+                // give way first, then earlier turns are compacted (server-tool payloads such as a fetched PDF
+                // live in assistant turns); if it still can't fit, the new message or the conversation is too big.
                 guard let history = AttachmentBudget.fitting(fullHistory) else {
-                    throw TurnError.requestTooLarge
+                    if compactEarlierContext(after: TurnError.requestTooLarge, assistantID: assistantID) { continue }
+                    throw Self.overflowFailure(TurnError.requestTooLarge, history: fullHistory)
                 }
+                // What the executor's trust and echo checks read: the same conversation with every server-tool
+                // result kept, because a page Claude read stays behind its thinking and text even once this
+                // request defines no web tools (web pause, spent budget, Web access off, Haiku), or once earlier
+                // turns are compacted for size (their pages still shaped what they said).
+                let trustTranscript = executor == nil ? history : Self.requestHistory(
+                    for: messages,
+                    inFlight: assistantID,
+                    resumingInFlight: state.resuming,
+                    enabledServerTools: nil,
+                    clientToolNames: config.clientToolNames,
+                    model: config.model,
+                    compacting: textOnlyContextIDs
+                )
                 // A fresh request must end on a user turn; only a pause_turn continuation may end on
                 // the (partial) assistant turn.
                 guard let lastRole = history.last?["role"]?.stringValue,
@@ -736,12 +831,13 @@ import os
                 do {
                     responseDeliveredEvent = false
                     result = try await consume(client.stream(request), into: assistantID)
-                } catch where shouldCompactRestoredContext(after: error) {
-                    // A continued chat whose stored thinking or server-tool payload the API no longer accepts
-                    // degrades to text context instead of failing every turn.
-                    compactsRestoredContext = true
-                    Self.logger.info("Resending the restored conversation as text after the API rejected it")
+                } catch where compactEarlierContext(after: error, assistantID: assistantID) {
+                    // Too large or too long for the model (e.g. fetched PDFs, or a switch to Haiku 4.5), or a
+                    // continued chat whose stored thinking or server-tool payload the API no longer accepts: the
+                    // earlier turns are compacted and the request is sent again instead of failing every turn.
                     continue
+                } catch where !responseDeliveredEvent && Self.isContextOverflow(error) {
+                    throw Self.overflowFailure(error, history: history)
                 }
                 guard isActive(assistantID) else { return }
                 let usage = result.usage ?? inFlightUsage
@@ -757,7 +853,7 @@ import os
                     continue
                 case "tool_use":
                     state.resuming = false
-                    guard try await runToolRound(result, transcript: history, assistantID: assistantID,
+                    guard try await runToolRound(result, transcript: trustTranscript, assistantID: assistantID,
                                                  config: config, state: &state) else { return }
                     continue
                 default:
@@ -768,10 +864,39 @@ import os
         } catch {
             if error is CancellationError || Task.isCancelled {
                 finishTurn(assistantID, outcome: .cancelled)
+            } else if error is TooManyToolCalls {
+                endRunawayResponse(assistantID)
             } else {
+                // Retry continues a reply whose actions ran; it must not get a fresh web budget. A response that
+                // failed part-way may already have searched.
+                let partial = inFlightUsage?["server_tool_use"]
+                failedReplyWebBudgets[assistantID] = (
+                    max(0, state.searchesLeft - (partial?["web_search_requests"]?.intValue ?? 0)),
+                    max(0, state.fetchesLeft - (partial?["web_fetch_requests"]?.intValue ?? 0))
+                )
                 finishTurn(assistantID, outcome: .failed(error))
             }
         }
+    }
+
+    /// A response that kept streaming client calls past the reply's limit was cancelled: nothing it asked for runs,
+    /// and the turn ends with the limit note.
+    private func endRunawayResponse(_ assistantID: UUID) {
+        guard let index = messages.lastIndex(where: { $0.id == assistantID }) else { return }
+        let ids = Self.unexchangedCallIDs(of: messages[index])
+        Self.toolLogger.info("Stopped a reply that streamed \(ids.count, privacy: .public) actions at once")
+        settle(ids, in: assistantID) { call in
+            call.status = .skipped("Action limit reached")
+            call.result = nil
+        }
+        appendNote(Self.toolLimitNote, to: assistantID)
+        finishTurn(assistantID, outcome: .completed(stopReason: "end_turn"))
+    }
+
+    /// Calls of the message outside every exchange (the response being streamed), in order.
+    private static func unexchangedCallIDs(of message: ChatMessage) -> [String] {
+        let exchanged = Set(message.toolExchanges.flatMap(\.callIDs))
+        return message.toolCalls.map(\.id).filter { !exchanged.contains($0) }
     }
 
     /// Handles a response that stopped for `tool_use`: records the round and runs it (or answers it with the
@@ -831,7 +956,8 @@ import os
             roundIndex: state.toolRounds - 1,
             transcript: transcript + [Self.entry(role: .assistant, content: result.content)],
             tools: config.toolsByName,
-            model: config.model
+            model: config.model,
+            knownTools: Dictionary(registry.allTools.map { ($0.name, $0) }, uniquingKeysWith: { _, last in last })
         )
         let roundNumber = state.toolRounds
         Self.toolLogger.info("Running round \(roundNumber, privacy: .public) with \(calls.count, privacy: .public) calls")
@@ -908,18 +1034,77 @@ import os
         Self.toolLogger.info("Web access paused for the rest of the reply")
     }
 
-    /// Restored messages sent as text: the ones whose payload is gone, and every restored one after the API
-    /// rejected them as stored.
+    /// Messages sent compacted: restored assistant turns whose payload is gone, and the earlier turns compacted
+    /// after a request did not fit (`compactEarlierContext`).
     private func compactingIDs() -> Set<UUID> {
-        compactsRestoredContext ? textOnlyContextIDs.union(restoredMessageIDs) : textOnlyContextIDs
+        textOnlyContextIDs.union(compactedContextIDs)
     }
 
-    /// A request the API rejected for its content before anything streamed, in a restored conversation that
-    /// is not yet sent as text, is retried once with the restored turns as text.
-    private func shouldCompactRestoredContext(after error: Error) -> Bool {
-        guard !(error is CancellationError), !Task.isCancelled, !responseDeliveredEvent,
-              !restoredMessageIDs.isEmpty, !compactsRestoredContext else { return false }
-        return Self.isRejectedRequestContent(error)
+    /// After a request failed before anything streamed, compacts the earlier turns that are not compacted yet and
+    /// returns true so it is sent again: when it was too large or too long for the model (any conversation; the
+    /// user messages before the one being answered also lose their attachments), or when the API rejected the
+    /// content of a restored conversation (once; its stored thinking or server-tool payload may be stale). Returns
+    /// false when nothing is left to compact.
+    private func compactEarlierContext(after error: Error, assistantID: UUID) -> Bool {
+        guard !(error is CancellationError), !Task.isCancelled, !responseDeliveredEvent else { return false }
+        let overflow = Self.isContextOverflow(error)
+        let restoredRejection = !restoredMessageIDs.isEmpty && !compactsRestoredContext
+            && Self.isRejectedRequestContent(error)
+        guard overflow || restoredRejection else { return false }
+        if restoredRejection { compactsRestoredContext = true }
+        let candidates = earlierContextIDs(before: assistantID, includingUserAttachments: overflow)
+            .subtracting(compactingIDs())
+        guard !candidates.isEmpty else { return false }
+        compactedContextIDs.formUnion(candidates)
+        Self.logger.info("Resending with \(candidates.count, privacy: .public) earlier messages compacted")
+        return true
+    }
+
+    /// The assistant turns in the context before `assistantID`, plus (when `includingUserAttachments`) the user
+    /// turns before the one being answered that hold an attachment.
+    private func earlierContextIDs(before assistantID: UUID, includingUserAttachments: Bool) -> Set<UUID> {
+        let end = messages.firstIndex(where: { $0.id == assistantID }) ?? messages.endIndex
+        let prior = messages[..<end].filter(\.includeInContext)
+        let answeredUserID = prior.last(where: { $0.role == .user })?.id
+        var ids = Set<UUID>()
+        for message in prior {
+            switch message.role {
+            case .assistant:
+                ids.insert(message.id)
+            case .user:
+                if includingUserAttachments, message.id != answeredUserID,
+                   Self.userContent(message).contains(where: { $0.typeName == "image" || $0.typeName == "document" }) {
+                    ids.insert(message.id)
+                }
+            }
+        }
+        return ids
+    }
+
+    /// A request that was too large (`TurnError.requestTooLarge`, HTTP 413, `request_too_large`) or too long for
+    /// the model's context window (HTTP 400 "prompt is too long").
+    static func isContextOverflow(_ error: Error) -> Bool {
+        if let error = error as? TurnError { return error == .requestTooLarge }
+        guard let error = error as? LLMError else { return false }
+        switch error {
+        case .http(let status, let type, let message):
+            return status == 413 || type == "request_too_large"
+                || (status == 400 && message.lowercased().contains("prompt is too long"))
+        case .streamError(let type, let message):
+            return type == "request_too_large" || message.lowercased().contains("prompt is too long")
+        default:
+            return false
+        }
+    }
+
+    /// What a request that still overflows once everything earlier is compacted fails with: the original error
+    /// when the message being answered makes up most of it (its attachments are the problem, and `finishTurn` takes
+    /// it out of the context), else `conversationTooLong`.
+    private static func overflowFailure(_ error: Error, history: [JSONValue]) -> Error {
+        guard let answered = AttachmentBudget.answeredUserIndex(in: history) else { return error }
+        let answeredBytes = AttachmentBudget.estimatedEncodedBytes(history[answered])
+        let totalBytes = AttachmentBudget.estimatedEncodedBytes(.array(history))
+        return answeredBytes * 2 >= totalBytes ? error : TurnError.conversationTooLong
     }
 
     /// Folds one streamed response into the assistant message and returns its final result.
@@ -931,8 +1116,18 @@ import os
             guard isActive(assistantID) else { throw CancellationError() }
             responseDeliveredEvent = true
             apply(event, to: assistantID)
-            if case .completed(let result) = event {
+            switch event {
+            case .completed(let result):
                 return result
+            case .toolUseStarted, .toolUseReady:
+                // A response that repeats a call hundreds of times would otherwise stream (and bill) until
+                // max_tokens before the round limit could apply.
+                if let message = messages.last(where: { $0.id == assistantID }),
+                   Self.unexchangedCallIDs(of: message).count > ToolLimits.maxStreamedCallsPerResponse {
+                    throw TooManyToolCalls()
+                }
+            default:
+                break
             }
         }
         try Task.checkCancellation()
@@ -1282,14 +1477,16 @@ import os
     /// turns send their `apiContent` (with attachments of earlier turns replaced by a short note once the
     /// request budget is used up — see `fittingAttachmentBudget`), and assistant turns are rendered by
     /// `ToolHistory` (tool rounds of tools outside `clientToolNames` as `<earlier_action_result>` blocks).
-    /// Messages in `compacting` are restored turns sent as text only (a user message unchanged). Consecutive
+    /// Messages in `compacting` are sent compacted: an assistant turn as its visible text only, an earlier user turn
+    /// without its attachments (the one being answered is never changed).
+    /// `enabledServerTools` nil keeps every complete server-tool pair (the executor's trust transcript). Consecutive
     /// same-role turns are left as they are (the API merges them); leading assistant turns are dropped
     /// because a conversation must start with the user.
     static func requestHistory(
         for messages: [ChatMessage],
         inFlight: UUID?,
         resumingInFlight: Bool,
-        enabledServerTools: Set<String>,
+        enabledServerTools: Set<String>?,
         clientToolNames: Set<String> = [],
         model: ModelOption? = nil,
         compacting: Set<UUID> = []
@@ -1307,7 +1504,9 @@ import os
                 let content: [JSONValue]
                 // A PDF over the model's page limit (e.g. attached for Opus, then switched to Haiku
                 // 4.5) would get every later request rejected; earlier turns send a note instead.
-                if let model, message.id != answeredUserID,
+                if message.id != answeredUserID, compacting.contains(message.id) {
+                    content = AttachmentBudget.strippingAttachments(from: userContent(message))
+                } else if let model, message.id != answeredUserID,
                    message.attachments.contains(where: { AttachmentBudget.exceedsPageLimit($0, model: model) }) {
                     content = AttachmentBudget.strippingAttachments(from: userContent(message))
                 } else {

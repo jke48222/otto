@@ -193,7 +193,17 @@ private struct FlagTool: OttoTool {
 
     func undo(callID: String, messageID: UUID, store: ToolCallStore) async -> String? { nil }
     func stop(callID: String) {}
-    func consumeContextNotes() -> [String] { [] }
+    /// Undo notes by the assistant message whose action was undone.
+    var notes: [UUID: [String]] = [:]
+    func consumeContextNotes() -> [String] {
+        defer { notes = [:] }
+        return notes.values.flatMap { $0 }
+    }
+    func consumeContextNotes(forMessages messageIDs: Set<UUID>) -> [String] {
+        let taken = messageIDs.flatMap { notes[$0] ?? [] }
+        for id in messageIDs { notes[id] = nil }
+        return taken
+    }
 
     private func finish(_ decision: ApprovalDecision) {
         pendingApproval = nil
@@ -802,6 +812,126 @@ final class ToolLoopTests: XCTestCase {
         XCTAssertEqual(history[2], entry("user", [ToolOutput.text("Done.").toolResultBlock(toolUseID: "t1")]))
     }
 
+    func testRetryAfterActionsRanContinuesFromTheLastExchange() async throws {
+        let client = ScriptedLLMClient([
+            toolRound([sideEffect("t1")]),
+            // Round 2 fails after announcing a call that never ran.
+            .failure(LLMError.overloaded, after: [
+                .messageStart(model: "claude-opus-5"), .textDelta(" Next."), .toolUseStarted(id: "t9", name: "echo"),
+            ]),
+            toolRound([echo("t2")], text: " Then this."),
+            finalReply(" All done."),
+        ])
+        let executor = FakeToolExecutor()
+        let (chat, _) = makeSession(client, executor: executor)
+        await run(chat, "Log water")
+        let failed = try reply(chat)
+        guard case .failed = failed.state else { return XCTFail("expected a failure") }
+        XCTAssertTrue(failed.includeInContext)
+        XCTAssertEqual(failed.toolCalls.map(\.id), ["t1", "t9"])
+
+        chat.retry(messageID: failed.id)
+        XCTAssertTrue(chat.isStreaming)
+        XCTAssertEqual(chat.messages[1].id, failed.id, "the same message continues")
+        XCTAssertEqual(chat.messages[1].text, "On it.", "what streamed after the last exchange is dropped")
+        await waitUntil { !chat.isStreaming }
+
+        // The retry re-sends from the last exchange: the action that ran is never asked for again.
+        XCTAssertEqual(client.requests[2].messages, [
+            entry("user", chat.messages[0].apiContent),
+            entry("assistant", roundContent([sideEffect("t1")], text: "On it.")),
+            entry("user", [ToolOutput.text("Done.").toolResultBlock(toolUseID: "t1")]),
+        ])
+        XCTAssertEqual(executor.executedRounds.map(\.callIDs), [["t1"], ["t2"]])
+        XCTAssertEqual(executor.executedRounds.last?.roundIndex, 1, "the round count carries over")
+        XCTAssertEqual(executor.executedRounds.last?.messageID, failed.id)
+
+        let message = try reply(chat)
+        XCTAssertEqual(chat.messages.count, 2)
+        XCTAssertEqual(message.id, failed.id)
+        XCTAssertEqual(message.state, .complete)
+        XCTAssertEqual(message.text, "On it. Then this. All done.")
+        XCTAssertEqual(message.toolCalls.map(\.id), ["t1", "t2"], "the call that never ran is gone")
+        XCTAssertEqual(message.toolCalls.map(\.status), [.succeeded, .succeeded])
+        XCTAssertEqual(message.toolExchanges.map(\.callIDs), [["t1"], ["t2"]])
+        XCTAssertEqual(message.toolExchanges.last?.contentEnd, 6)
+    }
+
+    /// Retry continues the same reply, so it keeps what the reply spent of its web budget.
+    func testRetryKeepsTheReplysWebBudget() async throws {
+        let client = ScriptedLLMClient([
+            toolRound([echo("t1")], usage: usage(searches: 8, fetches: 8)),
+            .failure(LLMError.overloaded, after: []),
+            finalReply("Done."),
+        ])
+        let (chat, _) = makeSession(client, executor: FakeToolExecutor())
+        await run(chat)
+        let failed = try reply(chat)
+        guard case .failed = failed.state else { return XCTFail("expected a failure") }
+        chat.retry(messageID: failed.id)
+        await waitUntil { !chat.isStreaming }
+        XCTAssertEqual(try reply(chat).state, .complete)
+        XCTAssertEqual(client.requests.map(\.serverToolLimits), [
+            ServerToolLimits(), ServerToolLimits(webSearch: 2, webFetch: 2), ServerToolLimits(webSearch: 2, webFetch: 2),
+        ], "the resumed request has 2 searches and 2 fetches left, not a fresh 10 + 10")
+    }
+
+    func testWebBudgetOfARestoredReplyIsRecountedFromItsContent() {
+        let content: [JSONValue] = [
+            ["type": "server_tool_use", "id": "a", "name": "web_search", "input": [:]],
+            ["type": "server_tool_use", "id": "b", "name": "web_search", "input": [:]],
+            ["type": "server_tool_use", "id": "c", "name": "web_fetch", "input": [:]],
+            ["type": "server_tool_use", "id": "d", "name": "code_execution", "input": [:]],
+            textBlock("Hi"),
+        ]
+        let left = ChatSession.webBudgetLeft(in: content)
+        XCTAssertEqual(left.searches, ToolLimits.webSearchesPerTurn - 2)
+        XCTAssertEqual(left.fetches, ToolLimits.webFetchesPerTurn - 1)
+    }
+
+    /// Two declines, a failure, then Retry: the continued reply still auto-declines the next card-requiring call.
+    func testRetryKeepsDeclineFatigue() async throws {
+        let client = ScriptedLLMClient([
+            toolRound([sideEffect("s1", "one"), sideEffect("s2", "two")]),
+            .failure(LLMError.overloaded, after: []),
+            toolRound([sideEffect("s3", "three")], text: " Again."),
+            finalReply(" Okay."),
+        ])
+        let executor = ToolExecutor(permissions: FakePermissionProvider(default: .granted),
+                                    approvals: ApprovalStore(defaults: TestDefaults.make(for: self)), log: nil)
+        let (chat, _) = makeSession(client, executor: executor)
+        chat.send(text: "Log water", attachments: [])
+        for id in ["s1", "s2"] {
+            await waitUntil { chat.pendingApproval?.callID == id }
+            chat.resolveApproval(.deny, hardwareConfirmed: false, visibleSince: nil)
+        }
+        await waitUntil { !chat.isStreaming }
+        let failed = try reply(chat)
+        guard case .failed = failed.state else { return XCTFail("expected a failure") }
+
+        chat.retry(messageID: failed.id)
+        await waitUntil { chat.pendingApproval != nil || !chat.isStreaming }
+        XCTAssertNil(chat.pendingApproval, "no new card after two declines in this reply")
+        if chat.pendingApproval != nil { chat.cancel() }
+        await waitUntil { !chat.isStreaming }
+        let s3 = try XCTUnwrap(try reply(chat).toolCalls.first { $0.id == "s3" })
+        XCTAssertEqual(s3.status, .denied)
+        XCTAssertEqual(s3.result, .error(
+            "declined: The user declined several actions in this reply. Ask them before trying again."))
+    }
+
+    func testRetryOfAFailedTurnWithoutActionsStillStartsOver() async throws {
+        let client = ScriptedLLMClient([.failure(LLMError.overloaded, after: []), finalReply("Fine.")])
+        let executor = FakeToolExecutor()
+        let (chat, _) = makeSession(client, executor: executor)
+        await run(chat)
+        let failedID = try reply(chat).id
+        chat.retry(messageID: failedID)
+        await waitUntil { !chat.isStreaming }
+        XCTAssertNotEqual(try reply(chat).id, failedID)
+        XCTAssertEqual(try reply(chat).text, "Fine.")
+    }
+
     func testRejectedContentTakesAFailedToolTurnOutOfContext() async throws {
         let client = ScriptedLLMClient([
             toolRound([echo("t1")]),
@@ -831,7 +961,94 @@ final class ToolLoopTests: XCTestCase {
         XCTAssertEqual(chat.phase, .idle)
     }
 
+    // MARK: - Runaway responses
+
+    func testAResponseStreamingTooManyCallsIsStoppedEarly() async throws {
+        var events: [StreamEvent] = [.messageStart(model: "claude-opus-5"), .textDelta("Adding it.")]
+        for index in 0..<(ToolLimits.maxStreamedCallsPerResponse * 4) {
+            events.append(.toolUseStarted(id: "r\(index)", name: "side_effect"))
+        }
+        let client = ScriptedLLMClient([.stall(events)])
+        let executor = FakeToolExecutor()
+        let (chat, _) = makeSession(client, executor: executor)
+        await run(chat, "Add a reminder")
+
+        let message = try reply(chat)
+        XCTAssertEqual(message.state, .complete)
+        XCTAssertEqual(message.text, "Adding it." + ChatSession.toolLimitNote)
+        XCTAssertEqual(message.toolCalls.count, ToolLimits.maxStreamedCallsPerResponse + 1,
+                       "stopped at the first call over the limit")
+        XCTAssertTrue(message.toolCalls.allSatisfy { $0.status == .skipped("Action limit reached") && $0.result == nil })
+        XCTAssertTrue(message.toolExchanges.isEmpty)
+        XCTAssertTrue(executor.executedRounds.isEmpty, "nothing ran")
+        await waitUntil { client.cancellations == 1 }
+        XCTAssertEqual(client.requests.count, 1)
+    }
+
+    // MARK: - Undo notes
+
+    func testUndoNotesOnlyReachTheConversationTheyBelongTo() async throws {
+        let client = ScriptedLLMClient([finalReply("Added."), finalReply("Sunny."), finalReply("Okay.")])
+        let executor = ClosureExecutor()
+        let (chat, _) = makeSession(client, executor: executor)
+        await run(chat, "Add Dentist")
+        let firstReply = try reply(chat).id
+        let note = "[Note: the user undid an action \u{2014} the calendar event \u{201C}Dentist\u{201D} was removed.]"
+        executor.notes[firstReply] = [note]
+
+        chat.reset()
+        await run(chat, "What's the weather?")
+        XCTAssertFalse(chat.messages[0].apiContent.contains(ToolHistory.textBlock(note)), "a new chat never gets it")
+        XCTAssertEqual(executor.notes[firstReply], [note], "it waits for its own conversation")
+
+        executor.notes[try reply(chat).id] = ["[Note: this chat]"]
+        await run(chat, "Thanks")
+        XCTAssertTrue(chat.messages[2].apiContent.contains(ToolHistory.textBlock("[Note: this chat]")))
+        XCTAssertFalse(chat.messages[2].apiContent.contains(ToolHistory.textBlock(note)))
+    }
+
     // MARK: - Server-tool budget and web pause
+
+    func testTheExecutorSeesAPageReadEvenAfterWebToolsLeaveTheRequest() async throws {
+        let fetchCall: JSONValue = ["type": "server_tool_use", "id": "srv1", "name": "web_fetch",
+                                    "input": ["url": "https://evil.example/"]]
+        let fetchResult: JSONValue = [
+            "type": "web_fetch_tool_result", "tool_use_id": "srv1",
+            "content": ["type": "web_fetch_result", "url": "https://evil.example/", "content": ["type": "document"]],
+        ]
+        let read = PlannedCall(id: "r1", name: "private_read", input: ["range": "today"])
+        let firstContent: [JSONValue] = [planThinking, fetchCall, fetchResult, textBlock("Reading.")]
+            + [toolUseBlock("r1", "private_read", ["range": "today"])]
+        let client = ScriptedLLMClient([
+            .events([
+                .messageStart(model: "claude-opus-5"),
+                .toolUseStarted(id: read.id, name: read.name),
+                .toolUseReady(id: read.id, name: read.name, input: read.input, rawInput: read.input?.encodedString() ?? ""),
+                .completed(StreamResult(content: firstContent, stopReason: "tool_use", stopDetails: nil,
+                                        model: "claude-opus-5", usage: usage(fetches: 1))),
+            ]),
+            toolRound([sideEffect("s1")]),
+            finalReply("Done."),
+        ])
+        let executor = FakeToolExecutor()
+        executor.scriptedOutcomes = [
+            ToolRoundOutcome(webPause: WebPauseReason(privateSource: "your calendar", untrustedSource: "evil.example")),
+        ]
+        let (chat, _) = makeSession(client, executor: executor, tools: [EchoTool(), PrivateReadTool(), SideEffectTool()])
+        await run(chat, "Summarize evil.example and add the date")
+
+        XCTAssertEqual(client.requests[1].serverToolLimits, .none)
+        func hasFetchResult(_ entries: [JSONValue]) -> Bool {
+            entries.contains { $0["content"]?.arrayValue?.contains(fetchResult) == true }
+        }
+        XCTAssertFalse(hasFetchResult(client.requests[1].messages), "the paused request defines no web tools")
+        let second = try XCTUnwrap(executor.executedRounds.last)
+        XCTAssertTrue(hasFetchResult(second.transcript), "the trust check still sees the page")
+        let trust = TrustLedger.assess(transcript: second.transcript, untrustedTools: [:])
+        XCTAssertTrue(trust.caution)
+        XCTAssertEqual(trust.cautionHeadlineSource, "evil.example")
+        XCTAssertEqual(Set(second.knownTools.keys), ["echo", "private_read", "side_effect"])
+    }
 
     func testServerToolBudgetShrinksAcrossTheReply() async throws {
         let client = ScriptedLLMClient([

@@ -46,9 +46,12 @@ enum ToolHistory {
     ///   the sanitized content of a complete turn, the visible text typed after the last exchange for a
     ///   cancelled turn, and nothing for a failed one (its partial round never ran). Refused and settled
     ///   streaming messages send nothing.
+    /// - `enabledServerTools` nil keeps the complete call/result pairs of every server tool (the transcript the
+    ///   executor's trust check reads, which must see every page Claude read even when this request defines no web
+    ///   tools).
     static func entries(
         for message: ChatMessage,
-        enabledServerTools: Set<String>,
+        enabledServerTools: Set<String>?,
         clientToolNames: Set<String>,
         isInFlight: Bool,
         resuming: Bool
@@ -153,7 +156,7 @@ enum ToolHistory {
     ///   orphaned client `tool_use` blocks dropped. A turn left with nothing but thinking is skipped.
     /// - `.cancelled`: a single text block with the visible text, if there is any.
     /// - `.refused` / `.failed` / `.streaming`: never sent.
-    static func contextContent(forAssistant message: ChatMessage, enabledServerTools: Set<String>) -> [JSONValue] {
+    static func contextContent(forAssistant message: ChatMessage, enabledServerTools: Set<String>?) -> [JSONValue] {
         switch message.state {
         case .complete:
             let blocks = pairedServerToolBlocks(
@@ -337,9 +340,9 @@ enum ToolHistory {
     }
 
     /// Keeps only complete call/result pairs of tools the request defines (the API rejects history that uses
-    /// undefined tools, e.g. after web access was switched off or on Haiku). A call issued by another call
-    /// (`caller.tool_id`, e.g. a search run inside dynamic filtering) goes with it.
-    static func pairedServerToolBlocks(_ blocks: [JSONValue], allowedTools: Set<String>) -> [JSONValue] {
+    /// undefined tools, e.g. after web access was switched off or on Haiku); nil allows every tool. A call issued
+    /// by another call (`caller.tool_id`, e.g. a search run inside dynamic filtering) goes with it.
+    static func pairedServerToolBlocks(_ blocks: [JSONValue], allowedTools: Set<String>?) -> [JSONValue] {
         let keptCalls = keptServerToolCalls(in: blocks, allowedTools: allowedTools, keepPendingCalls: false)
         return blocks.filter { block in
             guard let id = serverToolCallID(of: block) else {

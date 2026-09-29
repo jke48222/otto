@@ -12,10 +12,14 @@ import Foundation
 struct CalendarCreateReminderTool: OttoTool {
     let eventKit: any EventKitProviding
     let clock: CalendarToolClock
+    /// Shared by copies of this tool, so the registry's instance remembers every Undo it ran.
+    let undone: UndoneCalendarItems
 
-    init(eventKit: any EventKitProviding, clock: CalendarToolClock = .live) {
+    init(eventKit: any EventKitProviding, clock: CalendarToolClock = .live,
+         undone: UndoneCalendarItems = UndoneCalendarItems()) {
         self.eventKit = eventKit
         self.clock = clock
+        self.undone = undone
     }
 
     var name: String { "reminders_create" }
@@ -167,7 +171,8 @@ struct CalendarCreateReminderTool: OttoTool {
             toolName: name,
             itemID: record.id,
             fallback: UndoFallback(title: record.title, start: record.dueDate ?? due?.date, end: nil,
-                                   calendarIdentifier: record.listID.isEmpty ? chosen.id : record.listID),
+                                   calendarIdentifier: record.listID.isEmpty ? chosen.id : record.listID,
+                                   created: record.creationDate),
             expires: clock.now().addingTimeInterval(ToolLimits.undoWindow.timeInterval),
             doneTitle: "Removed “\(title)”",
             noteForClaude: "the reminder “\(title)” was removed"
@@ -177,15 +182,21 @@ struct CalendarCreateReminderTool: OttoTool {
         return ToolRunResult(output: .text(CalendarToolSupport.json(result)), doneTitle: doneTitle, undo: token)
     }
 
-    /// Removes the reminder by identifier; when that fails, searches its list for exactly one reminder with the same
-    /// title and due date.
+    /// Removes the reminder by identifier; when that fails, searches its list for exactly one open reminder with the
+    /// same title and due date that is no older than the one Otto created. A reminder this tool's Undo already
+    /// removed is never searched for again.
     func undo(_ token: UndoToken) async throws {
         do {
-            if try await eventKit.removeReminder(identifier: token.itemID) { return }
+            if try await eventKit.removeReminder(identifier: token.itemID) {
+                undone.insert(token.itemID)
+                return
+            }
         } catch {
             throw CalendarToolSupport.removeError(error, noun: "reminder", app: "Reminders")
         }
-        guard let fallback = token.fallback else { throw CalendarToolSupport.alreadyRemoved("reminder") }
+        guard !undone.contains(token.itemID), let fallback = token.fallback else {
+            throw CalendarToolSupport.alreadyRemoved("reminder")
+        }
         let candidates: [CalendarReminderRecord]
         do {
             candidates = try await eventKit.reminders(in: [fallback.calendarIdentifier], filter: .all)
@@ -194,6 +205,7 @@ struct CalendarCreateReminderTool: OttoTool {
         }
         let matches = candidates.filter {
             $0.title == fallback.title && CalendarToolSupport.sameInstant($0.dueDate, fallback.start)
+                && !$0.isCompleted && !undone.contains($0.id) && !Self.isOlder($0.creationDate, than: fallback.created)
         }
         guard matches.count <= 1 else { throw CalendarToolSupport.severalMatches("reminder", app: "Reminders") }
         guard let match = matches.first else { throw CalendarToolSupport.alreadyRemoved("reminder") }
@@ -204,7 +216,14 @@ struct CalendarCreateReminderTool: OttoTool {
         } catch {
             throw CalendarToolSupport.removeError(error, noun: "reminder", app: "Reminders")
         }
+        undone.insert(token.itemID, match.id)
         CalendarToolSupport.logger.info("Undo found the reminder again under \(match.id, privacy: .public)")
+    }
+
+    /// True when both dates are known and `date` is more than a second before `created`.
+    private static func isOlder(_ date: Date?, than created: Date?) -> Bool {
+        guard let date, let created else { return false }
+        return date < created.addingTimeInterval(-1)
     }
 
     // MARK: - Private

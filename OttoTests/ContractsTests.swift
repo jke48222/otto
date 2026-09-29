@@ -88,10 +88,134 @@ final class ContractsToolSchemaTests: XCTestCase {
         ]).setting("required", to: ["rows"])
         XCTAssertFalse(ToolSchema.isStrictSafe(arrayOfOpenObjects))
 
+        // Strict mode only fills required keys (live: an optional "due" was never sent and the call was repeated
+        // instead), so an optional property must be required and nullable.
         let optionalProperty: JSONValue = safe.setting("properties", to: [
             "name": ["type": "string"], "note": ["type": ["string", "null"], "description": "Optional"],
         ])
-        XCTAssertTrue(ToolSchema.isStrictSafe(optionalProperty), "not every property has to be required")
+        XCTAssertFalse(ToolSchema.isStrictSafe(optionalProperty), "every property must be required")
+        XCTAssertTrue(ToolSchema.isStrictSafe(optionalProperty.setting("required", to: ["name", "note"])))
+        XCTAssertFalse(ToolSchema.isStrictSafe(optionalProperty.setting("required", to: ["name", "note", "note"])))
+    }
+
+    func testStrictWireSchemaRequiresEveryPropertyAndMakesOptionalOnesNullable() {
+        let schema: JSONValue = [
+            "type": "object",
+            "properties": [
+                "title": ["type": "string", "minLength": 1, "description": "Reminder title."],
+                "due": ["type": "string", "pattern": "^\\d{4}", "description": "Due date."],
+                "priority": ["type": "string", "enum": ["low", "high"]],
+                "kind": ["const": "reminder"],
+                "flags": ["type": ["boolean"]],
+                "alarm": [
+                    "type": "object",
+                    "properties": ["minutes": ["type": "integer"], "sound": ["type": "string"]],
+                    "required": ["minutes"],
+                    "additionalProperties": false,
+                ],
+                "tags": ["type": "array", "items": [
+                    "type": "object", "properties": ["name": ["type": "string"]], "required": [],
+                    "additionalProperties": false,
+                ]],
+            ],
+            "required": ["title"],
+            "additionalProperties": false,
+        ]
+        let wire = ToolSchema.wireSchema(schema, strict: true)
+        XCTAssertTrue(ToolSchema.isStrictSafe(wire))
+        XCTAssertEqual(wire["required"], ["title", "alarm", "due", "flags", "kind", "priority", "tags"],
+                       "required keys first, then the optional ones by name")
+        XCTAssertEqual(wire["properties"]?["title"], ["type": "string", "description": "Reminder title."])
+        XCTAssertEqual(wire["properties"]?["due"], ["type": ["string", "null"], "description": "Due date."])
+        XCTAssertEqual(wire["properties"]?["priority"], ["enum": ["low", "high", nil]],
+                       "an optional enum drops its type: the API rejects an enum next to a type array")
+        XCTAssertEqual(wire["properties"]?["kind"], ["enum": ["reminder", nil]])
+        XCTAssertEqual(wire["properties"]?["flags"]?["type"], ["boolean", "null"])
+        XCTAssertEqual(wire["properties"]?["alarm"]?["type"], ["object", "null"])
+        XCTAssertEqual(wire["properties"]?["alarm"]?["required"], ["minutes", "sound"])
+        XCTAssertEqual(wire["properties"]?["alarm"]?["properties"]?["sound"]?["type"], ["string", "null"])
+        XCTAssertEqual(wire["properties"]?["tags"]?["items"]?["required"], ["name"])
+        XCTAssertEqual(wire["properties"]?["tags"]?["items"]?["properties"]?["name"]?["type"], ["string", "null"])
+        XCTAssertEqual(ToolSchema.wireSchema(schema, strict: false), schema, "non-strict schemas are sent as they are")
+    }
+
+    @MainActor
+    func testNoWireSchemaCombinesAnEnumWithATypeArray() {
+        // Regression: {"type": ["string", "null"], "enum": ["Music", "Spotify", null]} made every request 400.
+        let schema: JSONValue = [
+            "type": "object",
+            "properties": [
+                "action": ["type": "string", "enum": ["play", "pause"]],
+                "app": ["type": "string", "enum": ["Music", "Spotify"], "description": "Player."],
+                "mode": ["type": ["string"], "enum": ["a"]],
+                "kind": ["type": "string", "const": "x"],
+                "nested": ["type": "object", "properties": ["level": ["type": "integer", "enum": [1, 2]]],
+                           "required": [], "additionalProperties": false],
+            ],
+            "required": ["action"],
+            "additionalProperties": false,
+        ]
+        let wire = ToolSchema.wireSchema(schema, strict: true)
+        XCTAssertTrue(ToolSchema.isStrictSafe(wire))
+        XCTAssertEqual(wire["properties"]?["action"], ["type": "string", "enum": ["play", "pause"]],
+                       "a required enum keeps its single type")
+        XCTAssertEqual(wire["properties"]?["app"], ["enum": ["Music", "Spotify", nil], "description": "Player."])
+        XCTAssertEqual(wire["properties"]?["mode"], ["enum": ["a", nil]])
+        XCTAssertEqual(wire["properties"]?["kind"], ["enum": ["x", nil]])
+        XCTAssertEqual(wire["properties"]?["nested"]?["properties"]?["level"], ["enum": [1, 2, nil]])
+
+        func assertNoEnumWithTypeArray(_ node: JSONValue, path: String) {
+            guard let object = node.objectValue else { return }
+            if object["enum"] != nil, case .array? = object["type"] {
+                XCTFail("\(path) combines an enum with a type array")
+            }
+            for (key, value) in object {
+                if key == "properties", let properties = value.objectValue {
+                    for (name, child) in properties { assertNoEnumWithTypeArray(child, path: "\(path).\(name)") }
+                } else if key == "items" {
+                    assertNoEnumWithTypeArray(value, path: "\(path)[]")
+                }
+            }
+        }
+        assertNoEnumWithTypeArray(wire, path: "schema")
+        let settings = AppSettings(defaults: TestDefaults.make(for: self), usesKeychain: false)
+        let media = MediaControlTool(monitor: NowPlayingMonitor(settings: settings, scripting: DemoMediaScripting()))
+        let registry = ToolCatalog.makeRegistry(settings: settings, services: .demo, extraTools: [media])
+        XCTAssertNotNil(registry.tool(named: "media_control"))
+        for tool in registry.allTools {
+            assertNoEnumWithTypeArray(ToolSchema.wireSchema(tool.inputSchema, strict: tool.isStrict), path: tool.name)
+        }
+
+        let broken: JSONValue = [
+            "type": "object", "properties": ["app": ["type": ["string", "null"], "enum": ["Music", nil]]],
+            "required": ["app"], "additionalProperties": false,
+        ]
+        XCTAssertFalse(ToolSchema.isStrictSafe(broken), "the shape the API rejects is not strict-safe")
+    }
+
+    func testNullOptionalInputsBecomeAbsent() {
+        let schema: JSONValue = [
+            "type": "object",
+            "properties": [
+                "title": ["type": "string"], "due": ["type": "string"],
+                "alarm": ["type": "object", "properties": ["minutes": ["type": "integer"], "sound": ["type": "string"]],
+                          "required": ["minutes"], "additionalProperties": false],
+                "tags": ["type": "array", "items": ["type": "object", "properties": ["name": ["type": "string"]],
+                                                    "required": [], "additionalProperties": false]],
+            ],
+            "required": ["title"],
+            "additionalProperties": false,
+        ]
+        let input: JSONValue = [
+            "title": nil, "due": nil, "alarm": ["minutes": nil, "sound": nil], "tags": [["name": nil], ["name": "x"]],
+            "extra": nil,
+        ]
+        XCTAssertEqual(ToolSchema.removingNullOptionals(input, schema: schema), [
+            "title": nil, "alarm": ["minutes": nil], "tags": [[:], ["name": "x"]], "extra": nil,
+        ], "required and unknown keys keep their null, so validation still reports them")
+        XCTAssertEqual(ToolSchema.removingNullOptionals(["title": "Otto", "due": "2026-09-30T09:00"], schema: schema),
+                       ["title": "Otto", "due": "2026-09-30T09:00"])
+        XCTAssertEqual(ToolSchema.removingNullOptionals("text", schema: schema), "text")
     }
 
     private func removing(_ key: String, from schema: JSONValue) -> JSONValue {

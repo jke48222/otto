@@ -94,7 +94,7 @@ final class ActionLogTests: XCTestCase {
 
     func testPruneDropsEntriesOlderThanMaxAge() async throws {
         let now = Date(timeIntervalSinceReferenceDate: 810_000_000)
-        let log = ActionLog(directory: logsFolder, maxAge: 30 * 86_400)
+        let log = ActionLog(directory: logsFolder, maxAge: 30 * 86_400, now: { now })
         let old = entry("open_url", daysAgo: 45, from: now)
         let recentEntry = entry("run_shortcut", daysAgo: 2, from: now)
         await log.append(old)
@@ -111,6 +111,64 @@ final class ActionLogTests: XCTestCase {
         XCTAssertEqual(afterShorter, [])
         let text = try String(contentsOf: logsFolder.appendingPathComponent(ActionLog.fileName), encoding: .utf8)
         XCTAssertEqual(text, "")
+    }
+
+    func testAShorterRetentionPrunesRightAway() async throws {
+        let log = ActionLog(directory: logsFolder, maxAge: 30 * 86_400)
+        let older = entry("calendar_create_event", daysAgo: 3, summary: "Add “Therapy with Dr. Lee” to Calendar")
+        let fresh = entry("open_url", daysAgo: 0.1)
+        await log.append(older)
+        await log.append(fresh)
+
+        // History set to Keep conversations for 1 day, with no rotation or relaunch after it.
+        await log.setMaxAge(86_400)
+        let text = try String(contentsOf: logsFolder.appendingPathComponent(ActionLog.fileName), encoding: .utf8)
+        XCTAssertFalse(text.contains("Therapy"), "the expired title left the disk at once")
+        let kept = await log.recent(limit: 10)
+        XCTAssertEqual(kept.map(\.id), [fresh.id])
+    }
+
+    func testExpiredEntriesGoAtTheNextAppendOrRead() async throws {
+        let seeding = ActionLog(directory: logsFolder, maxAge: nil)
+        await seeding.append(entry("calendar_create_event", daysAgo: 40, summary: "Add “Therapy” to Calendar"))
+
+        // A long-running session: the entry expired since the last prune, and nothing rotated.
+        let log = ActionLog(directory: logsFolder, maxAge: 30 * 86_400)
+        let listed = await log.recent(limit: 10)
+        XCTAssertEqual(listed, [], "a read never shows an expired entry")
+        let fresh = entry("open_url")
+        await log.append(fresh)
+        let text = try String(contentsOf: logsFolder.appendingPathComponent(ActionLog.fileName), encoding: .utf8)
+        XCTAssertFalse(text.contains("Therapy"))
+        let kept = await log.recent(limit: 10)
+        XCTAssertEqual(kept.map(\.id), [fresh.id])
+    }
+
+    func testWithHistoryOffEntriesStayInMemory() async throws {
+        let log = ActionLog(directory: logsFolder)
+        let saved = entry("open_url")
+        await log.append(saved)
+        await log.setPersisting(false)
+        let unsaved = entry("run_applescript", summary: "Run a script")
+        await log.append(unsaved)
+
+        let file = logsFolder.appendingPathComponent(ActionLog.fileName)
+        let text = try String(contentsOf: file, encoding: .utf8)
+        XCTAssertEqual(text.split(separator: "\n").count, 1, "nothing new reached the disk")
+        XCTAssertFalse(text.contains("run_applescript"))
+        let listed = await log.recent(limit: 10)
+        XCTAssertEqual(listed.map(\.id), [unsaved.id, saved.id], "this session still lists it")
+
+        let reloaded = ActionLog(directory: logsFolder)
+        let afterRelaunch = await reloaded.recent(limit: 10)
+        XCTAssertEqual(afterRelaunch.map(\.id), [saved.id])
+
+        await log.setPersisting(true)
+        let later = entry("media_control")
+        await log.append(later)
+        let resumed = try String(contentsOf: file, encoding: .utf8)
+        XCTAssertTrue(resumed.contains("media_control"))
+        XCTAssertFalse(resumed.contains("run_applescript"), "entries made while off are never written later")
     }
 
     func testPruneInMemoryAndWithoutTimeLimit() async {
