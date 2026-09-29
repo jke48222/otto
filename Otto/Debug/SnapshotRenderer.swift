@@ -7,7 +7,9 @@
 //  in-memory stand-ins (a scripted Claude, demo action services, fixed permissions, and selection, window,
 //  paste and thumbnail seams that never touch the system), then seeds it through `debugSeed(features:)` and
 //  the subsystems' own `debugSeed`s. Approval scenes run one real scripted turn, so the card is exactly what the
-//  executor builds. Views are hosted in an off-screen window with animations off and captured at 2×.
+//  executor builds. Views are hosted in an off-screen window with animations off and captured at 2×. Builds
+//  with licensing add the composer gate and Settings → License scenes under licensing/ (and the paid build its
+//  Updates scene under paid/), each on a StaticLicenseModel.
 //
 
 // Debug tooling: compiled only into Debug builds, or into a Release build made with the
@@ -65,7 +67,7 @@ enum SnapshotRenderer {
             stage.tearDown()
         }
 
-        for tab in SettingsTab.allCases {
+        for tab in SettingsTab.allCases where !isFlavorTab(tab) {
             defaults.removePersistentDomain(forName: defaultsSuite)
             let stage = SnapshotStage(defaults: defaults, reply: .answer(SnapshotFixtures.shortAnswer))
             await stage.prepareSettings()
@@ -94,8 +96,71 @@ enum SnapshotRenderer {
             to: directory.appendingPathComponent("settings.png")
         )
 
+        #if OTTO_LICENSING
+        await renderFlavorScenes(to: directory, defaults: defaults)
+        #endif
+
         defaults.removePersistentDomain(forName: defaultsSuite)
     }
+
+    /// The License tab is drawn by the flavor scenes below, with a license model in each state.
+    private static func isFlavorTab(_ tab: SettingsTab) -> Bool {
+        #if OTTO_LICENSING
+        return tab == .license
+        #else
+        return false
+        #endif
+    }
+
+    #if OTTO_LICENSING
+    /// The licensing scenes (SPEC-v2 §14.17.4) into `licensing/`, and in the paid build the Updates scene into
+    /// `paid/`: the composer gate line over the open notch, and Settings → License on a StaticLicenseModel.
+    @MainActor
+    private static func renderFlavorScenes(to directory: URL, defaults: UserDefaults) async {
+        for scene in FlavorSnapshotScene.allCases {
+            let url = directory.appendingPathComponent(scene.fileName)
+            do {
+                try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                                        withIntermediateDirectories: true)
+            } catch {
+                report(error: "Couldn't create the folder for \(scene.fileName): \(error.localizedDescription)")
+                continue
+            }
+            defaults.removePersistentDomain(forName: defaultsSuite)
+            let license = scene.licenseModel(now: Date())
+            let stage = SnapshotStage(defaults: defaults, reply: .answer(SnapshotFixtures.shortAnswer), sendGate: license)
+            switch scene.surface {
+            case .notch(let composerText):
+                await stage.prepareOpen(composerText: composerText)
+                await render(
+                    SnapshotCanvas(viewModel: stage.viewModel, size: SnapshotScene.canvasSize),
+                    size: SnapshotScene.canvasSize,
+                    background: .black,
+                    expectsNotchAtTop: true,
+                    hoverPoint: nil,
+                    to: url
+                )
+            case .settings(let height):
+                await stage.prepareSettings()
+                var services = stage.settingsServices()
+                services.license = license
+                #if OTTO_SPARKLE
+                services.updater = scene.updaterModel()
+                #endif
+                await render(
+                    SettingsView(settings: stage.settings, tab: .license, services: services)
+                        .environment(SettingsNavigation()),
+                    size: CGSize(width: SettingsWindowController.contentWidth, height: height),
+                    background: .windowBackgroundColor,
+                    expectsNotchAtTop: false,
+                    hoverPoint: nil,
+                    to: url
+                )
+            }
+            stage.tearDown()
+        }
+    }
+    #endif
 
     // MARK: - Rendering
 
@@ -370,6 +435,147 @@ private enum SnapshotScene: String, CaseIterable {
     }
 }
 
+#if OTTO_LICENSING
+/// The licensing scenes of SPEC-v2 §14.17.4 in `docs/snapshots/licensing`, and the paid build's Updates scene in
+/// `docs/snapshots/paid`. The raw value is the file name without its extension. Dates are fixed, or "today", so
+/// every run draws the same picture; the license lives on api.polar.sh, so no scene but the problems one shows
+/// the sandbox badge.
+private enum FlavorSnapshotScene: String {
+    case openTrialEnded = "licensing/open-trial-ended"
+    case openCheckRequired = "licensing/open-check-required"
+    case settingsLicenseTrial = "licensing/settings-license-trial"
+    case settingsLicenseLicensed = "licensing/settings-license-licensed"
+    case settingsLicenseOverdue = "licensing/settings-license-overdue"
+    case settingsLicenseEnded = "licensing/settings-license-ended"
+    case settingsLicenseSeatLimit = "licensing/settings-license-seat-limit"
+    case settingsLicenseProblems = "licensing/settings-license-problems"
+    #if OTTO_SPARKLE
+    case settingsLicenseUpdates = "paid/settings-license-updates"
+    #endif
+
+    enum Surface {
+        /// The open notch with this draft in the composer.
+        case notch(composerText: String)
+        /// Settings → License at this height.
+        case settings(height: CGFloat)
+    }
+
+    static var allCases: [FlavorSnapshotScene] {
+        let licensing: [FlavorSnapshotScene] = [
+            .openTrialEnded, .openCheckRequired, .settingsLicenseTrial, .settingsLicenseLicensed,
+            .settingsLicenseOverdue, .settingsLicenseEnded, .settingsLicenseSeatLimit, .settingsLicenseProblems,
+        ]
+        #if OTTO_SPARKLE
+        return licensing + [.settingsLicenseUpdates]
+        #else
+        return licensing
+        #endif
+    }
+
+    var fileName: String { rawValue + ".png" }
+
+    @MainActor var surface: Surface {
+        switch self {
+        case .openTrialEnded, .openCheckRequired:
+            return .notch(composerText: "Summarize this thread in three bullets")
+        #if OTTO_SPARKLE
+        case .settingsLicenseUpdates:
+            // Tall enough for the Updates section under the license rows.
+            return .settings(height: SettingsWindowController.heightRange.upperBound)
+        #endif
+        default:
+            return .settings(height: SettingsWindowController.height(for: .license))
+        }
+    }
+
+    @MainActor func licenseModel(now: Date) -> StaticLicenseModel {
+        let configuration = Self.configuration
+        switch self {
+        case .openTrialEnded, .settingsLicenseEnded:
+            return StaticLicenseModel(status: .trialEnded(endedAt: Self.trialEndedAt), configuration: configuration)
+        case .openCheckRequired:
+            return StaticLicenseModel(status: .licensedCheckRequired(Self.summary(validatedAt: Self.requiredSince)),
+                                      configuration: configuration)
+        case .settingsLicenseTrial:
+            return StaticLicenseModel(status: .trial(endsAt: Self.trialEndsAt, daysLeft: 10),
+                                      configuration: configuration)
+        case .settingsLicenseLicensed:
+            return StaticLicenseModel(status: .licensed(Self.summary(validatedAt: Calendar.current.startOfDay(for: now))),
+                                      configuration: configuration)
+        case .settingsLicenseOverdue:
+            return StaticLicenseModel(status: .licensedCheckOverdue(Self.summary(validatedAt: Self.overdueSince),
+                                                                    sendingPausesAt: Self.sendingPausesAt),
+                                      configuration: configuration)
+        case .settingsLicenseSeatLimit:
+            let message = LicenseCopy.activationFailure(.seatLimitReached(limit: LicensePolicy.seatsPerLicense),
+                                                        backend: .polar, supportEmail: configuration.supportEmail)
+            return StaticLicenseModel(status: .trialEnded(endedAt: Self.trialEndedAt), configuration: configuration,
+                                      lastMessage: message)
+        case .settingsLicenseProblems:
+            return StaticLicenseModel(status: .trial(endsAt: Self.trialEndsAt, daysLeft: 10),
+                                      configuration: Self.misconfigured)
+        #if OTTO_SPARKLE
+        case .settingsLicenseUpdates:
+            return StaticLicenseModel(status: .licensed(Self.summary(validatedAt: Calendar.current.startOfDay(for: now))),
+                                      configuration: configuration)
+        #endif
+        }
+    }
+
+    #if OTTO_SPARKLE
+    /// Sparkle has 1.1.1 waiting (a gentle reminder), last checked on a fixed day.
+    @MainActor func updaterModel() -> StaticUpdaterModel? {
+        guard self == .settingsLicenseUpdates else { return nil }
+        return StaticUpdaterModel(source: .sparkle, pendingUpdate: PendingUpdate(version: "1.1.1", releaseNotes: nil),
+                                  lastCheck: Self.lastUpdateCheck)
+    }
+    #endif
+
+    /// The preview configuration on Polar's production host, as a buyer's copy has it.
+    private static let configuration: LicenseConfiguration = {
+        let preview = LicenseConfiguration.preview
+        return LicenseConfiguration(
+            siteHost: preview.siteHost,
+            supportEmail: preview.supportEmail,
+            polar: preview.polar.map {
+                PolarConfiguration(apiHost: LicenseConfiguration.polarProductionHost, organizationID: $0.organizationID,
+                                   benefitID: $0.benefitID, portalSlug: $0.portalSlug)
+            },
+            gumroad: nil,
+            gumroadExplicitlyOff: true,
+            problems: []
+        )
+    }()
+
+    /// A Debug build whose Polar IDs are still placeholders (§14.3).
+    private static let misconfigured = LicenseConfiguration(
+        siteHost: LicenseConfiguration.preview.siteHost,
+        supportEmail: LicenseConfiguration.preview.supportEmail,
+        polar: nil,
+        gumroad: nil,
+        gumroadExplicitlyOff: false,
+        problems: [
+            "OTTO_POLAR_ORGANIZATION_ID is still a placeholder",
+            "OTTO_POLAR_BENEFIT_ID is still a placeholder",
+        ]
+    )
+
+    // Noon UTC, so the printed day is the same in every time zone within ±11 h.
+    private static let trialEndsAt = Date(timeIntervalSince1970: 1_791_547_200)     // 2026-10-09
+    private static let trialEndedAt = Date(timeIntervalSince1970: 1_789_905_600)    // 2026-09-20
+    private static let overdueSince = Date(timeIntervalSince1970: 1_787_572_800)    // 2026-08-24
+    private static let sendingPausesAt = Date(timeIntervalSince1970: 1_791_374_400) // 2026-10-07
+    private static let requiredSince = Date(timeIntervalSince1970: 1_786_363_200)   // 2026-08-10
+    private static let lastUpdateCheck = Date(timeIntervalSince1970: 1_789_905_600) // 2026-09-20
+
+    private static func summary(validatedAt: Date) -> LicenseSummary {
+        LicenseSummary(record: AppComposition.sampleLicenseRecord(configuration: configuration,
+                                                                  activatedAt: requiredSince,
+                                                                  validatedAt: validatedAt))
+    }
+}
+#endif
+
 /// How the scripted Claude answers a request.
 private enum SnapshotReply: Sendable {
     /// Plain text, end_turn.
@@ -422,7 +628,8 @@ private final class SnapshotStage {
     ]
     static let finderAutomation = Permission.automation(bundleID: "com.apple.finder", appName: "Finder")
 
-    init(defaults: UserDefaults, reply: SnapshotReply) {
+    /// `sendGate` pauses sending in the licensing scenes; nil everywhere else, as in the source build.
+    init(defaults: UserDefaults, reply: SnapshotReply, sendGate: ComposerGating? = nil) {
         let settings = AppSettings(defaults: defaults, usesKeychain: false)
         self.settings = settings
         let permissions = PermissionsCenter(probe: StaticPermissionProbe(Self.permissionStatuses, default: .granted),
@@ -457,6 +664,7 @@ private final class SnapshotStage {
         )
         services.shelf = ShelfController(store: ShelfStore(directory: nil, thumbnailer: SnapshotThumbnailer()),
                                          settings: settings)
+        services.sendGate = sendGate
 
         let viewModel = NotchViewModel(settings: settings, chat: chat, services: services)
         viewModel.closedNotchSize = CGSize(width: 190, height: 32)
@@ -741,6 +949,12 @@ private final class SnapshotStage {
             features.route = .history
             show(.open, features: features)
         }
+    }
+
+    /// The open notch on Chat with `composerText` in the composer (the licensing scenes' draft under the gate line).
+    func prepareOpen(composerText: String) async {
+        await permissions.refresh(Permission.systemWide)
+        show(.open, composerText: composerText)
     }
 
     /// Settings panes with the scene graph's services: a week of usage, one always-allowed shortcut, and Actions
