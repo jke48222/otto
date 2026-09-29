@@ -272,7 +272,7 @@ enum AttachmentLoader {
         do {
             values = try url.resourceValues(forKeys: [.contentTypeKey, .isDirectoryKey, .fileSizeKey])
         } catch {
-            logger.error("Couldn't read attachment attributes: \(error.localizedDescription, privacy: .public)")
+            logger.error("Couldn't read attachment attributes: \(LoggedError(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
             throw AttachmentError.unreadable(name: name)
         }
         let type = values.contentType ?? UTType(filenameExtension: url.pathExtension) ?? .data
@@ -328,7 +328,7 @@ enum AttachmentLoader {
         do {
             return try Data(contentsOf: url, options: .mappedIfSafe)
         } catch {
-            logger.error("Couldn't read attachment: \(error.localizedDescription, privacy: .public)")
+            logger.error("Couldn't read attachment: \(LoggedError(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
             throw AttachmentError.unreadable(name: name)
         }
     }
@@ -568,7 +568,7 @@ enum AttachmentLoader {
             } catch let error as AttachmentError {
                 throw error
             } catch {
-                logger.error("Rich text import failed: \(error.localizedDescription, privacy: .public)")
+                logger.error("Rich text import failed: \(LoggedError(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
                 throw AttachmentError.unreadable(name: name)
             }
             return try textAttachment(plainText(from: attributed), name: name, sourceURL: sourceURL)
@@ -1152,7 +1152,7 @@ enum AttachmentLoader {
         let item: URL? = await withCheckedContinuation { continuation in
             provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, error in
                 if let error {
-                    logger.debug("File URL item failed to load: \(error.localizedDescription, privacy: .public)")
+                    logger.debug("File URL item failed to load: \(LoggedError(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
                 }
                 continuation.resume(returning: fileURL(fromItem: item))
             }
@@ -1187,7 +1187,7 @@ enum AttachmentLoader {
                     continuation.resume(returning: data)
                 } else {
                     if let error {
-                        logger.error("Dropped data failed to load: \(error.localizedDescription, privacy: .public)")
+                        logger.error("Dropped data failed to load: \(LoggedError(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
                     }
                     continuation.resume(throwing: AttachmentError.unreadable(name: name))
                 }
@@ -1206,7 +1206,7 @@ enum AttachmentLoader {
             _ = provider.loadFileRepresentation(forTypeIdentifier: typeIdentifier) { url, error in
                 guard let url else {
                     if let error {
-                        logger.error("Dropped file failed to load: \(error.localizedDescription, privacy: .public)")
+                        logger.error("Dropped file failed to load: \(LoggedError(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
                     }
                     continuation.resume(throwing: AttachmentError.unreadable(name: name))
                     return
@@ -1220,7 +1220,7 @@ enum AttachmentLoader {
                     try FileManager.default.copyItem(at: url, to: destination)
                     continuation.resume(returning: destination)
                 } catch {
-                    logger.error("Couldn't copy dropped file: \(error.localizedDescription, privacy: .public)")
+                    logger.error("Couldn't copy dropped file: \(LoggedError(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
                     continuation.resume(throwing: AttachmentError.unreadable(name: name))
                 }
             }

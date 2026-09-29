@@ -60,14 +60,16 @@ enum AttachmentBudget {
 
     /// Makes a request's `messages` array (`[{"role", "content"}]`) fit `limit`: while it is too large, the
     /// image and document blocks of the oldest user turns are replaced by a short text note, one turn at a
-    /// time. The last user turn — the one being answered — is never changed. Returns nil when even that
-    /// isn't enough (the new message alone is too large; see `requestTooLargeDescription`).
-    static func fitting(_ messages: [JSONValue], limit: Int = maxRequestContentBytes) -> [JSONValue]? {
+    /// time. The user message being answered is never changed: `answered` when given, otherwise
+    /// `answeredUserIndex(in:)` — in a tool round that is the user's message before the tool results, not
+    /// the trailing `tool_result` turn. Returns nil when even that isn't enough (the new message alone is
+    /// too large; see `requestTooLargeDescription`).
+    static func fitting(_ messages: [JSONValue], answered: Int? = nil, limit: Int = maxRequestContentBytes) -> [JSONValue]? {
         var result = messages
         var total = estimatedEncodedBytes(.array(result))
         if total <= limit { return result }
 
-        let protectedIndex = result.lastIndex { $0["role"]?.stringValue == ChatRole.user.rawValue }
+        let protectedIndex = answered ?? answeredUserIndex(in: result)
         for index in result.indices where index != protectedIndex {
             guard result[index]["role"]?.stringValue == ChatRole.user.rawValue,
                   let content = result[index]["content"]?.arrayValue,
@@ -79,6 +81,17 @@ enum AttachmentBudget {
             if total <= limit { return result }
         }
         return nil
+    }
+
+    /// Index of the user message being answered: the last user turn that isn't a tool round's results
+    /// (`tool_result` blocks, plus any `<earlier_action_result>` notes standing in for them), or the last
+    /// user turn when every one is.
+    static func answeredUserIndex(in messages: [JSONValue]) -> Int? {
+        let userIndices = messages.indices.filter { messages[$0]["role"]?.stringValue == ChatRole.user.rawValue }
+        return userIndices.last { index in
+            guard let content = messages[index]["content"]?.arrayValue else { return true }
+            return !isToolRoundResult(content)
+        } ?? userIndices.last
     }
 
     /// A user turn's content with every image and document block replaced by a short text note, so the
@@ -123,6 +136,16 @@ enum AttachmentBudget {
 
     private static func isAttachmentBlock(_ block: JSONValue) -> Bool {
         block.typeName == "image" || block.typeName == "document"
+    }
+
+    /// Whether a user turn's content is only what the tool loop sends back after a round: `tool_result`
+    /// blocks and the `<earlier_action_result>` text notes `ToolHistory` writes for downgraded calls.
+    private static func isToolRoundResult(_ content: [JSONValue]) -> Bool {
+        !content.isEmpty && content.allSatisfy { block in
+            if block.typeName == "tool_result" { return true }
+            guard block.typeName == "text", let text = block["text"]?.stringValue else { return false }
+            return text.hasPrefix("<earlier_action_result ")
+        }
     }
 
     private static func encodedBytes(of string: String) -> Int {

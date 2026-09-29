@@ -111,7 +111,7 @@ import SwiftUI
 
     func didFail(cancelled: Bool, description: String) {
         if !cancelled {
-            Self.logger.error("Sharing failed: \(description, privacy: .public)")
+            Self.logger.error("Sharing failed: \(description, privacy: .private)")
             onError?("Couldn't share: \(description)")
         }
         finish()

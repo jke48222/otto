@@ -65,7 +65,7 @@ enum ShelfIngest {
         do {
             try FileManager.default.removeItem(at: target)
         } catch {
-            logger.debug("Couldn't remove a temporary shelf copy: \(error.localizedDescription, privacy: .public)")
+            logger.debug("Couldn't remove a temporary shelf copy: \(LoggedError(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
         }
     }
 
@@ -95,7 +95,7 @@ enum ShelfIngest {
         await withCheckedContinuation { continuation in
             provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, error in
                 if let error {
-                    logger.debug("A dropped file URL failed to load: \(error.localizedDescription, privacy: .public)")
+                    logger.debug("A dropped file URL failed to load: \(LoggedError(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
                 }
                 continuation.resume(returning: AttachmentLoader.fileURL(fromItem: item))
             }
@@ -128,7 +128,7 @@ enum ShelfIngest {
             _ = provider.loadFileRepresentation(forTypeIdentifier: typeIdentifier) { url, error in
                 guard let url else {
                     if let error {
-                        logger.error("A dropped image failed to load: \(error.localizedDescription, privacy: .public)")
+                        logger.error("A dropped image failed to load: \(LoggedError(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
                     }
                     continuation.resume(throwing: ShelfError.unreadable(name: name))
                     return
@@ -136,7 +136,7 @@ enum ShelfIngest {
                 do {
                     continuation.resume(returning: try copyToPrivateFolder(url, name: name))
                 } catch {
-                    logger.error("Couldn't keep a dropped image: \(error.localizedDescription, privacy: .public)")
+                    logger.error("Couldn't keep a dropped image: \(LoggedError(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
                     continuation.resume(throwing: ShelfError.unreadable(name: name))
                 }
             }

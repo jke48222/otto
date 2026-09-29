@@ -523,6 +523,72 @@ final class ContextTests: XCTestCase {
         XCTAssertNil(AttachmentBudget.fitting(messages))
     }
 
+    /// In a tool round the last user turn is the tool results; the prompt before it is the one being answered.
+    private func toolRoundMessages(earlierImageBytes: Int, documentBytes: Int, notesOnly: Bool = false) -> [JSONValue] {
+        let earlier = (0..<3).map { fakeImage(named: "old\($0).png", base64Bytes: earlierImageBytes) }
+        let pdf: JSONValue = [
+            "type": "document", "title": "Contract.pdf",
+            "source": ["type": "base64", "media_type": "application/pdf", "data": .string(String(repeating: "A", count: documentBytes))],
+        ]
+        let results: [JSONValue] = notesOnly
+            ? [["type": "text", "text": "<earlier_action_result tool=\"calendar_add\" title=\"Add event\" untrusted=\"true\">ok</earlier_action_result>"]]
+            : [["type": "tool_result", "tool_use_id": "toolu_1", "content": "Added 3 events."]]
+        return [
+            ["role": "user", "content": .array(earlier.flatMap { $0.contentBlocks() } + [["type": "text", "text": "earlier"]])],
+            ["role": "assistant", "content": [["type": "text", "text": "Got them."]]],
+            ["role": "user", "content": [pdf, ["type": "text", "text": "Add the dates in this PDF to my calendar"]]],
+            ["role": "assistant", "content": [["type": "tool_use", "id": "toolu_1", "name": "calendar_add", "input": [:]]]],
+            ["role": "user", "content": .array(results)],
+        ]
+    }
+
+    func testFittingProtectsTheAnsweredMessageNotTheToolResults() throws {
+        for notesOnly in [false, true] {
+            let messages = toolRoundMessages(earlierImageBytes: 5_000_000, documentBytes: 20_000_000, notesOnly: notesOnly)
+            XCTAssertEqual(AttachmentBudget.answeredUserIndex(in: messages), 2)
+
+            let fitted = try XCTUnwrap(AttachmentBudget.fitting(messages))
+
+            XCTAssertLessThanOrEqual(try JSONValue.array(fitted).encodedData().count, AttachmentBudget.maxRequestContentBytes)
+            XCTAssertEqual(fitted[2], messages[2], "The PDF Claude is working from stays in the request")
+            XCTAssertEqual(fitted[4], messages[4])
+            let first = try XCTUnwrap(fitted[0]["content"]?.arrayValue)
+            XCTAssertFalse(first.contains { $0.typeName == "image" })
+        }
+    }
+
+    func testFittingFailsInsteadOfStrippingTheAnsweredMessageInAToolRound() {
+        // Only the answered message carries a payload, and it alone is over the limit.
+        let messages = toolRoundMessages(earlierImageBytes: 0, documentBytes: 31_000_000)
+        XCTAssertNil(AttachmentBudget.fitting(messages))
+    }
+
+    func testFittingHonorsAnExplicitAnsweredIndex() throws {
+        let messages = sampleMessages(imageBytes: 5_000_000)
+        let fitted = try XCTUnwrap(AttachmentBudget.fitting(messages, answered: 0))
+        XCTAssertEqual(fitted[0], messages[0])
+        XCTAssertFalse(try XCTUnwrap(fitted[2]["content"]?.arrayValue).contains { $0.typeName == "image" })
+    }
+
+    func testAnsweredUserIndexFallsBackToTheLastUserTurn() {
+        let messages: [JSONValue] = [
+            ["role": "user", "content": [["type": "tool_result", "tool_use_id": "a", "content": "x"]]],
+            ["role": "assistant", "content": [["type": "text", "text": "ok"]]],
+            ["role": "user", "content": [["type": "tool_result", "tool_use_id": "b", "content": "y"]]],
+        ]
+        XCTAssertEqual(AttachmentBudget.answeredUserIndex(in: messages), 2)
+        XCTAssertEqual(AttachmentBudget.answeredUserIndex(in: sampleMessages(imageBytes: 10)), 2)
+    }
+
+    func testLoggedErrorKeepsOnlyDomainAndCode() {
+        let error = CocoaError(.fileReadNoPermission, userInfo: [NSFilePathErrorKey: "/Users/me/Divorce settlement draft.docx"])
+        let logged = LoggedError(error)
+        XCTAssertEqual(logged.domain, NSCocoaErrorDomain)
+        XCTAssertEqual(logged.code, CocoaError.fileReadNoPermission.rawValue)
+        XCTAssertEqual(logged.description, "[\(NSCocoaErrorDomain) \(CocoaError.fileReadNoPermission.rawValue)]")
+        XCTAssertFalse(logged.description.contains("Divorce"))
+    }
+
     func testStrippingKeepsTitlesAndOtherBlocks() {
         let blocks: [JSONValue] = [
             ["type": "document", "title": "report.pdf", "source": ["type": "base64", "media_type": "application/pdf", "data": "AAAA"]],

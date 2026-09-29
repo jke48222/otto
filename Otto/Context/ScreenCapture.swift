@@ -43,7 +43,7 @@ enum ScreenCapture {
         do {
             try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         } catch {
-            logger.error("Couldn't create the capture folder: \(error.localizedDescription, privacy: .public)")
+            logger.error("Couldn't create the capture folder: \(LoggedError(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
             throw ScreenCaptureError.couldNotStart
         }
         let fileURL = directory.appendingPathComponent("capture-\(UUID().uuidString).png")
@@ -135,7 +135,7 @@ extension ScreenCapture {
                     try process.run()
                     isLaunched = true
                 } catch {
-                    logger.error("Couldn't launch screencapture: \(error.localizedDescription, privacy: .public)")
+                    logger.error("Couldn't launch screencapture: \(LoggedError(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
                     process.terminationHandler = nil
                     continuation.resume(throwing: ScreenCaptureError.couldNotStart)
                 }

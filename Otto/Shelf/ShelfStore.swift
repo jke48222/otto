@@ -241,7 +241,7 @@ enum ShelfError: LocalizedError, Equatable {
                 startThumbnail(for: item.id)
             } catch {
                 let name = Self.displayName(standardized.lastPathComponent)
-                Self.logger.error("Couldn't add \(standardized.path, privacy: .private) to the shelf: \(error.localizedDescription, privacy: .public)")
+                Self.logger.error("Couldn't add \(standardized.path, privacy: .private) to the shelf: \(LoggedError(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
                 errors.append(.unreadable(name: name))
             }
         }
@@ -494,7 +494,7 @@ enum ShelfError: LocalizedError, Equatable {
         case .success(let value):
             (destination, bookmark) = value
         case .failure(let error):
-            Self.logger.error("Couldn't keep a shelf copy: \(error.localizedDescription, privacy: .public)")
+            Self.logger.error("Couldn't keep a shelf copy: \(LoggedError(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
             if let posix = error as? POSIXError, posix.code == .ENOSPC { throw ShelfError.storageFull }
             throw ShelfError.unreadable(name: name)
         }
@@ -600,7 +600,7 @@ enum ShelfError: LocalizedError, Equatable {
         do {
             data = try Self.encoder.encode(Index(version: Self.indexVersion, items: items))
         } catch {
-            Self.logger.error("Couldn't encode the shelf: \(error.localizedDescription, privacy: .public)")
+            Self.logger.error("Couldn't encode the shelf: \(LoggedError(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
             return
         }
         hasUnsavedChanges = false
@@ -609,7 +609,7 @@ enum ShelfError: LocalizedError, Equatable {
                 let folder = try AppSupport.secureDirectory(directory)
                 try SecureFile.write(data, to: folder.appendingPathComponent(Self.indexFileName))
             } catch {
-                Self.logger.error("Couldn't save the shelf: \(String(describing: error), privacy: .public)")
+                Self.logger.error("Couldn't save the shelf: \(LoggedError(error), privacy: .public) \(String(describing: error), privacy: .private)")
             }
         }
         if synchronously {
@@ -626,7 +626,7 @@ enum ShelfError: LocalizedError, Equatable {
                 do {
                     continuation.resume(returning: try work())
                 } catch {
-                    Self.logger.error("Shelf storage failed: \(String(describing: error), privacy: .public)")
+                    Self.logger.error("Shelf storage failed: \(LoggedError(error), privacy: .public) \(String(describing: error), privacy: .private)")
                     continuation.resume(returning: nil)
                 }
             }
@@ -687,7 +687,7 @@ enum ShelfError: LocalizedError, Equatable {
         do {
             folder = try AppSupport.secureDirectory(directory)
         } catch {
-            logger.error("The shelf folder is unsafe: \(String(describing: error), privacy: .public)")
+            logger.error("The shelf folder is unsafe: \(LoggedError(error), privacy: .public) \(String(describing: error), privacy: .private)")
             return []
         }
         let url = folder.appendingPathComponent(indexFileName)
@@ -817,7 +817,7 @@ enum ShelfError: LocalizedError, Equatable {
             let folder = try AppSupport.secureDirectory(url.deletingLastPathComponent())
             try SecureFile.write(data, to: folder.appendingPathComponent(url.lastPathComponent))
         } catch {
-            logger.error("Couldn't cache a shelf thumbnail: \(String(describing: error), privacy: .public)")
+            logger.error("Couldn't cache a shelf thumbnail: \(LoggedError(error), privacy: .public) \(String(describing: error), privacy: .private)")
         }
     }
 
@@ -829,7 +829,7 @@ enum ShelfError: LocalizedError, Equatable {
         do {
             try FileManager.default.removeItem(at: url)
         } catch {
-            logger.error("Couldn't remove shelf storage: \(error.localizedDescription, privacy: .public)")
+            logger.error("Couldn't remove shelf storage: \(LoggedError(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
         }
     }
 

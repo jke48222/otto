@@ -206,7 +206,7 @@ enum WindowCapture {
             logger.info("Captured a window of \(image.width, privacy: .public)×\(image.height, privacy: .public) px")
             return attachment
         } catch {
-            logger.error("Couldn't encode a window capture: \(String(describing: error), privacy: .public)")
+            logger.error("Couldn't encode a window capture: \(LoggedError(error), privacy: .public) \(String(describing: error), privacy: .private)")
             throw WindowCaptureError.failed
         }
     }
@@ -230,7 +230,7 @@ enum WindowCapture {
         switch result {
         case .success(let captured): return captured.image
         case .failure(let error):
-            logger.error("Window capture failed: \(String(describing: error), privacy: .public)")
+            logger.error("Window capture failed: \(LoggedError(error), privacy: .public) \(String(describing: error), privacy: .private)")
             throw error
         }
     }
