@@ -53,7 +53,8 @@ struct NotchRootView: View {
             voicePhase: viewModel.voice.phase,
             dropZone: viewModel.dropSession?.zone,
             insertActivity: viewModel.inserter.activity,
-            suggestionIDs: [suggestions.selection?.id, suggestions.window?.id].compactMap { $0 }
+            suggestionIDs: [suggestions.selection?.id, suggestions.window?.id].compactMap { $0 },
+            composerGateID: viewModel.route == .chat ? viewModel.composerGate?.id : nil
         )
     }
 
@@ -154,6 +155,8 @@ private struct NotchContentSignature: Equatable {
     var dropZone: DropZone?
     var insertActivity: InsertActivity?
     var suggestionIDs: [UUID]
+    /// The composer gate line (§14.10.1): the panel re-measures when it appears, changes or goes.
+    var composerGateID: String?
 }
 
 // MARK: - Container layout

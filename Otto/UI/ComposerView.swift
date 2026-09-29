@@ -4,7 +4,8 @@
 //
 //  The composer well: a multi-line prompt field (or, while Otto listens, the live transcript over it), the mic,
 //  the "+" attach menu and the off-white send / stop button. It glows while the keyboard goes to it and dims
-//  while an approval waits in the dock. Esc belongs to the panel's key monitor, never to the field.
+//  while an approval waits in the dock. While sending is paused (§14.10.1) the send button is disabled and the
+//  text stays editable. Esc belongs to the panel's key monitor, never to the field.
 //
 
 import AppKit
@@ -19,6 +20,9 @@ struct ComposerView: View {
 
     @FocusState private var isFieldFocused: Bool
     @State private var focusTask: Task<Void, Never>?
+
+    /// The tooltip of the send button, Regenerate and Retry while sending is paused (§14.10.1).
+    static let sendingPausedHelp = "Sending is paused. See the line above."
 
     static let minHeight: CGFloat = 56
     static let cornerRadius: CGFloat = 26
@@ -118,6 +122,11 @@ struct ComposerView: View {
     private func submit() {
         if viewModel.voice.isActive {
             viewModel.finishVoice(send: true)
+            return
+        }
+        if viewModel.isSendBlocked {
+            // send() keeps the draft and points at the gate line.
+            viewModel.send()
             return
         }
         guard viewModel.canSend else { return }
@@ -305,7 +314,7 @@ private struct SendButton: View {
         switch role {
         case .finishVoice, .finishing: return "Send what you said (Return)"
         case .stop: return "Stop (⌘.)"
-        case .send: return "Send (Return)"
+        case .send: return viewModel.isSendBlocked ? ComposerView.sendingPausedHelp : "Send (Return)"
         }
     }
 
