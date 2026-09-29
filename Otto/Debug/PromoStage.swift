@@ -316,7 +316,7 @@ enum PromoStage {
             let data = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
             try data.write(to: url, options: .atomic)
         } catch {
-            logger.error("Couldn't write \(url.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            logger.error("Couldn't write \(url.path, privacy: .public): \(LoggedError(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
         }
     }
 

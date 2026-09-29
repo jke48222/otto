@@ -341,7 +341,7 @@ import os
         do {
             return try encoder.encode(file)
         } catch {
-            Self.logger.error("Couldn't encode the usage ledger: \(error.localizedDescription, privacy: .public)")
+            Self.logger.error("Couldn't encode the usage ledger: \(LoggedError(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
             return nil
         }
     }

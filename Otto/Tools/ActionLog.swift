@@ -120,7 +120,7 @@ actor ActionLog {
         do {
             line = try encoder.encode(entry) + Data("\n".utf8)
         } catch {
-            Self.logger.error("Couldn't encode an activity entry: \(error.localizedDescription, privacy: .public)")
+            Self.logger.error("Couldn't encode an activity entry: \(LoggedError(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
             return
         }
         var current = currentData ?? readFile(folder.appendingPathComponent(Self.fileName))
@@ -137,7 +137,7 @@ actor ActionLog {
             if rotated { prune(now: now()) }
         } catch {
             currentData = nil
-            Self.logger.error("Couldn't write the activity log: \(error.localizedDescription, privacy: .public)")
+            Self.logger.error("Couldn't write the activity log: \(LoggedError(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
         }
     }
 
@@ -170,7 +170,7 @@ actor ActionLog {
                 if name == Self.fileName { currentData = rewritten }
             } catch {
                 if name == Self.fileName { currentData = nil }
-                Self.logger.error("Couldn't prune the activity log: \(error.localizedDescription, privacy: .public)")
+                Self.logger.error("Couldn't prune the activity log: \(LoggedError(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
             }
         }
     }
@@ -207,7 +207,7 @@ actor ActionLog {
         currentData = Data()
         if let failure {
             currentData = nil
-            Self.logger.error("Couldn't clear the activity log: \(failure.localizedDescription, privacy: .public)")
+            Self.logger.error("Couldn't clear the activity log: \(LoggedError(failure), privacy: .public) \(failure.localizedDescription, privacy: .private)")
             throw failure
         }
         Self.logger.info("Activity log cleared")
@@ -233,7 +233,7 @@ actor ActionLog {
         } catch {
             fellBackToMemory = true
             currentData = nil
-            Self.logger.fault("The activity log folder was refused; keeping entries in memory: \(error.localizedDescription, privacy: .public)")
+            Self.logger.fault("The activity log folder was refused; keeping entries in memory: \(LoggedError(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
             return nil
         }
     }
@@ -252,7 +252,7 @@ actor ActionLog {
         do {
             return try Data(contentsOf: url)
         } catch {
-            Self.logger.error("Couldn't read the activity log: \(error.localizedDescription, privacy: .public)")
+            Self.logger.error("Couldn't read the activity log: \(LoggedError(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
             return Data()
         }
     }

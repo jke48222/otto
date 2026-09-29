@@ -52,7 +52,7 @@ enum AppSupport {
         do {
             try SecureFile.writeIfAbsent(Data(), to: marker)
         } catch {
-            logger.notice("Couldn't write the Spotlight marker: \(error.localizedDescription, privacy: .public)")
+            logger.notice("Couldn't write the Spotlight marker: \(LoggedError(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
         }
         return root
     }
@@ -82,7 +82,7 @@ enum AppSupport {
         do {
             try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: path)
         } catch {
-            logger.error("Couldn't set 0700 on \(path, privacy: .private): \(error.localizedDescription, privacy: .public)")
+            logger.error("Couldn't set 0700 on \(path, privacy: .private): \(LoggedError(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
             throw AppSupportError.notCreatable(path)
         }
         return url
@@ -102,7 +102,7 @@ enum AppSupport {
         do {
             try mutable.setResourceValues(values)
         } catch {
-            logger.notice("Couldn't exclude Otto's data from backups: \(error.localizedDescription, privacy: .public)")
+            logger.notice("Couldn't exclude Otto's data from backups: \(LoggedError(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
         }
     }
 }

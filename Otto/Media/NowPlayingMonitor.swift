@@ -563,7 +563,7 @@ private enum MediaArtworkLoader {
             }
             return ArtworkPolicy.thumbnail(from: data)
         } catch {
-            logger.debug("Spotify artwork didn't load: \(error.localizedDescription, privacy: .public)")
+            logger.debug("Spotify artwork didn't load: \(LoggedError(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
             return nil
         }
     }

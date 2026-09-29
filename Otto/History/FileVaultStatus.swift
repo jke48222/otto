@@ -37,7 +37,7 @@ enum FileVaultStatus: Equatable, Sendable {
             do {
                 try process.run()
             } catch {
-                logger.notice("Couldn't run fdesetup: \(error.localizedDescription, privacy: .public)")
+                logger.notice("Couldn't run fdesetup: \(LoggedError(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
                 once.resume(.unknown)
                 return
             }

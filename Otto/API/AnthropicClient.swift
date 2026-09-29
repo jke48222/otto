@@ -132,7 +132,7 @@ final class AnthropicClient: LLMClient, @unchecked Sendable {
             // Sorted keys keep the body byte-stable, which prompt caching relies on.
             urlRequest.httpBody = try JSONValue.makeEncoder().encode(Self.makeRequestBody(request))
         } catch {
-            Self.logger.error("Failed to encode request body: \(error.localizedDescription, privacy: .public)")
+            Self.logger.error("Failed to encode request body: \(LoggedError(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
             throw LLMError.http(status: 0, type: "invalid_request_error", message: "Otto couldn't prepare the request.")
         }
         return urlRequest
@@ -164,7 +164,7 @@ final class AnthropicClient: LLMClient, @unchecked Sendable {
                     throw failure.error
                 }
                 retriesUsed += 1
-                Self.logger.info("Retrying request (\(retriesUsed)/\(self.retryDelays.count)) in \(delay, format: .fixed(precision: 1))s after: \(failure.error.localizedDescription, privacy: .public)")
+                Self.logger.info("Retrying request (\(retriesUsed)/\(self.retryDelays.count)) in \(delay, format: .fixed(precision: 1))s after: \(LoggedError(failure.error), privacy: .public) \(failure.error.localizedDescription, privacy: .private)")
                 if delay > 0 {
                     try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
                 }
@@ -196,7 +196,7 @@ final class AnthropicClient: LLMClient, @unchecked Sendable {
             let body = try await Self.collectBody(bytes)
             let retryAfter = Self.retryAfter(from: http)
             let error = Self.mapHTTPError(status: http.statusCode, body: body, retryAfter: retryAfter)
-            Self.logger.error("Messages API returned HTTP \(http.statusCode): \(error.localizedDescription, privacy: .public)")
+            Self.logger.error("Messages API returned HTTP \(http.statusCode): \(LoggedError(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
             throw HTTPFailure(error: error, retryAfter: retryAfter, shouldRetryHint: Self.shouldRetryHint(from: http))
         }
 

@@ -186,7 +186,7 @@ import os
             switchTo(conversation)
             return true
         case .failure(let error):
-            Self.logger.error("Couldn't open conversation \(id.uuidString, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            Self.logger.error("Couldn't open conversation \(id.uuidString, privacy: .public): \(LoggedError(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
             lastOpenError = Self.openFailureMessage
             if let error = error as? HistoryStoreError, error == .damaged || error == .notFound {
                 removeSummaries([id])
@@ -445,7 +445,7 @@ import os
             upsert(summary)
         case .failure(let error):
             lastSaveError = "Otto couldn't save your latest conversation: \(error.localizedDescription)."
-            Self.logger.error("Save failed: \(error.localizedDescription, privacy: .public)")
+            Self.logger.error("Save failed: \(LoggedError(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
         }
     }
 

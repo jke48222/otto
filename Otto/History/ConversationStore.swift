@@ -261,7 +261,7 @@ final class ConversationStore: @unchecked Sendable {
             try backend.prepare()
         } catch {
             let reason = "Otto couldn't use its data folder"
-            Self.logger.fault("History folder refused, keeping history in memory: \(error.localizedDescription, privacy: .public)")
+            Self.logger.fault("History folder refused, keeping history in memory: \(LoggedError(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
             lock.withLock { unsafeFallbackReason = reason }
             backend = HistoryMemoryBackend(maxFileBytes: policy.maxConversationFileBytes)
             summaries = [:]
@@ -284,7 +284,7 @@ final class ConversationStore: @unchecked Sendable {
         do {
             files = try backend.listConversations()
         } catch {
-            Self.logger.error("Couldn't list conversations: \(error.localizedDescription, privacy: .public)")
+            Self.logger.error("Couldn't list conversations: \(LoggedError(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
             files = []
         }
 
@@ -319,7 +319,7 @@ final class ConversationStore: @unchecked Sendable {
             } catch HistoryStoreError.damaged {
                 backend.quarantine(file.id)
             } catch {
-                Self.logger.error("Couldn't read conversation \(file.id.uuidString, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                Self.logger.error("Couldn't read conversation \(file.id.uuidString, privacy: .public): \(LoggedError(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
             }
         }
         if let cached, cached.keys.contains(where: { next[$0] == nil }) { changed = true }
@@ -394,7 +394,7 @@ final class ConversationStore: @unchecked Sendable {
             result = .success(summary)
         } catch {
             let mapped = Self.mapped(error)
-            Self.logger.error("Couldn't save conversation \(snapshot.id.uuidString, privacy: .public): \(mapped.localizedDescription, privacy: .public)")
+            Self.logger.error("Couldn't save conversation \(snapshot.id.uuidString, privacy: .public): \(LoggedError(mapped), privacy: .public) \(mapped.localizedDescription, privacy: .private)")
             result = .failure(mapped)
         }
         completion(result)
@@ -451,7 +451,7 @@ final class ConversationStore: @unchecked Sendable {
             try backend.removeAll()
         } catch {
             let mapped = Self.mapped(error)
-            Self.logger.error("Couldn't delete all history: \(mapped.localizedDescription, privacy: .public)")
+            Self.logger.error("Couldn't delete all history: \(LoggedError(mapped), privacy: .public) \(mapped.localizedDescription, privacy: .private)")
             indexLoaded = false
             throw mapped
         }
@@ -529,7 +529,7 @@ final class ConversationStore: @unchecked Sendable {
             let file = IndexFile(indexVersion: Self.indexVersion, conversations: sortedSummaries())
             try backend.writeIndex(try Self.makeEncoder().encode(file))
         } catch {
-            Self.logger.error("Couldn't write the history index: \(error.localizedDescription, privacy: .public)")
+            Self.logger.error("Couldn't write the history index: \(LoggedError(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
         }
     }
 
@@ -647,7 +647,7 @@ private final class HistoryDiskBackend: HistoryStoreBackend {
             }
             try FileManager.default.moveItem(at: source, to: destination)
         } catch {
-            Self.logger.error("Couldn't move damaged conversation \(id.uuidString, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            Self.logger.error("Couldn't move damaged conversation \(id.uuidString, privacy: .public): \(LoggedError(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
         }
     }
 

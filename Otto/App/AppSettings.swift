@@ -190,7 +190,7 @@ import os
             } catch {
                 // The key is still stored and would come back on the next launch; say so instead of
                 // reporting it removed. `persistedAPIKey` keeps the stored value, so removing again retries.
-                Self.logger.error("Keychain delete failed: \(error.localizedDescription, privacy: .public)")
+                Self.logger.error("Keychain delete failed: \(LoggedError(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
                 let detail = (error as? KeychainStoreError).flatMap { SecCopyErrorMessageString($0.status, nil) as String? }
                     ?? error.localizedDescription
                 lastSettingsError = "Couldn't remove your API key from the Keychain (\(detail)). "
@@ -204,7 +204,7 @@ import os
             lastSettingsError = nil
         } catch {
             // Keep the key in memory so Otto still works for this session.
-            Self.logger.error("Keychain write failed: \(error.localizedDescription, privacy: .public)")
+            Self.logger.error("Keychain write failed: \(LoggedError(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
             lastSettingsError = "Couldn't save your API key to the Keychain (\(error.localizedDescription)). "
                 + "Otto will use it until you quit."
         }
@@ -242,7 +242,7 @@ import os
             }
             defaults.set(enable, forKey: Key.launchAtLogin)
         } catch {
-            Self.logger.error("Login item update failed: \(error.localizedDescription, privacy: .public)")
+            Self.logger.error("Login item update failed: \(LoggedError(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
             lastSettingsError = enable
                 ? "Couldn't turn on launch at login: \(error.localizedDescription)"
                 : "Couldn't turn off launch at login: \(error.localizedDescription)"

@@ -49,7 +49,7 @@ struct PreferenceStore {
         do {
             return try JSONDecoder().decode(type, from: data)
         } catch {
-            Self.logger.error("Couldn't decode the preference \(key, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            Self.logger.error("Couldn't decode the preference \(key, privacy: .public): \(LoggedError(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
             return nil
         }
     }
@@ -74,7 +74,7 @@ struct PreferenceStore {
         do {
             defaults.set(try encoder.encode(value), forKey: key)
         } catch {
-            Self.logger.error("Couldn't encode the preference \(key, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            Self.logger.error("Couldn't encode the preference \(key, privacy: .public): \(LoggedError(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
         }
     }
 

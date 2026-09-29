@@ -106,7 +106,7 @@ struct RememberedApproval: Codable, Identifiable, Equatable, Sendable {
             let data = try JSONEncoder().encode(remembered)
             defaults.set(data, forKey: Self.rememberedKey)
         } catch {
-            Self.logger.error("Couldn't save remembered approvals: \(error.localizedDescription, privacy: .public)")
+            Self.logger.error("Couldn't save remembered approvals: \(LoggedError(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
         }
     }
 
@@ -126,7 +126,7 @@ struct RememberedApproval: Codable, Identifiable, Equatable, Sendable {
                 .sorted { $0.grantedAt > $1.grantedAt }
                 .filter { seen.insert($0.id).inserted }
         } catch {
-            logger.error("Ignored unreadable remembered approvals: \(error.localizedDescription, privacy: .public)")
+            logger.error("Ignored unreadable remembered approvals: \(LoggedError(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
             return []
         }
     }

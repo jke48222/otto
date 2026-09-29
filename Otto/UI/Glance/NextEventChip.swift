@@ -156,7 +156,7 @@ struct NextEventChip: View {
         }
         NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration()) { _, error in
             if let error {
-                Self.logger.error("Opening Calendar failed: \(error.localizedDescription, privacy: .public)")
+                Self.logger.error("Opening Calendar failed: \(LoggedError(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
             }
         }
     }

@@ -68,7 +68,7 @@ actor EventKitService: EventKitProviding {
         do {
             try store.save(event, span: .thisEvent, commit: true)
         } catch {
-            Self.logger.error("Saving an event failed: \(error.localizedDescription, privacy: .public)")
+            Self.logger.error("Saving an event failed: \(LoggedError(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
             throw CalendarStoreError.saveFailed(error.localizedDescription)
         }
         let record = Self.record(event)
@@ -82,7 +82,7 @@ actor EventKitService: EventKitProviding {
         do {
             try store.remove(event, span: .thisEvent, commit: true)
         } catch {
-            Self.logger.error("Removing an event failed: \(error.localizedDescription, privacy: .public)")
+            Self.logger.error("Removing an event failed: \(LoggedError(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
             throw CalendarStoreError.removeFailed(error.localizedDescription)
         }
         Self.logger.info("Removed event \(identifier, privacy: .public)")
@@ -124,7 +124,7 @@ actor EventKitService: EventKitProviding {
         do {
             try store.save(reminder, commit: true)
         } catch {
-            Self.logger.error("Saving a reminder failed: \(error.localizedDescription, privacy: .public)")
+            Self.logger.error("Saving a reminder failed: \(LoggedError(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
             throw CalendarStoreError.saveFailed(error.localizedDescription)
         }
         let record = Self.record(reminder)
@@ -137,7 +137,7 @@ actor EventKitService: EventKitProviding {
         do {
             try store.remove(reminder, commit: true)
         } catch {
-            Self.logger.error("Removing a reminder failed: \(error.localizedDescription, privacy: .public)")
+            Self.logger.error("Removing a reminder failed: \(LoggedError(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
             throw CalendarStoreError.removeFailed(error.localizedDescription)
         }
         Self.logger.info("Removed reminder \(identifier, privacy: .public)")

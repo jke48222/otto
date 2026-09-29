@@ -290,7 +290,7 @@ struct LiveMediaScripting: MediaScripting, MediaArtworkScripting {
         do {
             application = try await NSWorkspace.shared.openApplication(at: url, configuration: configuration)
         } catch {
-            Self.logger.error("Couldn't launch \(player.displayName, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            Self.logger.error("Couldn't launch \(player.displayName, privacy: .public): \(LoggedError(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
             throw MediaScriptingError.failed(code: (error as NSError).code)
         }
         Self.logger.info("Launched \(player.displayName, privacy: .public) for a play command")

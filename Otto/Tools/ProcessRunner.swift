@@ -347,7 +347,7 @@ private final class ProcessRunnerSession: @unchecked Sendable {
         do {
             try FileManager.default.removeItem(at: folder)
         } catch {
-            Self.logger.error("Couldn't remove a process temp folder: \(error.localizedDescription, privacy: .public)")
+            Self.logger.error("Couldn't remove a process temp folder: \(LoggedError(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
         }
     }
 
