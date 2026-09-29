@@ -30,7 +30,7 @@
 
 <p align="center">
   <a href="docs/media/otto-promo.mp4">
-    <img src="docs/media/otto-hero.gif" width="880" alt="Otto opening from the MacBook notch, answering a question with web sources, then tucking itself away">
+    <img src="docs/media/otto-hero.gif" width="880" alt="Otto opening from the MacBook notch, answering with web sources, then tucking away and previewing the reply under the camera">
   </a>
   <br>
   <sub>Click the loop to watch the full promo video.</sub>
@@ -47,8 +47,9 @@ pointer on the notch and it opens with a composer, the file you just dropped in,
 reading. Get your answer, move the pointer away, and it tucks back into the camera housing.
 
 Otto 1.1 goes further when you want it to. Ask about text you've selected in any app and paste the answer
-back in place. Talk to it. Let Claude check your calendar, add a reminder or run a shortcut, with every
-change shown to you before it runs. Pick up yesterday's conversation from Recents.
+back in place. Hold a key and talk to it. Park files on the Shelf until you need them. Turn on actions and
+Claude can add an event or a reminder, or run a shortcut, once you've approved exactly what it will do. Pick
+up yesterday's conversation from Recents.
 
 It's a native Mac app written in Swift with SwiftUI and AppKit. The source build uses only Apple frameworks;
 the signed app adds Sparkle for updates. It talks to the Anthropic API directly with your own key.
@@ -91,13 +92,56 @@ block.
   <img src="docs/media/screens/answer.png" width="820" alt="Otto’s answer to “Summarize this in 3 bullets”: the page read and web search it ran, three bullets, and source pills for each site it used">
 </p>
 
-### Keeps working while you do
+### Acts with your OK
 
-Close Otto mid-answer and the reply keeps coming. The notch grows two small ears: a breathing orb and
-a live equalizer while Claude writes, then a warm dot when your answer is ready.
+Actions are off until you turn them on in **Settings → Actions**. Then Claude can add calendar events and
+reminders, run your Shortcuts or open a link. Each one shows up first as a card with exactly what will be
+added or run, and waits for your click or <kbd>⌘</kbd><kbd>↩</kbd>. The one way past the card is
+**Always allow** on a shortcut you trust. An event or reminder Otto adds can be undone for 10 minutes.
 
 <p align="center">
-  <img src="docs/media/screens/glance.png" width="820" alt="The closed notch while Otto keeps writing: a breathing orb on the left and three equalizer bars on the right, shown magnified below">
+  <img src="docs/media/screens/actions.png" width="820" alt="Otto asking before it adds an event: a card for Release notes review, Wednesday 10:00 to 10:30 AM on the Work calendar, with Don't add and Add Event buttons">
+</p>
+
+### Keeps working while you do
+
+Close Otto mid-answer and the reply keeps coming. The notch grows two small ears, a breathing orb and a
+writing glyph, while Claude works. When the answer is done, its first line drops under the camera for a
+few seconds. Rest the pointer on it to keep it there, or click to open the answer. A warm dot stays until
+you've read it.
+
+<p align="center">
+  <img src="docs/media/screens/glance.png" width="820" alt="The closed notch after a reply finished: the first line of the answer drops under the camera, shown magnified below">
+</p>
+
+### Keeps files at hand
+
+Drop files on the left half of the notch to park them on the Shelf, where they stay until you remove them.
+Drag them out into any app, share them, or select a few and ask Otto about them. The Shelf keeps a link to
+each file and never moves the original. <kbd>⌘</kbd><kbd>D</kbd> opens it.
+
+<p align="center">
+  <img src="docs/media/screens/shelf.png" width="820" alt="The Shelf under the notch with five files, two of them selected, and Ask Otto about 2 in its bar">
+</p>
+
+### Ask out loud
+
+Turn on Voice, then hold <kbd>⌥</kbd><kbd>Space</kbd> and talk. Your words appear in the composer as you
+speak, and letting go sends them. Speech is turned into text on your Mac unless you allow Apple's speech
+service in **Settings → Voice**.
+
+<p align="center">
+  <img src="docs/media/screens/voice.png" width="820" alt="Otto listening: the words Write a quick launch update for the team appear in the composer as they're spoken">
+</p>
+
+### Picks up where you left off
+
+Conversations are saved on your Mac for 30 days by default. <kbd>⌘</kbd><kbd>Y</kbd> opens Recents,
+grouped by day and searchable. Come back after 15 minutes away and Otto starts a fresh chat with a chip to
+continue the last one. Reopen a chat and you're back where you were reading.
+
+<p align="center">
+  <img src="docs/media/screens/recents.png" width="820" alt="Recents under the notch: six past conversations grouped by day, with a search field">
 </p>
 
 ### Your key, your Mac
@@ -108,12 +152,14 @@ telemetry. The two opt-in exceptions, Apple's speech service and Spotify artwork
 [Privacy & permissions](#privacy--permissions).
 
 <p align="center">
-  <img src="docs/media/screens/settings.png" width="560" alt="Otto Settings: the Anthropic API key saved in Keychain, the Claude model picker and the response style">
+  <img src="docs/media/screens/settings.png" width="560" alt="Otto Settings on the Models tab: the Anthropic API key saved in Keychain, the Claude models with their prices and the response style">
 </p>
 
 ## Features
 
-Everything beyond chat is off until you turn it on, or asks the first time you use it.
+Chat, web search, the browser tab chip, History, reply previews and the File Shelf are on from the start.
+Actions, Voice, Now Playing, the meeting chip, notifications and the selected-text chip stay off until you
+turn them on, and anything that needs a macOS permission asks the first time you use it.
 
 **Ask**
 
@@ -144,20 +190,26 @@ Everything beyond chat is off until you turn it on, or asks the first time you u
 
 - Claude can read and add calendar events and reminders, run your Shortcuts, play, pause and skip in Music
   and Spotify, open links, and (if you turn it on separately) run AppleScript.
-- Every change other than play, pause and skip shows you exactly what will run, down to the full script,
-  and waits for you to press <kbd>⌘</kbd><kbd>↩</kbd> on this Mac's keyboard or click. Reads ask once. Events and reminders you add can
-  be undone for 10 minutes.
+- Adding an event or reminder, running a shortcut or script, and opening a link each show a card with
+  exactly what will run, down to the full script, and wait for you to press <kbd>⌘</kbd><kbd>↩</kbd> on this
+  Mac's keyboard or click. A card you don't answer expires after 10 minutes.
+- Three things can skip the card: play, pause and skip; reads, which ask once; and a shortcut you've marked
+  **Always allow**. With **How Otto asks** on **Safer** (the default), even that shortcut asks again once
+  Otto has read a web page in the chat.
+- Events and reminders you add can be undone for 10 minutes.
+- Each reply can add at most 5 events and 5 reminders, run 5 shortcuts (30 an hour), and run 3 scripts and
+  open 3 links (20 of each an hour).
 - A local activity log records what ran, without its contents.
 
 **Voice**
 
-- Hold your shortcut or the mic button to talk, and let go to send. Otto turns speech into text on your
-  Mac and can read replies aloud.
+- Off until you turn it on in **Settings → Voice**. Then hold your shortcut or the mic button to talk, and
+  let go to send. Otto turns speech into text on your Mac and can read replies aloud.
 
 **Glance**
 
 - The closed notch shows what Otto is doing: thinking, searching, writing, waiting for your OK, or a
-  one-line preview of a finished reply.
+  one-line preview of a finished reply. Hover the preview to keep it, or click it to open the answer.
 - Optional: what's playing in Music or Spotify, your next meeting with a button to join it, and a notification
   when a reply finishes while you're away.
 
