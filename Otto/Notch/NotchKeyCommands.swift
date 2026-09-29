@@ -205,9 +205,9 @@ enum NotchKeyCommands {
     /// Delete, Forward Delete and Space with no modifier (Shelf soft focus only).
     private static let shelfBareReleaseKeyCodes: Set<Int> = [kVK_Delete, kVK_ForwardDelete, kVK_Space]
 
-    /// ⌘C ⌘A ⌥⌘R (Shelf soft focus only).
+    /// ⌘C ⌘V ⌘A ⌥⌘R (Shelf soft focus only). ⌘V would copy the clipboard onto the Shelf.
     private static let shelfSoftFocusReleaseChords: Set<Chord> = [
-        Chord(.character("c"), .command), Chord(.character("a"), .command),
+        Chord(.character("c"), .command), Chord(.character("v"), .command), Chord(.character("a"), .command),
         Chord(.character("r"), [.option, .command]),
     ]
 

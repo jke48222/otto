@@ -88,7 +88,7 @@ final class NotchKeyCommandsTests: XCTestCase {
         let registered = Key(keyCode: kVK_ANSI_R, characters: "®")
         let keys: [(String, Key, NSEvent.ModifierFlags)] = [
             ("⌫", .delete, []), ("⌦", forwardDelete, []), ("Space", space, []), ("⌘C", .c, command),
-            ("⌘A", .a, command), ("⌥⌘R", .r, optionCommand), ("⌥⌘R as ®", registered, optionCommand),
+            ("⌘V", .v, command), ("⌘A", .a, command), ("⌥⌘R", .r, optionCommand), ("⌥⌘R as ®", registered, optionCommand),
         ]
         for (label, key, flags) in keys {
             XCTAssertEqual(map(key, flags, shelf), .releaseSoftFocus, label)
