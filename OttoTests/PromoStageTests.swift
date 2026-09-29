@@ -70,6 +70,26 @@ final class PromoStageTests: XCTestCase {
         }
     }
 
+    /// The privacy seam: with a stand-in set, opening records it and never reads the real frontmost app.
+    @MainActor
+    func testDebugFrontmostAppStandsInForTheRealOne() throws {
+        let suite = "otto.tests.promo.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = AppSettings(defaults: defaults, usesKeychain: false)
+        settings.suggestBrowserTab = false
+        let chat = ChatSession(settings: settings, makeClient: { PromoLLMClient(timeScale: 0) })
+        let viewModel = NotchViewModel(settings: settings, chat: chat)
+        let studio = AppRef(pid: -4_141, bundleID: "example.promo.studio", name: "Studio", bundleURL: nil)
+        viewModel.debugFrontmostApp = studio
+        viewModel.open(reason: .hover, focus: false)
+        XCTAssertEqual(viewModel.openContextApp, studio)
+        viewModel.close()
+        viewModel.debugFrontmostApp = nil
+        viewModel.open(reason: .hover, focus: false)
+        XCTAssertNotEqual(viewModel.openContextApp, studio)
+    }
+
     func testEasingIsMonotonicFromZeroToOne() {
         let easing = PromoEasing(x1: 0.42, y1: 0, x2: 0.18, y2: 1)
         XCTAssertEqual(easing.value(at: 0), 0)
