@@ -414,7 +414,7 @@ final class NotchViewModelTests: XCTestCase {
         XCTAssertFalse(vm.canSend)
         vm.composerText = "   "
         XCTAssertFalse(vm.canSend)
-        vm.composerText = "Hi otto"
+        vm.composerText = "What changed in this release?"
         XCTAssertTrue(vm.canSend)
 
         let notes = textAttachment("notes.txt")
@@ -426,7 +426,7 @@ final class NotchViewModelTests: XCTestCase {
         XCTAssertTrue(vm.isOpen)
         XCTAssertTrue(vm.isEngaged)
         XCTAssertFalse(vm.canSend)
-        XCTAssertEqual(vm.chat.messages.first?.text, "Hi otto")
+        XCTAssertEqual(vm.chat.messages.first?.text, "What changed in this release?")
         XCTAssertEqual(vm.chat.messages.first?.attachments, [notes])
 
         await waitForReply(vm.chat)
@@ -476,7 +476,7 @@ final class NotchViewModelTests: XCTestCase {
 
     func testSuggestedTabAcceptAndDismiss() {
         let vm = makeViewModel()
-        let tab = webAttachment("https://techcrunch.com", title: "TechCrunch")
+        let tab = webAttachment("https://example.com/release-notes", title: "Release notes")
 
         vm.debugSeed(presentation: .open, composerText: "", attachments: [], suggestedTab: tab, hasUnreadReply: false)
         vm.acceptSuggestedTab()

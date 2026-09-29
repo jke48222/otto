@@ -621,11 +621,11 @@ NotchRootView layout: the view fills the fixed window; the notch shape is pinned
 
 SnapshotRenderer.renderAll(to:): renders PNGs (2×) of the real `NotchRootView` in seeded states onto a
 wallpaper-like backdrop (sky-blue → green gradient, 760×600 pt): `closed.png`, `closed-activity.png`
-(streaming ears), `open-empty.png`, `open-chips.png` (reproduce the reference: chips "TechCrunch" (web,
-Chrome icon), "AI_Man_cea775f8.png" (image), "PDFcea775f5d9.pdf", "cat-meme.txt", composer text "Hi
-otto"), `conversation.png` (a user question with an attachment + an assistant Markdown reply with
-thinking disclosure, one finished web search, a list, a code block, sources), `streaming.png` (assistant
-mid-stream with activity spinner), `settings.png` (SettingsView 480×560). Use `AppSettings(defaults:
+(streaming ears), `open-empty.png`, `open-chips.png` (original sample content: chips "Release notes" (a web
+page on example.com, browser icon), "homepage-hero-draft.png" (image), "q3-roadmap.pdf", "meeting-notes.txt",
+composer text "What changed in this release?"), `conversation.png` (a user question with an attachment + an
+assistant Markdown reply with thinking disclosure, one finished web search, a list, a code block, sources),
+`streaming.png` (assistant mid-stream with activity spinner), `settings.png` (SettingsView 480×560). Use `AppSettings(defaults:
 UserDefaults(suiteName: "otto.snapshots")!)`, `ChatSession(settings:makeClient: { MockLLMClient(latencyScale: 0) })`,
 `debugSeed` on both objects, animations disabled. Render by hosting in an off-screen borderless `NSWindow`
 (ordered front at x = -10000), spinning the run loop ~0.4 s, then

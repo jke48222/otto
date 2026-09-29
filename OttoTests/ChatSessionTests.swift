@@ -195,7 +195,7 @@ final class ChatSessionTests: XCTestCase {
         let client = ScriptedLLMClient([reply("Sure.")])
         let (chat, settings) = makeSession(client)
         let notes = textAttachment("notes.txt", "remember the milk")
-        let page = webAttachment("https://techcrunch.com/story", title: "TechCrunch")
+        let page = webAttachment("https://example.com/story", title: "Release notes")
 
         chat.send(text: "  What is this?\n", attachments: [notes, page])
 

@@ -113,7 +113,7 @@ struct ContextChipsView: View {
     /// Icon size and the gap between icon and label.
     static let iconSize: CGFloat = 15
     static let iconGap: CGFloat = 6
-    /// Labels longer than this truncate at the tail ("AI_Man_cea775f8…").
+    /// Labels longer than this truncate at the tail ("homepage-hero-dr…").
     static let labelMaxWidth: CGFloat = 132
     /// Between chips in a row (with the plain chips' padding, ≈14 pt from one label to the next
     /// icon), and between rows.

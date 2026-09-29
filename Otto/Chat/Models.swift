@@ -262,7 +262,7 @@ enum AttachmentPayload: Equatable, Sendable {
 struct Attachment: Identifiable, Equatable, @unchecked Sendable {
     let id: UUID
     var kind: AttachmentKind
-    /// Human-readable name shown on the chip, e.g. "cat-meme.txt" or "TechCrunch".
+    /// Human-readable name shown on the chip, e.g. "meeting-notes.txt" or "Release notes".
     var displayName: String
     /// Short uppercase type badge shown on the chip: "TXT", "PDF", "PNG", "WEB", …
     var badge: String
@@ -369,7 +369,7 @@ struct ToolActivity: Identifiable, Equatable, Sendable {
     /// The `server_tool_use` block id.
     let id: String
     var kind: Kind
-    /// e.g. `Searching “swift concurrency”` or `Reading techcrunch.com`.
+    /// e.g. `Searching “swift concurrency”` or `Reading example.com`.
     var label: String
     var isDone: Bool
 }

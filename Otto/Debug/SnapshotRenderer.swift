@@ -782,7 +782,7 @@ private final class SnapshotStage {
             show(.open)
 
         case .openChips:
-            show(.open, composerText: "Hi otto", attachments: SnapshotFixtures.referenceChips())
+            show(.open, composerText: "What changed in this release?", attachments: SnapshotFixtures.referenceChips())
 
         case .conversation:
             chat.debugSeed(messages: SnapshotFixtures.conversation(), isStreaming: false)
@@ -945,7 +945,7 @@ private final class SnapshotStage {
 
         case .cardNeighbor:
             var features = NotchDebugSeed()
-            features.card = NotchViewModel.neighborCard(name: "NotchNook", settings: settings)
+            features.card = NotchViewModel.neighborCard(name: "Cindermoth", settings: settings)
             show(.open, features: features)
 
         case .openHistoryNotice:
@@ -1101,6 +1101,13 @@ private final class SnapshotStage {
             try FileManager.default.removeItem(at: missing)
         }
         await shelf.store.refreshAvailability()
+        // Let the stand-in for Quick Look draw the files it can (the picture and the two text files) before the
+        // picture is taken, so those tiles never show their type's icon for a frame.
+        let renderableNames: Set = ["hero-draft.png", "Lisbon itinerary.md", "meeting-notes.txt"]
+        let renderable = shelf.store.items.filter { renderableNames.contains($0.name) }
+        try? await waitUntil("the Shelf thumbnails", timeout: .seconds(5)) {
+            renderable.allSatisfy { shelf.store.renderedThumbnail(for: $0.id) != nil }
+        }
     }
 
     /// Six conversations, as after the notice was acknowledged and the index was read.
@@ -1293,32 +1300,56 @@ private struct SnapshotRelauncher: AppRelaunching {
     func relaunch() {}
 }
 
-/// Paints a small picture for images (so tiles look the same on every Mac); other files get the store's icon.
+/// Stands in for Quick Look, so tiles look the same on every Mac: "hero-draft.png" gets its painted picture and the
+/// text files a page of grey lines (what Quick Look draws for them, without the system's sample-text icons). Every
+/// other file gets nothing, as Quick Look gives a file it can't read, so the screenshot (only a PNG signature)
+/// shows the image placeholder and the rest their type's icon.
 private struct SnapshotThumbnailer: ShelfThumbnailing {
     func thumbnail(for url: URL, size: CGSize, scale: CGFloat) async -> CGImage? {
-        guard url.pathExtension.lowercased() == "png" else { return nil }
-        let width = max(1, Int(size.width * scale))
+        let name = url.lastPathComponent
+        if name == "hero-draft.png" {
+            return await MainActor.run {
+                let side = max(size.width, size.height) * scale
+                var rect = CGRect(x: 0, y: 0, width: side, height: side)
+                return SnapshotFixtures.heroThumbnail(side: side).cgImage(forProposedRect: &rect, context: nil, hints: nil)
+            }
+        }
+        guard ["md", "txt"].contains(url.pathExtension.lowercased()) else { return nil }
+        return Self.textPage(size: size, scale: scale)
+    }
+
+    /// A white page (a document icon's proportions) with a folded corner and a few grey lines of "text".
+    private static func textPage(size: CGSize, scale: CGFloat) -> CGImage? {
         let height = max(1, Int(size.height * scale))
+        let width = max(1, Int(CGFloat(height) * 0.8))
         let space = CGColorSpaceCreateDeviceRGB()
         guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
                                       space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
             return nil
         }
-        let bounds = CGRect(x: 0, y: 0, width: width, height: height)
-        let warm = url.lastPathComponent.hasPrefix("hero")
-        let colors = warm
-            ? [CGColor(srgbRed: 0.96, green: 0.62, blue: 0.38, alpha: 1), CGColor(srgbRed: 0.55, green: 0.24, blue: 0.42, alpha: 1)]
-            : [CGColor(srgbRed: 0.40, green: 0.64, blue: 0.93, alpha: 1), CGColor(srgbRed: 0.16, green: 0.22, blue: 0.40, alpha: 1)]
-        if let gradient = CGGradient(colorsSpace: space, colors: colors as CFArray, locations: [0, 1]) {
-            context.drawLinearGradient(gradient, start: CGPoint(x: 0, y: bounds.maxY), end: CGPoint(x: bounds.maxX, y: 0),
-                                       options: [])
-        }
-        // A window-like card, so the picture reads as a screenshot or a draft.
-        context.setFillColor(CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 0.82))
-        let card = bounds.insetBy(dx: bounds.width * 0.16, dy: bounds.height * 0.2)
-        let radius = bounds.width * 0.05
-        context.addPath(CGPath(roundedRect: card, cornerWidth: radius, cornerHeight: radius, transform: nil))
+        let page = CGRect(x: 0, y: 0, width: width, height: height)
+        let radius = CGFloat(width) * 0.06
+        context.setFillColor(CGColor(srgbRed: 0.98, green: 0.98, blue: 0.97, alpha: 1))
+        context.addPath(CGPath(roundedRect: page, cornerWidth: radius, cornerHeight: radius, transform: nil))
         context.fillPath()
+        let margin = CGFloat(width) * 0.14
+        let lineHeight = CGFloat(height) * 0.035
+        let pitch = CGFloat(height) * 0.075
+        let widths: [CGFloat] = [0.55, 0.9, 0.82, 0.88, 0.6, 0.0, 0.86, 0.78, 0.9, 0.5]
+        var top = CGFloat(height) - margin * 1.2
+        for (index, fraction) in widths.enumerated() {
+            if fraction > 0 {
+                let isHeading = index == 0
+                context.setFillColor(isHeading ? CGColor(srgbRed: 0.35, green: 0.36, blue: 0.4, alpha: 1)
+                                               : CGColor(srgbRed: 0.72, green: 0.72, blue: 0.74, alpha: 1))
+                let line = CGRect(x: margin, y: top - lineHeight, width: (CGFloat(width) - margin * 2) * fraction,
+                                  height: isHeading ? lineHeight * 1.4 : lineHeight)
+                context.addPath(CGPath(roundedRect: line, cornerWidth: lineHeight / 2, cornerHeight: lineHeight / 2,
+                                       transform: nil))
+                context.fillPath()
+            }
+            top -= pitch
+        }
         return context.makeImage()
     }
 }
@@ -1349,18 +1380,19 @@ private enum SnapshotFixtures {
 
     // MARK: Chips
 
-    /// The four sample chips shown in the README hero shot.
+    /// The four sample chips shown in the README hero shot: one of each kind (a web page, an image, a PDF and a
+    /// text file), with an image name long enough to show the tail truncation.
     static func referenceChips() -> [Attachment] {
         var chips: [Attachment] = []
-        if let url = URL(string: "https://techcrunch.com/") {
+        if let url = URL(string: "https://example.com/release-notes") {
             chips.append(
                 Attachment(
                     kind: .webPage,
-                    displayName: "TechCrunch",
+                    displayName: "Release notes",
                     badge: "WEB",
                     sourceURL: url,
-                    appBundleID: "com.google.Chrome",
-                    payload: .webPage(title: "TechCrunch", url: url),
+                    appBundleID: "com.apple.Safari",
+                    payload: .webPage(title: "Release notes", url: url),
                     byteCount: 0
                 )
             )
@@ -1368,10 +1400,10 @@ private enum SnapshotFixtures {
         chips.append(
             Attachment(
                 kind: .image,
-                displayName: "AI_Man_cea775f8.png",
+                displayName: "homepage-hero-draft.png",
                 badge: "PNG",
-                sourceURL: URL(fileURLWithPath: "/Users/Shared/AI_Man_cea775f8.png"),
-                thumbnail: portraitThumbnail(),
+                sourceURL: URL(fileURLWithPath: "/Users/Shared/homepage-hero-draft.png"),
+                thumbnail: heroThumbnail(),
                 payload: .image(mediaType: "image/png", base64: ""),
                 byteCount: 1_284_096
             )
@@ -1379,9 +1411,9 @@ private enum SnapshotFixtures {
         chips.append(
             Attachment(
                 kind: .pdf,
-                displayName: "PDFcea775f5d9.pdf",
+                displayName: "q3-roadmap.pdf",
                 badge: "PDF",
-                sourceURL: URL(fileURLWithPath: "/Users/Shared/PDFcea775f5d9.pdf"),
+                sourceURL: URL(fileURLWithPath: "/Users/Shared/q3-roadmap.pdf"),
                 payload: .pdf(base64: ""),
                 byteCount: 842_112
             )
@@ -1389,11 +1421,11 @@ private enum SnapshotFixtures {
         chips.append(
             Attachment(
                 kind: .text,
-                displayName: "cat-meme.txt",
+                displayName: "meeting-notes.txt",
                 badge: "TXT",
-                sourceURL: URL(fileURLWithPath: "/Users/Shared/cat-meme.txt"),
-                payload: .text("I can has cheezburger?"),
-                byteCount: 22
+                sourceURL: URL(fileURLWithPath: "/Users/Shared/meeting-notes.txt"),
+                payload: .text("Notes from Monday's sync."),
+                byteCount: 25
             )
         )
         return chips
@@ -1471,7 +1503,7 @@ private enum SnapshotFixtures {
 
     /// Streaming, still thinking: no text yet.
     static func thinkingTurn() -> [ChatMessage] {
-        let user = ChatMessage(role: .user, text: "Which MacBook Air should I get for editing 4K video?",
+        let user = ChatMessage(role: .user, text: "Which laptop should I get for editing 4K video?",
                                createdAt: Date(timeIntervalSinceReferenceDate: 800_000_200))
         let assistant = ChatMessage(role: .assistant, thinking: "Weighing memory, sustained load and export times.",
                                     isThinking: true, state: .streaming, model: ModelOption.opus5.rawValue,
@@ -1762,9 +1794,9 @@ private enum SnapshotFixtures {
         NowPlayingItem(
             id: "\(MediaPlayer.music.rawValue)|snapshot-track",
             player: .music,
-            title: "Holocene",
-            artist: "Bon Iver",
-            album: "Bon Iver, Bon Iver",
+            title: "Tidewater",
+            artist: "Juniper Arcade",
+            album: "Paper Rooms",
             duration: 337,
             position: 72,
             positionDate: now,
@@ -1865,21 +1897,26 @@ private enum SnapshotFixtures {
         return Calendar.current.date(from: components) ?? Date()
     }()
 
-    /// Six conversations across Today, Yesterday and the previous week; the first is the current one.
+    /// Six conversations across Today, Yesterday and the previous week; the first is the current one. `search` is
+    /// the messages' text (the question, then the reply), which is all a real summary's search text holds: the
+    /// title is never part of it, so a snippet never repeats the title.
     static func recentSummaries(currentID: UUID, now: Date) -> [ConversationSummary] {
         let rows: [(title: String, preview: String, search: String, hoursAgo: Double, messages: Int)] = [
             ("SwiftUI list row animation", "Wrap the toggle in withAnimation(.snappy).",
-             "How do I make a SwiftUI list row expand when it's tapped? Wrap the toggle in withAnimation.", 0.2, 6),
+             "How do I make a SwiftUI list row expand when it's tapped?\nWrap the toggle in withAnimation(.snappy).",
+             0.2, 6),
             ("Actor reentrancy in Swift 6", "An actor can run other work at every await, so check state again after it.",
-             "Why does my actor see stale state after an await? An actor can run other work at every await.", 3, 8),
+             "My counter reads a value, awaits a network call, then writes it back, and sometimes the result is stale. "
+                + "Why?\nAn actor can run other work at every await, so check state again after it.", 3, 8),
             ("Move the image cache into an actor", "Make the cache an actor and keep the dictionary private.",
-             "Should my image cache be a class with a lock or an actor? Make the cache an actor.", 26, 4),
+             "Should my image cache be a class with a lock, or something else?\nMake the cache an actor and keep the "
+                + "dictionary private.", 26, 4),
             ("Lisbon packing list", "Light layers, one rain jacket, and shoes for hills.",
              "What should I pack for four days in Lisbon in October?", 30, 2),
             ("Rewrite the launch email", "Shorter subject, one link, and the price in the first line.",
              "Rewrite this launch email so it is shorter and says the price early.", 72, 6),
-            ("Compare MacBook Air configs", "16 GB is enough for photo work; take 24 GB for 4K video.",
-             "Which MacBook Air should I get for editing 4K video?", 120, 4),
+            ("Compare laptop configs", "16 GB is enough for photo work; take 24 GB for 4K video.",
+             "Which laptop should I get for editing 4K video?", 120, 4),
         ]
         return rows.enumerated().map { index, row in
             let updated = now.addingTimeInterval(-row.hoursAgo * 3_600)
@@ -1887,7 +1924,7 @@ private enum SnapshotFixtures {
                 id: index == 0 ? currentID : UUID(),
                 title: row.title,
                 preview: row.preview,
-                searchText: row.title + " " + row.search + " " + row.preview,
+                searchText: row.search,
                 createdAt: updated.addingTimeInterval(-600),
                 updatedAt: updated,
                 messageCount: row.messages,
@@ -1902,14 +1939,15 @@ private enum SnapshotFixtures {
 
     // MARK: Shelf
 
-    /// The last file is deleted after it is added, so the Shelf shows it as missing.
+    /// The last file is deleted after it is added, so the Shelf shows it as missing. `SnapshotThumbnailer` draws
+    /// the picture and the two text files; the screenshot has no rendering, so it shows the image placeholder.
     static let shelfFiles: [(name: String, contents: Data)] = [
         ("Q3 roadmap.pdf", Data("%PDF-1.4\n%snapshot\n".utf8)),
         ("Lisbon itinerary.md", Data("# Lisbon\n\n- Day 1: Alfama\n".utf8)),
         ("Screenshot 2026-09-26 at 10.42.png", Data([0x89, 0x50, 0x4E, 0x47])),
         ("hero-draft.png", Data([0x89, 0x50, 0x4E, 0x47])),
-        ("budget.csv", Data("month,amount\nSeptember,1200\n".utf8)),
         ("meeting-notes.txt", Data("Notes from Monday's sync.\n".utf8)),
+        ("budget.csv", Data("month,amount\nSeptember,1200\n".utf8)),
     ]
 
     // MARK: Helpers
@@ -1920,23 +1958,26 @@ private enum SnapshotFixtures {
         }
     }
 
-    /// A small painted stand-in for the reference's portrait thumbnail.
-    private static func portraitThumbnail() -> NSImage {
-        NSImage(size: NSSize(width: 64, height: 64), flipped: false) { rect in
-            let backdrop = NSGradient(
+    /// A small painted stand-in for a hero image draft: a dusk sky, a low sun and two hills.
+    static func heroThumbnail(side: CGFloat = 64) -> NSImage {
+        NSImage(size: NSSize(width: side, height: side), flipped: false) { rect in
+            let transform = NSAffineTransform()
+            transform.scale(by: side / 64)
+            transform.concat()
+            let sky = NSGradient(
                 colors: [
-                    NSColor(srgbRed: 0.93, green: 0.72, blue: 0.52, alpha: 1),
-                    NSColor(srgbRed: 0.42, green: 0.30, blue: 0.36, alpha: 1),
+                    NSColor(srgbRed: 0.95, green: 0.78, blue: 0.58, alpha: 1),
+                    NSColor(srgbRed: 0.55, green: 0.47, blue: 0.62, alpha: 1),
                 ]
             )
-            backdrop?.draw(in: rect, angle: -70)
+            sky?.draw(in: NSRect(x: 0, y: 0, width: 64, height: 64), angle: 90)
 
-            NSColor(srgbRed: 0.16, green: 0.13, blue: 0.14, alpha: 1).setFill()
-            NSBezierPath(ovalIn: NSRect(x: 8, y: -22, width: 48, height: 44)).fill()
-            NSColor(srgbRed: 0.86, green: 0.66, blue: 0.53, alpha: 1).setFill()
-            NSBezierPath(ovalIn: NSRect(x: 21, y: 22, width: 22, height: 26)).fill()
-            NSColor(srgbRed: 0.2, green: 0.15, blue: 0.13, alpha: 1).setFill()
-            NSBezierPath(ovalIn: NSRect(x: 19, y: 37, width: 26, height: 15)).fill()
+            NSColor(srgbRed: 0.99, green: 0.9, blue: 0.72, alpha: 1).setFill()
+            NSBezierPath(ovalIn: NSRect(x: 34, y: 26, width: 18, height: 18)).fill()
+            NSColor(srgbRed: 0.36, green: 0.34, blue: 0.45, alpha: 1).setFill()
+            NSBezierPath(ovalIn: NSRect(x: -24, y: -30, width: 80, height: 58)).fill()
+            NSColor(srgbRed: 0.22, green: 0.22, blue: 0.3, alpha: 1).setFill()
+            NSBezierPath(ovalIn: NSRect(x: 18, y: -38, width: 76, height: 56)).fill()
             return true
         }
     }

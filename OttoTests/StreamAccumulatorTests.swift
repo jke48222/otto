@@ -345,13 +345,13 @@ final class StreamAccumulatorTests: XCTestCase {
             ["type": "content_block_start", "index": 0,
              "content_block": ["type": "server_tool_use", "id": "srvtoolu_f1", "name": "web_fetch", "input": [:]]],
             ["type": "content_block_delta", "index": 0,
-             "delta": ["type": "input_json_delta", "partial_json": "{\"url\": \"https://www.techcrunch.com/2026/09/25/story/\"}"]],
+             "delta": ["type": "input_json_delta", "partial_json": "{\"url\": \"https://www.example.com/2026/09/25/story/\"}"]],
             ["type": "content_block_stop", "index": 0],
             ["type": "content_block_start", "index": 1, "content_block": [
                 "type": "web_fetch_tool_result", "tool_use_id": "srvtoolu_f1",
-                "content": ["type": "web_fetch_result", "url": "https://www.techcrunch.com/2026/09/25/story/",
+                "content": ["type": "web_fetch_result", "url": "https://www.example.com/2026/09/25/story/",
                             "retrieved_at": "2026-09-26T10:00:00Z",
-                            "content": ["type": "document", "title": "A TechCrunch story",
+                            "content": ["type": "document", "title": "An example story",
                                         "source": ["type": "text", "media_type": "text/plain", "data": "Body"]]],
             ]],
             ["type": "content_block_stop", "index": 1],
@@ -364,9 +364,9 @@ final class StreamAccumulatorTests: XCTestCase {
             ["type": "content_block_stop", "index": 2],
         ])
         XCTAssertEqual(run.descriptions, [
-            "toolActivity(srvtoolu_f1|webFetch|Reading techcrunch.com|running)",
-            "toolActivity(srvtoolu_f1|webFetch|Reading techcrunch.com|done)",
-            "sources(A TechCrunch story|https://www.techcrunch.com/2026/09/25/story/)",
+            "toolActivity(srvtoolu_f1|webFetch|Reading example.com|running)",
+            "toolActivity(srvtoolu_f1|webFetch|Reading example.com|done)",
+            "sources(An example story|https://www.example.com/2026/09/25/story/)",
             "toolActivity(srvtoolu_f2|webFetch|Reading example.org|done)",
             "sources(example.org|https://example.org/a)",
         ])

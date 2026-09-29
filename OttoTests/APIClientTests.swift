@@ -137,7 +137,7 @@ final class APIClientTests: XCTestCase {
         MessagesRequest(
             model: model,
             system: system,
-            messages: [["role": "user", "content": [["type": "text", "text": "Hi otto"]]]],
+            messages: [["role": "user", "content": [["type": "text", "text": "What changed in this release?"]]]],
             maxTokens: model.maxOutputTokens,
             effort: effort,
             webAccess: webAccess
@@ -172,7 +172,7 @@ final class APIClientTests: XCTestCase {
             "max_tokens": 64_000,
             "stream": true,
             "system": [["type": "text", "text": "You are Otto."]],
-            "messages": [["role": "user", "content": [["type": "text", "text": "Hi otto"]]]],
+            "messages": [["role": "user", "content": [["type": "text", "text": "What changed in this release?"]]]],
             "cache_control": ["type": "ephemeral"],
             "thinking": ["type": "adaptive", "display": "summarized"],
             "output_config": ["effort": "high"],
@@ -491,7 +491,7 @@ final class APIClientTests: XCTestCase {
             messages: [
                 ["role": "user", "content": [
                     ["type": "image", "source": ["type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="]],
-                    ["type": "document", "source": ["type": "text", "media_type": "text/plain", "data": "notes"], "title": "cat-meme.txt"],
+                    ["type": "document", "source": ["type": "text", "media_type": "text/plain", "data": "notes"], "title": "meeting-notes.txt"],
                     ["type": "text", "text": "How do I animate the notch?"],
                 ]],
             ],

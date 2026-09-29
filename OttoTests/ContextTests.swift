@@ -29,12 +29,12 @@ final class ContextTests: XCTestCase {
 
     func testLoadsUTF8TextFileWithBadge() async throws {
         let contents = "Hello, Otto — café ☕️\nsecond line\n"
-        let url = try write(contents, named: "cat-meme.txt")
+        let url = try write(contents, named: "meeting-notes.txt")
 
         let attachment = try await AttachmentLoader.load(fileURL: url)
 
         XCTAssertEqual(attachment.kind, .text)
-        XCTAssertEqual(attachment.displayName, "cat-meme.txt")
+        XCTAssertEqual(attachment.displayName, "meeting-notes.txt")
         XCTAssertEqual(attachment.badge, "TXT")
         XCTAssertEqual(attachment.sourceURL, url)
         XCTAssertEqual(attachment.payload, .text(contents))
@@ -42,7 +42,7 @@ final class ContextTests: XCTestCase {
         XCTAssertEqual(attachment.contentBlocks(), [[
             "type": "document",
             "source": ["type": "text", "media_type": "text/plain", "data": .string(contents)],
-            "title": "cat-meme.txt",
+            "title": "meeting-notes.txt",
         ]])
     }
 
@@ -436,14 +436,14 @@ final class ContextTests: XCTestCase {
 
     func testPDFLoads() async throws {
         let pdf = try makePDF(pages: 2)
-        let url = directory.appendingPathComponent("PDFcea775f5d9.pdf")
+        let url = directory.appendingPathComponent("q3-roadmap.pdf")
         try pdf.write(to: url)
 
         let attachment = try await AttachmentLoader.load(fileURL: url)
 
         XCTAssertEqual(attachment.kind, .pdf)
         XCTAssertEqual(attachment.badge, "PDF")
-        XCTAssertEqual(attachment.displayName, "PDFcea775f5d9.pdf")
+        XCTAssertEqual(attachment.displayName, "q3-roadmap.pdf")
         XCTAssertEqual(attachment.payload, .pdf(base64: pdf.base64EncodedString()))
         XCTAssertNotNil(attachment.thumbnail)
         XCTAssertEqual(attachment.contentBlocks().first?["source"]?["media_type"], "application/pdf")
@@ -616,18 +616,18 @@ final class ContextTests: XCTestCase {
     }
 
     func testWebPageAttachmentContentBlockShape() throws {
-        let url = try XCTUnwrap(URL(string: "https://techcrunch.com/"))
-        let attachment = AttachmentLoader.makeWebPage(url: url, title: "  TechCrunch \n", appBundleID: "com.google.Chrome")
+        let url = try XCTUnwrap(URL(string: "https://example.com/release-notes"))
+        let attachment = AttachmentLoader.makeWebPage(url: url, title: "  Release notes \n", appBundleID: "com.google.Chrome")
 
         XCTAssertEqual(attachment.kind, .webPage)
         XCTAssertEqual(attachment.badge, "WEB")
-        XCTAssertEqual(attachment.displayName, "TechCrunch")
+        XCTAssertEqual(attachment.displayName, "Release notes")
         XCTAssertEqual(attachment.sourceURL, url)
         XCTAssertEqual(attachment.appBundleID, "com.google.Chrome")
-        XCTAssertEqual(attachment.payload, .webPage(title: "TechCrunch", url: url))
+        XCTAssertEqual(attachment.payload, .webPage(title: "Release notes", url: url))
         XCTAssertEqual(attachment.contentBlocks(), [[
             "type": "text",
-            "text": "<browser_tab>\nTitle: TechCrunch\nURL: https://techcrunch.com/\n</browser_tab>",
+            "text": "<browser_tab>\nTitle: Release notes\nURL: https://example.com/release-notes\n</browser_tab>",
         ]])
     }
 
