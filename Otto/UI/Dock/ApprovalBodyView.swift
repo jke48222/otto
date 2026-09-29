@@ -41,6 +41,15 @@ struct ApprovalBodyView: View {
         self.onReviewed = onReviewed
     }
 
+    /// The target line of a Shortcut or URL body (the shortcut's name, the host): 13 pt medium in primary, a step
+    /// under the card's 14 pt semibold title, so it reads as the thing named rather than a second heading.
+    static let identityFont = Theme.font(13, .medium)
+    /// The app or site icon beside the identity line.
+    static let identityIconSide: CGFloat = 14
+    static let identityIconRadius: CGFloat = 3.5
+    /// From the identity line down to the section under it ("Input", "Address").
+    static let identitySpacing: CGFloat = 10
+
     /// Bodies whose code box the card sizes itself (`CodeBoxSizing`) instead of nesting it in the card's scroll: a
     /// script, whose exact code is the point of the card.
     static func flexesCodeBox(_ body: ApprovalBody) -> Bool {
@@ -198,8 +207,8 @@ private struct ConsentBody: View {
                 .dockRecordsText(preview.body)
             if let footnote = preview.footnote, !footnote.isEmpty {
                 Text(footnote)
-                    .font(Theme.font(11))
-                    .foregroundStyle(Theme.textTertiary)
+                    .font(Theme.font(11.5))
+                    .foregroundStyle(Theme.textTertiaryOnClay)
                     .fixedSize(horizontal: false, vertical: true)
                     .dockRecordsText(footnote)
             }
@@ -240,9 +249,9 @@ private struct BoxLabel: View {
 
     var body: some View {
         Text(text)
-            .font(Theme.font(10.5, .semibold))
-            .tracking(0.4)
-            .foregroundStyle(Theme.textTertiary)
+            .font(Theme.font(11, .semibold))
+            .tracking(0.2)
+            .foregroundStyle(Theme.textTertiaryOnClay)
             .accessibilityHidden(true)
             .dockRecordsText(text)
     }
@@ -294,11 +303,11 @@ private struct ChoicePicker: View {
                     .dockRecordsText(selected?.title ?? "")
                 Image(systemName: "chevron.down")
                     .font(.system(size: 8, weight: .bold))
-                    .foregroundStyle(Theme.textTertiary)
+                    .foregroundStyle(Theme.textTertiaryOnClay)
             }
             .padding(.horizontal, 8)
-            .frame(height: 22)
-            .background(Color.white.opacity(0.05), in: Capsule(style: .continuous))
+            .frame(height: 24)
+            .background(Color.white.opacity(0.06), in: Capsule(style: .continuous))
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
@@ -336,6 +345,19 @@ private struct NoteLine: View {
     }
 }
 
+/// The event and reminder tile: a recessed well like the Input and Address boxes (the same code fill, no
+/// shadow, no clay rim), so the card never nests a second raised surface.
+private enum TileWell {
+    static let padding: CGFloat = 12
+    static let cornerRadius: CGFloat = 12
+}
+
+private extension View {
+    func tileWell() -> some View {
+        background(Theme.codeFill, in: RoundedRectangle(cornerRadius: TileWell.cornerRadius, style: .continuous))
+    }
+}
+
 // MARK: - Event
 
 private struct EventBody: View {
@@ -345,7 +367,7 @@ private struct EventBody: View {
     private var selectedChoice: CalendarChoice? { preview.calendars.first { $0.id == selection } }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .top, spacing: 10) {
                 RoundedRectangle(cornerRadius: 1.5, style: .continuous)
                     .fill(ApprovalBodyColors.color(for: selectedChoice))
@@ -354,7 +376,7 @@ private struct EventBody: View {
                 VStack(spacing: 0) {
                     Text(preview.weekday)
                         .font(Theme.font(10, .semibold))
-                        .foregroundStyle(Theme.link)
+                        .foregroundStyle(Theme.textTertiaryOnClay)
                         .dockRecordsText(preview.weekday)
                     Text(preview.day)
                         .font(Theme.font(22, .light))
@@ -374,18 +396,18 @@ private struct EventBody: View {
                         .fixedSize(horizontal: false, vertical: true)
                         .dockRecordsText(preview.timeLine)
                     if let location = preview.location, !location.isEmpty {
-                        NoteLine(symbol: "mappin", text: location, color: Theme.textTertiary)
+                        NoteLine(symbol: "mappin", text: location, color: Theme.textTertiaryOnClay)
                     }
                     if let notes = preview.notes, !notes.isEmpty {
-                        NoteLine(symbol: "note.text", text: notes, color: Theme.textTertiary)
+                        NoteLine(symbol: "note.text", text: notes, color: Theme.textTertiaryOnClay)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 ChoicePicker(choices: preview.calendars, selection: $selection, noun: "Calendar")
             }
             .fixedSize(horizontal: false, vertical: true)
-            .padding(10)
-            .clay(cornerRadius: 12, style: .chip)
+            .padding(TileWell.padding)
+            .tileWell()
 
             if let hint = preview.calendarHint, !hint.isEmpty {
                 NoteLine(symbol: "questionmark.circle", text: hint, color: Theme.attention)
@@ -410,7 +432,7 @@ private struct ReminderBody: View {
     @Binding var selection: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .top, spacing: 10) {
                 Circle()
                     .strokeBorder(Theme.textSecondary, lineWidth: 1.5)
@@ -440,19 +462,45 @@ private struct ReminderBody: View {
                         .foregroundStyle(Theme.textSecondary)
                     }
                     if let notes = preview.notes, !notes.isEmpty {
-                        NoteLine(symbol: "note.text", text: notes, color: Theme.textTertiary)
+                        NoteLine(symbol: "note.text", text: notes, color: Theme.textTertiaryOnClay)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 ChoicePicker(choices: preview.lists, selection: $selection, noun: "List")
             }
-            .padding(10)
-            .clay(cornerRadius: 12, style: .chip)
+            .padding(TileWell.padding)
+            .tileWell()
 
             if let hint = preview.listHint, !hint.isEmpty {
                 NoteLine(symbol: "questionmark.circle", text: hint, color: Theme.attention)
             }
         }
+    }
+}
+
+// MARK: - Identity icon
+
+/// The 14 pt app or site icon on a Shortcut or URL body's identity line (radius 3.5), or a symbol when there's none.
+private struct IdentityIcon: View {
+    let image: NSImage?
+    let fallbackSymbol: String
+
+    var body: some View {
+        let side = ApprovalBodyView.identityIconSide
+        Group {
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .interpolation(.high)
+                    .clipShape(RoundedRectangle(cornerRadius: ApprovalBodyView.identityIconRadius, style: .continuous))
+            } else {
+                Image(systemName: fallbackSymbol)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Theme.textSecondary)
+            }
+        }
+        .frame(width: side, height: side)
+        .accessibilityHidden(true)
     }
 }
 
@@ -463,23 +511,12 @@ private struct ShortcutBody: View {
     let onShown: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                if let icon = AppIconCache.icon(forBundleID: "com.apple.shortcuts") {
-                    Image(nsImage: icon)
-                        .resizable()
-                        .interpolation(.high)
-                        .frame(width: 20, height: 20)
-                        .accessibilityHidden(true)
-                } else {
-                    Image(systemName: "square.stack.3d.up")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(Theme.textSecondary)
-                        .frame(width: 20, height: 20)
-                        .accessibilityHidden(true)
-                }
+        VStack(alignment: .leading, spacing: ApprovalBodyView.identitySpacing) {
+            HStack(spacing: 7) {
+                IdentityIcon(image: AppIconCache.icon(forBundleID: "com.apple.shortcuts"),
+                             fallbackSymbol: "square.stack.3d.up")
                 Text(preview.name)
-                    .font(Theme.font(14, .semibold))
+                    .font(ApprovalBodyView.identityFont)
                     .foregroundStyle(Theme.textPrimary)
                     .fixedSize(horizontal: false, vertical: true)
                     .dockRecordsText(preview.name)
@@ -497,7 +534,7 @@ private struct ShortcutBody: View {
             } else {
                 Text("No input")
                     .font(Theme.font(11.5))
-                    .foregroundStyle(Theme.textTertiary)
+                    .foregroundStyle(Theme.textTertiaryOnClay)
             }
         }
     }
@@ -525,7 +562,7 @@ private struct ScriptBody: View {
         VStack(alignment: .leading, spacing: fillsCard ? 8 : 10) {
             if !preview.purpose.isEmpty {
                 let purpose = "Otto says: “\(preview.purpose)”"
-                (Text("Otto says: ").font(Theme.font(11.5)).foregroundColor(Theme.textTertiary)
+                (Text("Otto says: ").font(Theme.font(11.5)).foregroundColor(Theme.textTertiaryOnClay)
                     + Text("“\(preview.purpose)”").font(Theme.font(13).italic()).foregroundColor(Theme.textPrimary))
                     .lineLimit(fillsCard ? 2 : nil)
                     .truncationMode(.tail)
@@ -542,7 +579,7 @@ private struct ScriptBody: View {
                     ForEach(Array(preview.capabilities.enumerated()), id: \.offset) { _, chip in
                         DockCardChrome.Chip(label: chip.label,
                                             symbol: chip.isDanger ? "exclamationmark.triangle.fill" : "gearshape",
-                                            isDanger: chip.isDanger, fontSize: 11)
+                                            isDanger: chip.isDanger)
                     }
                 }
             }
@@ -581,31 +618,19 @@ private struct URLBody: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .center, spacing: 8) {
-                if let icon = browserIcon {
-                    Image(nsImage: icon)
-                        .resizable()
-                        .interpolation(.high)
-                        .frame(width: 20, height: 20)
-                        .accessibilityHidden(true)
-                } else {
-                    Image(systemName: "safari")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(Theme.textSecondary)
-                        .frame(width: 20, height: 20)
-                        .accessibilityHidden(true)
-                }
+        VStack(alignment: .leading, spacing: ApprovalBodyView.identitySpacing) {
+            HStack(alignment: .center, spacing: 7) {
+                IdentityIcon(image: browserIcon, fallbackSymbol: "safari")
                 VStack(alignment: .leading, spacing: 2) {
                     Text(preview.displayHost)
-                        .font(Theme.font(18, .semibold))
+                        .font(ApprovalBodyView.identityFont)
                         .foregroundStyle(Theme.textPrimary)
                         .fixedSize(horizontal: false, vertical: true)
                         .dockRecordsText(preview.displayHost)
                     if let punycode = preview.punycodeHost, !punycode.isEmpty, punycode != preview.displayHost {
                         Text(punycode)
                             .font(Theme.mono(11))
-                            .foregroundStyle(Theme.textTertiary)
+                            .foregroundStyle(Theme.textSecondary)
                             .fixedSize(horizontal: false, vertical: true)
                             .dockRecordsText(punycode)
                     }
@@ -625,7 +650,7 @@ private struct URLBody: View {
                 FlowLayout(spacing: 6, lineSpacing: 6) {
                     ForEach(Array(preview.warnings.enumerated()), id: \.offset) { _, warning in
                         DockCardChrome.Chip(label: warning, symbol: "exclamationmark.triangle.fill",
-                                            tint: Theme.attention, fontSize: 11)
+                                            tint: Theme.attention)
                     }
                 }
             }

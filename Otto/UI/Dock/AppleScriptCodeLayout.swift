@@ -35,7 +35,10 @@ enum AppleScriptCodeLayout {
 
     /// Wraps `source` into rows of at most `columns` columns (at least `tabWidth`, so any single character
     /// fits a row). Only line terminators end a source line; every other character, spaces included, stays
-    /// on screen. A terminator at the very end doesn't add an empty last row.
+    /// on screen. A row that runs out of room breaks after the last space or separator in it (`breaksAfter`)
+    /// when that keeps at least half the row, so a word or identifier moves to the next row whole; otherwise
+    /// it breaks at the character. Indentation is never a break point. A terminator at the very end doesn't
+    /// add an empty last row.
     static func wrap(_ source: String, columns: Int) -> [CodeLine] {
         let limit = max(columns, tabWidth)
         var rows: [CodeLine] = []
@@ -43,12 +46,14 @@ enum AppleScriptCodeLayout {
         var rowWidth = 0
         var lineNumber = 1
         var rowIsLineStart = true
+        /// The last place the current row may break (just after a space or separator) and its width there.
+        var breakPoint: (index: String.Index, width: Int)?
+        var rowHasContent = false
 
-        func closeRow(at end: String.Index) {
+        func closeRow(at end: String.Index, width: Int) {
             rows.append(CodeLine(index: rows.count, text: String(source[rowStart..<end]),
-                                 lineNumber: rowIsLineStart ? lineNumber : nil, width: rowWidth))
+                                 lineNumber: rowIsLineStart ? lineNumber : nil, width: width))
             rowStart = end
-            rowWidth = 0
         }
 
         var index = source.startIndex
@@ -56,24 +61,43 @@ enum AppleScriptCodeLayout {
             let character = source[index]
             let next = source.index(after: index)
             if character.isNewline {
-                closeRow(at: next)
+                closeRow(at: next, width: rowWidth)
+                rowWidth = 0
                 lineNumber += 1
                 rowIsLineStart = true
+                breakPoint = nil
+                rowHasContent = false
             } else {
                 let width = columnWidth(of: character)
                 if rowWidth > 0, rowWidth + width > limit {
-                    closeRow(at: index)
+                    if let point = breakPoint, point.width * 2 >= limit {
+                        closeRow(at: point.index, width: point.width)
+                        rowWidth -= point.width
+                    } else {
+                        closeRow(at: index, width: rowWidth)
+                        rowWidth = 0
+                    }
                     rowIsLineStart = false
+                    breakPoint = nil
+                    rowHasContent = rowWidth > 0
                 }
                 rowWidth += width
+                let isSpace = character == " " || character == "\t"
+                if rowHasContent, isSpace || breaksAfter.contains(character) {
+                    breakPoint = (next, rowWidth)
+                }
+                if !isSpace { rowHasContent = true }
             }
             index = next
         }
         if rowStart < source.endIndex {
-            closeRow(at: source.endIndex)
+            closeRow(at: source.endIndex, width: rowWidth)
         }
         return rows
     }
+
+    /// Separators a row may break after (besides spaces): the joints of paths, addresses and expressions.
+    static let breaksAfter: Set<Character> = ["/", "-", ".", ",", ";", "&", "?", "=", ")", "]", "}"]
 
     /// Columns a character takes in the monospaced code font.
     static func columnWidth(of character: Character) -> Int {

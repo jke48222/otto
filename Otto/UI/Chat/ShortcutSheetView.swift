@@ -53,12 +53,48 @@ struct ShortcutSheetView: View {
     private var clipsBottom: Bool { viewportHeight > 0 && contentFrame.maxY > viewportHeight + 0.5 }
 
     private static let scrollSpace = "shortcut-sheet-scroll"
-    private static let fadeDepth: CGFloat = 16
+    static let contentSpace = "shortcut-sheet-content"
+    /// The soft edge where rows scroll out of view: short, so it hides no more than most of one row.
+    static let fadeDepth: CGFloat = 16
+
+    /// Where each section header and row sits in the scrolling content, so the viewport can end between rows.
+    @State private var marks: [Mark] = []
+
+    /// A section header or a row in one of the two columns, in the scrolling content's coordinates.
+    struct Mark: Equatable, Sendable {
+        enum Kind: Equatable, Sendable { case header, row }
+        let kind: Kind
+        let section: ShortcutSheet.Section.Kind
+        /// Position within the section: 0 for the header and for the first row.
+        let index: Int
+        let minY: CGFloat
+        let maxY: CGFloat
+    }
+
+    /// Pure. The rows' viewport: everything when it fits in `available`, else the tallest height that ends in the
+    /// gap between two rows and leaves no section header in view without its first row (a header needs more than
+    /// a sliver of itself showing to count as seen). Falls back to `available` when no gap qualifies.
+    static func viewportHeight(available: CGFloat, contentHeight: CGFloat, marks: [Mark]) -> CGFloat {
+        guard contentHeight > available + 0.5, !marks.isEmpty else { return available }
+        let headers = marks.filter { $0.kind == .header }
+        let firstRows = Dictionary(marks.filter { $0.kind == .row && $0.index == 0 }.map { ($0.section, $0) },
+                                   uniquingKeysWith: { first, _ in first })
+        let cuts = marks.filter { $0.kind == .row }.map { $0.maxY + 1 }.filter { $0 <= available }.sorted(by: >)
+        for cut in cuts {
+            let orphansAHeader = headers.contains { header in
+                guard header.minY + 6 < cut, let first = firstRows[header.section] else { return false }
+                return first.maxY > cut + 4
+            }
+            if !orphansAHeader { return cut }
+        }
+        return available
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Self.blockSpacing) {
             titleRow
-            CappedHeightLayout(maxHeight: max(0, maxHeight - Self.chromeHeight)) {
+            CappedHeightLayout(maxHeight: Self.viewportHeight(available: max(0, maxHeight - Self.chromeHeight),
+                                                              contentHeight: contentFrame.height, marks: marks)) {
                 ScrollView(.vertical) {
                     VStack(alignment: .leading, spacing: Self.blockSpacing) {
                         HStack(alignment: .top, spacing: Self.columnSpacing) {
@@ -74,6 +110,10 @@ struct ShortcutSheetView: View {
                     }
                     // Room for the caps' shadows at the scroll view's edges.
                     .padding(.vertical, 4)
+                    .coordinateSpace(.named(Self.contentSpace))
+                    .onPreferenceChange(MarksKey.self) { value in
+                        if marks != value { marks = value }
+                    }
                     .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .named(Self.scrollSpace)) }) { frame in
                         if contentFrame != frame { contentFrame = frame }
                     }
@@ -146,8 +186,10 @@ struct ShortcutSheetView: View {
                     .foregroundStyle(Theme.textTertiary)
                     .padding(.bottom, 4)
                     .accessibilityAddTraits(.isHeader)
-                ForEach(section.rows) { row in
+                    .reportsMark(.header, section: section.kind, index: 0)
+                ForEach(Array(section.rows.enumerated()), id: \.element.id) { index, row in
                     RowView(row: row)
+                        .reportsMark(.row, section: section.kind, index: index)
                 }
             }
         }
@@ -181,6 +223,30 @@ struct ShortcutSheetView: View {
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(row.title)
             .accessibilityValue(row.chords.map { KeyCap.spokenChord($0, isHold: row.isHold) }.joined(separator: ", or "))
+        }
+    }
+}
+
+private struct MarksKey: PreferenceKey {
+    static let defaultValue: [ShortcutSheetView.Mark] = []
+
+    static func reduce(value: inout [ShortcutSheetView.Mark], nextValue: () -> [ShortcutSheetView.Mark]) {
+        value.append(contentsOf: nextValue())
+    }
+}
+
+private extension View {
+    /// Reports this header's or row's frame in the sheet's scrolling content (`ShortcutSheetView.Mark`).
+    func reportsMark(_ kind: ShortcutSheetView.Mark.Kind, section: ShortcutSheet.Section.Kind, index: Int) -> some View {
+        background {
+            GeometryReader { proxy in
+                let frame = proxy.frame(in: .named(ShortcutSheetView.contentSpace))
+                Color.clear.preference(
+                    key: MarksKey.self,
+                    value: [ShortcutSheetView.Mark(kind: kind, section: section, index: index,
+                                                   minY: frame.minY, maxY: frame.maxY)]
+                )
+            }
         }
     }
 }

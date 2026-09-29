@@ -3,8 +3,8 @@
 //  Otto
 //
 //  The shared surface of every card in the dock (approvals, permission cards, one-time cards): a clay tray
-//  with a faint inner ring that says "this needs you", plus the pieces the cards share: the header, the
-//  footer buttons with their key hints, the checkbox, chips, the copy pebble and the character-wrapped
+//  with a faint top-lit inner ring that says "this needs you", plus the pieces the cards share: the header, the
+//  footer buttons with their key hints, the checkbox, chips, the copy button and the character-wrapped
 //  mono box.
 //
 
@@ -28,12 +28,21 @@ struct DockCardChrome: ViewModifier {
             .frame(maxWidth: .infinity, alignment: .leading)
             .clay(cornerRadius: Self.cornerRadius, style: .tray)
             .overlay {
+                // A top-lit bevel rather than an even outline: the edge catches light across the top and
+                // fades down the sides, so the card reads as the same soft clay as the composer.
                 RoundedRectangle(cornerRadius: Self.cornerRadius - 1, style: .continuous)
-                    .strokeBorder(Theme.sendFill.opacity(0.28), lineWidth: 1)
+                    .strokeBorder(Self.ringGradient, lineWidth: 1)
                     .padding(1)
                     .allowsHitTesting(false)
             }
     }
+
+    /// The inner ring: white 0.16 at the top fading to 0.04 at the bottom.
+    static let ringGradient = LinearGradient(
+        colors: [Color.white.opacity(0.16), Color.white.opacity(0.04)],
+        startPoint: .top,
+        endPoint: .bottom
+    )
 
     /// Posts a VoiceOver announcement (prompt titles, the arming delay, why an approval press did nothing).
     @MainActor
@@ -86,7 +95,7 @@ struct DockCardChrome: ViewModifier {
                 if let counter {
                     Text(counter)
                         .font(Theme.font(11))
-                        .foregroundStyle(Theme.textTertiary)
+                        .foregroundStyle(Theme.textTertiaryOnClay)
                         .fixedSize()
                 }
             }
@@ -138,8 +147,11 @@ struct DockCardChrome: ViewModifier {
         }
     }
 
-    /// The primary footer button: the send gradient. While `armingProgress` is below 1 it sits at 45 %
-    /// with a 1.5 pt ring tracing the capsule; `isEnabled` false keeps it inert either way.
+    /// The primary footer button: the send gradient once it is armed and enabled. Until then it sits in a recessed
+    /// clay well (`waitingFill` with a 1 pt white 0.10 inner ring) with its label and key hint in `textSecondary`
+    /// (6.7:1 on the well), so it reads as waiting without dimming any text; a 1.5 pt ring traces the capsule while
+    /// it arms (SPEC §5.7). Arming crossfades the well into the gradient over 0.2 s: a fade only, so Reduce Motion
+    /// needs no special case. `isEnabled` false keeps it in the well and inert either way.
     struct PrimaryButton: View {
         let title: String
         var hint: String? = nil
@@ -149,29 +161,44 @@ struct DockCardChrome: ViewModifier {
         let action: () -> Void
 
         private var isArmed: Bool { (armingProgress ?? 1) >= 1 }
+        private var isReady: Bool { isArmed && isEnabled }
+
+        /// The waiting well: a shade under the card's lit clay, so the button reads as pressed in, not greyed out.
+        static let waitingFill = Theme.rgb(0x1C1D20)
+        static let waitingRing = Color.white.opacity(0.10)
+        static let waitingLabel = Theme.textSecondary
 
         var body: some View {
+            let shape = Capsule(style: .continuous)
             Button(action: action) {
                 HStack(spacing: 6) {
                     Text(title)
                         .font(Theme.font(13, .semibold))
-                        .foregroundStyle(Theme.sendGlyph)
+                        .foregroundStyle(isReady ? Theme.sendGlyph : Self.waitingLabel)
                         .lineLimit(1)
                     if let hint {
-                        KeyHint(text: hint, color: Theme.sendHint)
+                        KeyHint(text: hint, color: isReady ? Theme.sendHint : Self.waitingLabel)
                     }
                 }
                 .padding(.horizontal, 14)
                 .frame(height: 28)
                 .background {
-                    Capsule(style: .continuous)
-                        .fill(LinearGradient(colors: [Theme.sendTop, Theme.sendBottom],
-                                             startPoint: .top, endPoint: .bottom))
+                    ZStack {
+                        shape
+                            .fill(Self.waitingFill)
+                            .overlay { shape.strokeBorder(Self.waitingRing, lineWidth: 1) }
+                            .opacity(isReady ? 0 : 1)
+                        shape
+                            .fill(LinearGradient(colors: [Theme.sendTop, Theme.sendBottom],
+                                                 startPoint: .top, endPoint: .bottom))
+                            .opacity(isReady ? 1 : 0)
+                    }
                 }
-                .opacity(isArmed && isEnabled ? 1 : 0.45)
+                // Opacity and color only, so it stays a crossfade under Reduce Motion.
+                .animation(.easeOut(duration: 0.2), value: isReady)
                 .overlay {
                     if let armingProgress, armingProgress < 1 {
-                        Capsule(style: .continuous)
+                        shape
                             .inset(by: -2)
                             .trim(from: 0, to: max(0, armingProgress))
                             .stroke(Theme.sendFill.opacity(0.9),
@@ -179,7 +206,7 @@ struct DockCardChrome: ViewModifier {
                             .allowsHitTesting(false)
                     }
                 }
-                .contentShape(Capsule(style: .continuous))
+                .contentShape(shape)
             }
             .buttonStyle(PressableButtonStyle(pressedScale: 0.96))
             .disabled(!isEnabled || !isArmed)
@@ -196,7 +223,7 @@ struct DockCardChrome: ViewModifier {
             Button(action: action) {
                 Text(title)
                     .font(Theme.font(12, .medium))
-                    .foregroundStyle(isHovering ? Theme.textSecondary : Theme.textTertiary)
+                    .foregroundStyle(isHovering ? Theme.textSecondary : Theme.textTertiaryOnClay)
                     .padding(.vertical, 4)
                     .contentShape(Rectangle())
             }
@@ -207,48 +234,73 @@ struct DockCardChrome: ViewModifier {
 
     // MARK: - Checkbox
 
-    /// A small rounded-square toggle with a label ("Always allow “Log water”").
+    /// A small clay toggle with a label ("Always allow “Log water”"): a 16 pt rounded square that is a faint
+    /// well with the card's top-lit ring when off and the send gradient with a check when on. The two states
+    /// crossfade; nothing scales or moves, so Reduce Motion needs no special case.
     struct Checkbox: View {
         @Binding var isOn: Bool
         let label: String
+
+        static let boxSide: CGFloat = 16
+        static let boxRadius: CGFloat = 5
 
         var body: some View {
             Button {
                 isOn.toggle()
             } label: {
-                HStack(spacing: 7) {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 3.5, style: .continuous)
-                            .fill(isOn ? Theme.sendFill : Color.white.opacity(0.04))
-                        RoundedRectangle(cornerRadius: 3.5, style: .continuous)
-                            .strokeBorder(isOn ? Color.clear : Color.white.opacity(0.28), lineWidth: 1)
-                        if isOn {
-                            Image(systemName: "checkmark")
-                                .font(.system(size: 8, weight: .bold))
-                                .foregroundStyle(Theme.sendGlyph)
-                        }
-                    }
-                    .frame(width: 13, height: 13)
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    box
+                        .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 4.5 }
                     Text(label)
-                        .font(Theme.font(12))
+                        .font(Theme.font(12.5))
                         .foregroundStyle(Theme.textSecondary)
                         .lineLimit(2)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .contentShape(Rectangle())
             }
-            .buttonStyle(PressableButtonStyle(pressedScale: 0.98))
+            .buttonStyle(CheckboxButtonStyle())
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(label)
             .accessibilityValue(isOn ? "On" : "Off")
             .accessibilityAddTraits(.isButton)
             .accessibilityAction { isOn.toggle() }
         }
+
+        private var box: some View {
+            let shape = RoundedRectangle(cornerRadius: Self.boxRadius, style: .continuous)
+            return ZStack {
+                shape
+                    .fill(Color.white.opacity(0.06))
+                    .overlay { shape.strokeBorder(DockCardChrome.ringGradient, lineWidth: 1) }
+                    .opacity(isOn ? 0 : 1)
+                shape
+                    .fill(LinearGradient(colors: [Theme.sendTop, Theme.sendBottom],
+                                         startPoint: .top, endPoint: .bottom))
+                    .overlay {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(Theme.sendGlyph)
+                    }
+                    .opacity(isOn ? 1 : 0)
+            }
+            .frame(width: Self.boxSide, height: Self.boxSide)
+            .animation(.easeOut(duration: 0.15), value: isOn)
+        }
+    }
+
+    /// No pressed look: the box's crossfade is the feedback, and the label is never dimmed or scaled.
+    private struct CheckboxButtonStyle: ButtonStyle {
+        func makeBody(configuration: Configuration) -> some View {
+            configuration.label
+        }
     }
 
     // MARK: - Chips
 
-    /// A small clay chip: an optional app icon or symbol and a label; danger chips carry an error tint.
+    /// A small flat chip: an optional app icon or symbol and a label. Neutral chips are a faint white fill;
+    /// danger chips (and tinted warning chips) wash that fill with their color and draw the label in it.
+    /// No stroke and no shadow, like the context chips: the card is the raised form, not its chips.
     struct Chip: View {
         let label: String
         var symbol: String? = nil
@@ -256,11 +308,16 @@ struct DockCardChrome: ViewModifier {
         var isDanger = false
         /// Overrides the label color (warning chips use `Theme.attention`); danger wins over it.
         var tint: Color? = nil
-        var fontSize: CGFloat = 11.5
+        var fontSize: CGFloat = 12
 
-        private var labelColor: Color { isDanger ? Theme.error : (tint ?? Theme.chipLabel) }
+        static let height: CGFloat = 24
+        static let horizontalPadding: CGFloat = 10
+
+        private var accent: Color? { isDanger ? Theme.error : tint }
+        private var labelColor: Color { accent ?? Theme.textPrimary }
 
         var body: some View {
+            let shape = Capsule(style: .continuous)
             HStack(spacing: 5) {
                 if let bundleID, let icon = AppIconCache.icon(forBundleID: bundleID) {
                     Image(nsImage: icon)
@@ -274,19 +331,23 @@ struct DockCardChrome: ViewModifier {
                         .accessibilityHidden(true)
                 }
                 Text(label)
-                    .font(Theme.font(fontSize, isDanger ? .medium : .regular))
+                    // Regular even when tinted: the tint and its wash already mark it, and a heavier weight
+                    // made a run of danger chips the loudest block on the card.
+                    .font(Theme.font(fontSize))
                     .fixedSize(horizontal: false, vertical: true)
                     .dockRecordsText(label)
             }
             .foregroundStyle(labelColor)
-            .padding(.horizontal, 8)
-            .frame(minHeight: 22)
-            .clay(in: Capsule(style: .continuous), style: .chip)
-            .overlay {
-                if isDanger || tint != nil {
-                    Capsule(style: .continuous)
-                        .strokeBorder(labelColor.opacity(0.45), lineWidth: 1)
-                }
+            .padding(.horizontal, Self.horizontalPadding)
+            .frame(minHeight: Self.height)
+            .background {
+                shape
+                    .fill(accent == nil ? Theme.chipLiftedFill : Color.white.opacity(0.04))
+                    .overlay {
+                        if let accent {
+                            shape.fill(accent.opacity(0.14))
+                        }
+                    }
             }
             .accessibilityElement(children: .combine)
         }
@@ -294,12 +355,14 @@ struct DockCardChrome: ViewModifier {
 
     // MARK: - Copy
 
-    /// A "Copy" pebble that puts `text` on the general pasteboard and says "Copied" for a moment.
+    /// A ghost "Copy" button (no surface at rest, a faint capsule on hover, the reply code block's metrics)
+    /// that puts `text` on the general pasteboard and says "Copied" for a moment.
     struct CopyButton: View {
         let text: String
         var accessibilityName = "Copy"
         @State private var didCopy = false
         @State private var resetTask: Task<Void, Never>?
+        @State private var isHovering = false
 
         var body: some View {
             Button {
@@ -317,19 +380,35 @@ struct DockCardChrome: ViewModifier {
             } label: {
                 HStack(spacing: 4) {
                     Image(systemName: didCopy ? "checkmark" : "doc.on.doc")
-                        .font(.system(size: 9, weight: .semibold))
+                        .font(.system(size: 10, weight: .semibold))
                     Text(didCopy ? "Copied" : "Copy")
-                        .font(Theme.font(10.5, .medium))
+                        .font(Theme.font(11.5, .medium))
                 }
                 .foregroundStyle(Theme.textSecondary)
-                .padding(.horizontal, 8)
+                .padding(.horizontal, 6)
                 .frame(height: 20)
-                .clay(in: Capsule(style: .continuous), style: .pebble)
                 .contentShape(Capsule(style: .continuous))
             }
-            .buttonStyle(PressableButtonStyle(pressedScale: 0.94))
+            .buttonStyle(GhostCapsuleButtonStyle(isHovering: isHovering))
+            .onHover { isHovering = $0 }
+            .animation(.easeOut(duration: 0.12), value: isHovering)
             .accessibilityLabel(didCopy ? "Copied" : accessibilityName)
             .onDisappear { resetTask?.cancel() }
+        }
+    }
+
+    /// No surface at rest; white 0.06 on hover, 0.04 and 85 % opacity while pressed.
+    private struct GhostCapsuleButtonStyle: ButtonStyle {
+        let isHovering: Bool
+
+        func makeBody(configuration: Configuration) -> some View {
+            configuration.label
+                .background {
+                    Capsule(style: .continuous)
+                        .fill(Color.white.opacity(configuration.isPressed ? 0.04 : (isHovering ? 0.06 : 0)))
+                }
+                .opacity(configuration.isPressed ? 0.85 : 1)
+                .animation(Theme.Motion.press, value: configuration.isPressed)
         }
     }
 
@@ -359,9 +438,43 @@ struct DockCardChrome: ViewModifier {
 
     // MARK: - Mono box
 
-    /// Monospaced text wrapped by character (`AppleScriptCodeLayout.wrap`), so nothing can hide off to the
-    /// right. Scrolls vertically only inside `maxHeight`; optionally numbers its lines in a gutter, where
-    /// continuation rows show "↪". `onLastRowShown` fires once the last row has been inside the viewport.
+    /// Sizes its single child (a scroll view of `rowHeight` rows) like `ScrollCap`, inside `inset` at the top and
+    /// bottom, and snaps a viewport that can't show every row down to whole rows, so the last row in view is never
+    /// cut in half. The inset stays outside the scroller: rows clip at its edges while scrolling, and the box keeps
+    /// the same margin above the first row and below the last one in view.
+    struct RowSnappedCap: Layout {
+        var maxHeight: CGFloat
+        var rowHeight: CGFloat
+        var inset: CGFloat
+
+        /// The scroller's height: all of it when the rows fit in `available`, else as many whole rows as fit.
+        static func viewportHeight(contentHeight: CGFloat, available: CGFloat, rowHeight: CGFloat) -> CGFloat {
+            guard contentHeight > available + 0.5 else { return contentHeight }
+            guard rowHeight > 0, available.isFinite else { return max(0, available) }
+            return max(0, (available / rowHeight + 0.001).rounded(.down) * rowHeight)
+        }
+
+        func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+            guard let child = subviews.first else { return .zero }
+            let ideal = child.sizeThatFits(ProposedViewSize(width: proposal.width, height: nil))
+            let offered = proposal.height ?? .infinity
+            let available = min(maxHeight, offered) - inset * 2
+            let height = Self.viewportHeight(contentHeight: ideal.height, available: available, rowHeight: rowHeight)
+            return CGSize(width: proposal.width ?? ideal.width, height: height + inset * 2)
+        }
+
+        func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+            for child in subviews {
+                child.place(at: CGPoint(x: bounds.minX, y: bounds.minY + inset), anchor: .topLeading,
+                            proposal: ProposedViewSize(width: bounds.width, height: max(0, bounds.height - inset * 2)))
+            }
+        }
+    }
+
+    /// Monospaced text wrapped by character (`AppleScriptCodeLayout.wrap`, which prefers a space or separator), so
+    /// nothing can hide off to the right. Scrolls vertically only inside `maxHeight`, in whole rows
+    /// (`RowSnappedCap`); optionally numbers its lines in a gutter, where continuation rows show "↪".
+    /// `onLastRowShown` fires once the last row has been inside the viewport.
     struct MonoBox: View {
         /// The exact text (what the accessibility value reads and the copy button copies).
         let text: String
@@ -406,7 +519,7 @@ struct DockCardChrome: ViewModifier {
                 : AppleScriptCodeLayout.needsScrollToReview(rowCount: rows.count, rowHeight: rowHeight,
                                                             verticalPadding: Self.padding * 2, maxHeight: maxHeight)
 
-            ScrollCap(maxHeight: maxHeight) {
+            RowSnappedCap(maxHeight: maxHeight, rowHeight: rowHeight, inset: Self.padding) {
                 ScrollView(.vertical) {
                     VStack(alignment: .leading, spacing: 0) {
                         ForEach(rows) { row in
@@ -420,7 +533,7 @@ struct DockCardChrome: ViewModifier {
                                 }
                         }
                     }
-                    .padding(Self.padding)
+                    .padding(.horizontal, Self.padding)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.enabled)
                     .accessibilityHidden(true)
@@ -428,12 +541,12 @@ struct DockCardChrome: ViewModifier {
                 }
                 .scrollIndicators(overflows ? .automatic : .never)
                 .coordinateSpace(name: Self.spaceName)
+                .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { height in
+                    viewportHeight = height
+                    reportIfLastRowShown()
+                }
             }
-            .onGeometryChange(for: CGSize.self, of: { $0.size }) { size in
-                width = size.width
-                viewportHeight = size.height
-                reportIfLastRowShown()
-            }
+            .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { width = $0 }
             .onAppear {
                 onOverflowChange?(overflows)
                 if rows.isEmpty, !reportedLastRow {

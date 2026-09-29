@@ -4,8 +4,9 @@
 //
 //  The line above the composer that says why sending is paused and offers up to two ways forward
 //  (§14.10.1). A message too long for one line beside its choices wraps to a second line rather than losing
-//  its end (the part that usually says what is paused). It is driven only by a ComposerGate value and an attention counter, so it compiles in every
-//  flavor; only the paid build ever has a gate to show.
+//  its end (the part that usually says what is paused); the symbol and the choices then stay on the first line's
+//  baseline. It is driven only by a ComposerGate value and an attention counter, so it compiles in every flavor;
+//  only the paid build ever has a gate to show.
 //
 
 import SwiftUI
@@ -24,13 +25,16 @@ struct ComposerGateLine: View {
 
     /// The height of a one-line gate; a message that wraps grows the line to `maxHeight`.
     static let height: CGFloat = 30
-    /// Two lines of the 12 pt message plus its 3 pt margins, with room to spare (a bound, not a size: the line is
+    /// Two lines of the 12 pt message plus its 4 pt margins, with room to spare (a bound, not a size: the line is
     /// as tall as its message). Beyond two lines the message truncates.
     static let maxHeight: CGFloat = 44
     static let messageLineLimit = 2
     static let horizontalPadding: CGFloat = 16
-    /// The primary choice: the permission card's off-white capsule at its small size.
-    static let primaryHeight: CGFloat = 22
+    /// The primary choice: the permission card's off-white capsule at its small size (`InlineAction`).
+    static let primaryHeight: CGFloat = InlineAction.primaryHeight
+    /// Between the two choices. The text button carries 4 pt of padding inside its hit area, so the capsule and the
+    /// secondary title sit 8 pt apart.
+    static let choiceSpacing: CGFloat = 4
     /// Out to `Theme.textPrimary` and back, 0.6 s in all.
     static let pulseDuration: Duration = .milliseconds(600)
 
@@ -67,7 +71,9 @@ struct ComposerGateLine: View {
     @State private var pulseTask: Task<Void, Never>?
 
     var body: some View {
-        HStack(spacing: 8) {
+        // Everything hangs on the message's first baseline: one line reads as one axis, and a wrapped message keeps
+        // its symbol and its choices level with its first line instead of centered on the pair.
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Image(systemName: gate.symbol)
                     .font(.system(size: 12, weight: .medium))
@@ -84,12 +90,15 @@ struct ComposerGateLine: View {
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(Self.accessibilityLabel(for: gate))
 
-            ForEach(Array(Self.orderedChoices(gate).enumerated()), id: \.offset) { _, choice in
-                choiceButton(choice)
+            HStack(alignment: .firstTextBaseline, spacing: Self.choiceSpacing) {
+                ForEach(Array(Self.orderedChoices(gate).enumerated()), id: \.offset) { _, choice in
+                    choiceButton(choice)
+                }
             }
         }
         .padding(.horizontal, Self.horizontalPadding)
-        .padding(.vertical, 3)
+        // 4 pt: a wrapped line's capsule, level with the first line, keeps clear of the hairline above.
+        .padding(.vertical, 4)
         // At least one line's height, else just what the (at most two-line) message needs: never more, even when
         // the stack around it offers more.
         .frame(maxWidth: .infinity, minHeight: Self.height)
@@ -119,11 +128,9 @@ struct ComposerGateLine: View {
     @ViewBuilder private func choiceButton(_ choice: ComposerGate.Choice) -> some View {
         switch Self.style(for: choice) {
         case .primaryCapsule:
-            PrimaryCapsule(title: choice.title) { onChoice(choice) }
+            InlineAction.PrimaryCapsule(title: choice.title) { onChoice(choice) }
         case .text:
-            DockCardChrome.TextButton(title: choice.title) { onChoice(choice) }
-                .fixedSize()
-                .accessibilityLabel(choice.title)
+            InlineAction.TextButton(title: choice.title) { onChoice(choice) }
         }
     }
 
@@ -136,32 +143,6 @@ struct ComposerGateLine: View {
             try? await Task.sleep(for: Self.pulseDuration / 2)
             guard !Task.isCancelled else { return }
             withAnimation(animation) { isPulsing = false }
-        }
-    }
-
-    /// The permission card's primary button (the send gradient) at the line's 22 pt size.
-    private struct PrimaryCapsule: View {
-        let title: String
-        let action: () -> Void
-
-        var body: some View {
-            Button(action: action) {
-                Text(title)
-                    .font(Theme.font(12, .semibold))
-                    .foregroundStyle(Theme.sendGlyph)
-                    .lineLimit(1)
-                    .fixedSize()
-                    .padding(.horizontal, 10)
-                    .frame(height: ComposerGateLine.primaryHeight)
-                    .background {
-                        Capsule(style: .continuous)
-                            .fill(LinearGradient(colors: [Theme.sendTop, Theme.sendBottom],
-                                                 startPoint: .top, endPoint: .bottom))
-                    }
-                    .contentShape(Capsule(style: .continuous))
-            }
-            .buttonStyle(PressableButtonStyle(pressedScale: 0.96))
-            .accessibilityLabel(title)
         }
     }
 }

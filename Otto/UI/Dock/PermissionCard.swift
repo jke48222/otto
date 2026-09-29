@@ -63,7 +63,7 @@ struct PermissionCard: View {
             if let steps = content.steps, !steps.isEmpty {
                 Text(steps)
                     .font(Theme.font(12))
-                    .foregroundStyle(Theme.textTertiary)
+                    .foregroundStyle(Theme.textTertiaryOnClay)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if content.primaryTitle != nil || !content.secondaryTitle.isEmpty {

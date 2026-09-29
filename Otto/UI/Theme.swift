@@ -59,6 +59,11 @@ enum Theme {
     static let textPrimary = rgb(0xEDEDED)
     static let textSecondary = rgb(0xA3A3A8)
     static let textTertiary = rgb(0x87878C)
+    /// The tertiary step for text on grained clay (`.tray`, `.raised`: dock cards, the Shelf bar, the Now Playing
+    /// strip). The grain's highlights lift the surface to #242528 (90th percentile) and #2D2E30 (99th), where
+    /// `textTertiary` drops to 4.29 / 3.80; this measures 5.61 / 4.97 there and 6.43 on the clay's median.
+    /// Labels, meta lines and footnotes on clay use it and keep their rank through size and weight.
+    static let textTertiaryOnClay = rgb(0x9C9CA1)
     /// The composer's placeholder and status ("Ask Otto anything…", "Waiting for your OK…"): 5.12 on the
     /// slab's lit top (#18191B), 4.86 on #1D1E20.
     static let placeholder = rgb(0x8A8A8F)

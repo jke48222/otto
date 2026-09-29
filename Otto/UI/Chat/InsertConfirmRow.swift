@@ -61,61 +61,12 @@ struct InsertConfirmRow: View {
                     .foregroundStyle(Theme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 4)
-                ConfirmButton(title: content.confirmTitle, action: onConfirm)
-                TextButton(title: content.cancelTitle, action: onCancel)
+                // The gate line's controls: one inline-action pattern across the panel.
+                InlineAction.PrimaryCapsule(title: content.confirmTitle, action: onConfirm)
+                InlineAction.TextButton(title: content.cancelTitle, action: onCancel)
             }
             .padding(.vertical, 4)
             .accessibilityElement(children: .contain)
-        }
-    }
-
-    /// Small off-white capsule, like a card's primary button.
-    private struct ConfirmButton: View {
-        let title: String
-        let action: () -> Void
-        @State private var isHovering = false
-
-        var body: some View {
-            Button(action: action) {
-                Text(title)
-                    .font(Theme.font(12, .medium))
-                    .foregroundStyle(Theme.sendGlyph)
-                    .lineLimit(1)
-                    .fixedSize()
-                    .padding(.horizontal, 10)
-                    .frame(height: 22)
-                    .background {
-                        Capsule(style: .continuous)
-                            .fill(LinearGradient(colors: [Theme.sendTop, Theme.sendBottom], startPoint: .top, endPoint: .bottom))
-                            .brightness(isHovering ? 0.03 : 0)
-                    }
-                    .contentShape(Capsule(style: .continuous))
-            }
-            .buttonStyle(PressableButtonStyle(pressedScale: 0.95))
-            .onHover { isHovering = $0 }
-            .accessibilityLabel(title)
-        }
-    }
-
-    private struct TextButton: View {
-        let title: String
-        let action: () -> Void
-        @State private var isHovering = false
-
-        var body: some View {
-            Button(action: action) {
-                Text(title)
-                    .font(Theme.font(12, .medium))
-                    .foregroundStyle(isHovering ? Theme.textPrimary : Theme.textSecondary)
-                    .lineLimit(1)
-                    .fixedSize()
-                    .padding(.horizontal, 4)
-                    .frame(height: 22)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(PressableButtonStyle(pressedScale: 0.95))
-            .onHover { isHovering = $0 }
-            .accessibilityLabel(title)
         }
     }
 }

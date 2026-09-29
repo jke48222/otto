@@ -40,16 +40,16 @@ struct AppleScriptCodeView: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
                 Text("Script")
-                    .font(Theme.font(10.5, .semibold))
-                    .tracking(0.4)
-                    .foregroundStyle(Theme.textTertiary)
+                    .font(Theme.font(11, .semibold))
+                    .tracking(0.2)
+                    .foregroundStyle(Theme.textTertiaryOnClay)
                 Spacer(minLength: 8)
                 // "22 lines · scroll to review" sits above the box, where it shows as soon as the box does; the
                 // card's footer repeats the hint beside the disabled primary (§5.7).
                 Text(overflows ? AppleScriptCodeLayout.reviewFooter(lineCount: lineCount)
                                : AppleScriptCodeLayout.lineCountLabel(lineCount))
-                    .font(Theme.font(10.5))
-                    .foregroundStyle(overflows ? Theme.textSecondary : Theme.textTertiary)
+                    .font(Theme.font(11.5))
+                    .foregroundStyle(overflows ? Theme.textSecondary : Theme.textTertiaryOnClay)
                 DockCardChrome.CopyButton(text: source, accessibilityName: "Copy script")
             }
             DockCardChrome.MonoBox(
@@ -131,6 +131,11 @@ struct ScriptInheritedAccessRow: View {
         return variants
     }
 
+    /// The access row's chips and lead: a half step under the card's 12 pt chips. At 12 pt the full row wraps to
+    /// three lines on the card and starves a short script's code box, and the compact row loses its second
+    /// danger chip at the 14-inch dock height.
+    static let chipFontSize: CGFloat = 11.5
+
     /// "+2 more".
     static func moreLabel(_ hidden: [String]) -> String {
         "+\(hidden.count) more"
@@ -145,12 +150,13 @@ struct ScriptInheritedAccessRow: View {
                             HStack(spacing: 6) {
                                 leadLabel(short: variant.usesShortLead)
                                 ForEach(Array(variant.shown.enumerated()), id: \.offset) { _, name in
-                                    DockCardChrome.Chip(label: name, isDanger: Self.isDangerous(name), fontSize: 11)
+                                    DockCardChrome.Chip(label: name, isDanger: Self.isDangerous(name),
+                                                        fontSize: Self.chipFontSize)
                                 }
                                 if !variant.hidden.isEmpty {
                                     DockCardChrome.Chip(label: Self.moreLabel(variant.hidden),
                                                         isDanger: variant.hidden.contains(where: Self.isDangerous),
-                                                        fontSize: 11)
+                                                        fontSize: Self.chipFontSize)
                                 }
                                 if variant.showsTrail { trailLabel }
                             }
@@ -162,7 +168,8 @@ struct ScriptInheritedAccessRow: View {
                     FlowLayout(spacing: 6, lineSpacing: 6) {
                         leadLabel(short: false)
                         ForEach(Array(access.enumerated()), id: \.offset) { _, name in
-                            DockCardChrome.Chip(label: name, isDanger: Self.isDangerous(name), fontSize: 11)
+                            DockCardChrome.Chip(label: name, isDanger: Self.isDangerous(name),
+                                                fontSize: Self.chipFontSize)
                         }
                         trailLabel
                     }
@@ -174,22 +181,26 @@ struct ScriptInheritedAccessRow: View {
         }
     }
 
+    /// Only the shield carries the danger tint (with the danger chips); the lead itself stays plain text, so the
+    /// row doesn't turn into one long coral block that pulls the eye off the script.
     private func leadLabel(short: Bool) -> some View {
         let danger = Self.isDanger(access)
         return HStack(spacing: 5) {
             Image(systemName: danger ? "exclamationmark.shield.fill" : "lock.shield")
-                .font(.system(size: 10.5, weight: .semibold))
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(danger ? Theme.error : Theme.textSecondary)
             Text(short ? Self.shortLead : Self.lead)
-                .font(Theme.font(11.5, .medium))
+                .font(Theme.font(Self.chipFontSize, .medium))
+                .foregroundStyle(Theme.textPrimary)
         }
-        .foregroundStyle(danger ? Theme.error : Theme.textSecondary)
-        .frame(height: 22)
+        .frame(height: DockCardChrome.Chip.height)
     }
 
+    /// Centered in the chips' 24 pt line, which puts its baseline on theirs.
     private var trailLabel: some View {
         Text(Self.trail)
-            .font(Theme.font(11))
-            .foregroundStyle(Theme.textTertiary)
-            .frame(height: 22)
+            .font(Theme.font(11.5))
+            .foregroundStyle(Theme.textTertiaryOnClay)
+            .frame(height: DockCardChrome.Chip.height)
     }
 }

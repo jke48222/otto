@@ -298,6 +298,32 @@ final class DockComponentsTests: XCTestCase {
         }
     }
 
+    /// A row that runs out of room breaks after its last space or separator when that keeps half the row, so an
+    /// identifier moves to the next row whole; otherwise, and never inside indentation, it breaks at the character.
+    func testWrapPrefersTokenBoundaries() {
+        let line = "\tif not (exists folder \"Installers and Archives\" of downloadsFolder) then"
+        let rows = AppleScriptCodeLayout.wrap(line, columns: 60)
+        XCTAssertEqual(rows.map(\.text).joined(), line)
+        XCTAssertEqual(rows.map(\.text), ["\tif not (exists folder \"Installers and Archives\" of ", "downloadsFolder) then"])
+        XCTAssertEqual(rows.map(\.width), [55, 21])
+
+        let path = AppleScriptCodeLayout.wrap("~/Desktop/Screenshots/very-long-folder/end", columns: 24)
+        XCTAssertEqual(path.map(\.text), ["~/Desktop/Screenshots/", "very-long-folder/end"])
+
+        XCTAssertEqual(AppleScriptCodeLayout.wrap("ab cdefghijklmnop", columns: 8).map(\.text), ["ab cdefg", "hijklmno", "p"],
+                       "a break that would leave less than half a row falls back to the character")
+    }
+
+    /// The code box's viewport holds whole rows: everything when it fits, else as many rows as fit.
+    func testMonoBoxViewportSnapsToWholeRows() {
+        typealias Cap = DockCardChrome.RowSnappedCap
+        XCTAssertEqual(Cap.viewportHeight(contentHeight: 51, available: 80, rowHeight: 17), 51, "fits: all of it")
+        XCTAssertEqual(Cap.viewportHeight(contentHeight: 374, available: 77, rowHeight: 17), 68, "4 rows, not 4.5")
+        XCTAssertEqual(Cap.viewportHeight(contentHeight: 374, available: 68, rowHeight: 17), 68)
+        XCTAssertEqual(Cap.viewportHeight(contentHeight: 374, available: 10, rowHeight: 17), 0)
+        XCTAssertEqual(Cap.viewportHeight(contentHeight: 374, available: .infinity, rowHeight: 17), 374)
+    }
+
     func testWrapNumbersLinesAndMarksContinuations() {
         let rows = AppleScriptCodeLayout.wrap("abcdefghij\nxy\n\nz", columns: 4)
         XCTAssertEqual(rows.map(\.text), ["abcd", "efgh", "ij\n", "xy\n", "\n", "z"])
@@ -450,9 +476,12 @@ final class DockComponentsTests: XCTestCase {
 
         let plain = scrollers(caution: false)
         XCTAssertEqual(plain.count, 1, "one scroller: the code box")
+        // The box's padding sits outside its scroller, which is always a whole number of rows tall.
         let rowHeight = (AppleScriptCodeView.fontSize * 1.35).rounded(.up)
-        XCTAssertGreaterThanOrEqual(plain.first?.frame.height ?? 0, DockCardChrome.MonoBox.padding * 2 + 3 * rowHeight,
-                                    "at least three rows of the script show before any scrolling")
+        let viewport = plain.first?.frame.height ?? 0
+        XCTAssertGreaterThanOrEqual(viewport, 3 * rowHeight, "at least three rows of the script show before any scrolling")
+        XCTAssertEqual(viewport.truncatingRemainder(dividingBy: rowHeight), 0, accuracy: 0.5,
+                       "the viewport ends between rows, never halfway through one")
 
         XCTAssertEqual(scrollers(caution: true).count, 1, "never a scroller inside a scroller")
     }

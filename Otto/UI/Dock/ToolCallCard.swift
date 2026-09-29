@@ -326,8 +326,8 @@ private struct DetailBox<Content: View>: View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 8) {
                 Text(label)
-                    .font(Theme.font(10.5, .semibold))
-                    .tracking(0.4)
+                    .font(Theme.font(11, .semibold))
+                    .tracking(0.2)
                     .foregroundStyle(Theme.textTertiary)
                     .accessibilityHidden(true)
                 Spacer(minLength: 8)

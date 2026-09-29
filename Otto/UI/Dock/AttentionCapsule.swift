@@ -45,7 +45,7 @@ struct AttentionCapsule: View {
                     .foregroundStyle(Theme.textPrimary)
                 Text("·")
                     .font(Theme.font(12))
-                    .foregroundStyle(Theme.textTertiary)
+                    .foregroundStyle(Theme.textTertiaryOnClay)
                     .accessibilityHidden(true)
                 Text(Self.actionTitle)
                     .font(Theme.font(12, .semibold))

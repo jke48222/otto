@@ -384,6 +384,35 @@ final class ShortcutSheetTests: XCTestCase {
                        "Model: Opus 5. Change model, response style and web search.")
     }
 
+    /// The sheet's rows end between two rows and never leave a section header in view without its first row.
+    func testSheetViewportEndsBetweenRowsWithoutAnOrphanedHeader() {
+        typealias Mark = ShortcutSheetView.Mark
+        // Left column: Conversation (header, 9 rows), then Actions (header, rows); right column: Notch (header, rows).
+        var marks: [Mark] = [Mark(kind: .header, section: .conversation, index: 0, minY: 4, maxY: 23),
+                             Mark(kind: .header, section: .notch, index: 0, minY: 4, maxY: 23)]
+        for index in 0..<9 {
+            let top = 25 + CGFloat(index) * 24
+            marks.append(Mark(kind: .row, section: .conversation, index: index, minY: top, maxY: top + 22))
+        }
+        for index in 0..<14 {
+            let top = 25 + CGFloat(index) * 24
+            marks.append(Mark(kind: .row, section: .notch, index: index, minY: top, maxY: top + 22))
+        }
+        let actionsTop: CGFloat = 25 + 9 * 24 - 2 + 14   // after the last Conversation row and the 14 pt gap
+        marks.append(Mark(kind: .header, section: .actions, index: 0, minY: actionsTop, maxY: actionsTop + 19))
+        marks.append(Mark(kind: .row, section: .actions, index: 0, minY: actionsTop + 21, maxY: actionsTop + 43))
+
+        XCTAssertEqual(ShortcutSheetView.viewportHeight(available: 400, contentHeight: 380, marks: marks), 400,
+                       "everything fits")
+        // 268 would end just under the Actions header, with none of its rows: the viewport stops a row higher.
+        let height = ShortcutSheetView.viewportHeight(available: 268, contentHeight: 380, marks: marks)
+        XCTAssertEqual(height, 25 + 8 * 24 + 22 + 1)
+        XCTAssertTrue(marks.filter { $0.kind == .row }.contains { $0.maxY + 1 == height }, "ends in a row gap")
+        // With room for the first Actions row, the header may show.
+        XCTAssertEqual(ShortcutSheetView.viewportHeight(available: actionsTop + 50, contentHeight: 380, marks: marks),
+                       actionsTop + 43 + 1)
+    }
+
     func testGhostChipLabelIsCleaned() {
         XCTAssertEqual(GhostChip.displayLabel("Window:\u{2066} Xcode\u{2069}"), "Window: Xcode")
         XCTAssertEqual(GhostChip.displayLabel("a\n\nb"), "a b")

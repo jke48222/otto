@@ -36,8 +36,8 @@ struct NotchCardView: View {
             }
             if let footnote = card.footnote, !footnote.isEmpty {
                 Text(footnote)
-                    .font(Theme.font(11))
-                    .foregroundStyle(Theme.textTertiary)
+                    .font(Theme.font(11.5))
+                    .foregroundStyle(Theme.textTertiaryOnClay)
                     .fixedSize(horizontal: false, vertical: true)
             }
             HStack(spacing: 8) {

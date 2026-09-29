@@ -33,7 +33,7 @@ struct ComposerView: View {
     /// Inset of the send button from the well's trailing and bottom edges.
     private static let trailingInset: CGFloat = 10
     private static let verticalInset: CGFloat = (minHeight - sendSize) / 2
-    /// The well's chrome (slab, mic, +, send) while an approval waits in the dock: still usable for a draft, but
+    /// The well's chrome (slab, mic, +) while an approval waits in the dock: still usable for a draft, but
     /// clearly not the focus. The text and its placeholder ("Waiting for your OK…") are never dimmed, so they
     /// keep AA contrast; the dimmer slab behind them only raises it.
     private static let dimmedOpacity: Double = 0.55
@@ -108,9 +108,10 @@ struct ComposerView: View {
             .padding(.leading, 8)
             .opacity(chromeOpacity)
 
+            // Not faded with the rest: a faded pearl turns into a muddy disc with a low-contrast glyph. While an
+            // approval waits it draws as the dark pebble instead (see `SendButton.isMuted`).
             SendButton(viewModel: viewModel)
                 .padding(.leading, Self.sendSpacing)
-                .opacity(chromeOpacity)
         }
         .padding(.leading, 18)
         .padding(.trailing, Self.trailingInset)
@@ -357,10 +358,20 @@ private struct SendButton: View {
         }
     }
 
+    /// An approval waits in the dock: the control steps back to the dark pebble (the empty composer's send)
+    /// with a light glyph, instead of fading the pearl. It stays usable; only its colors change.
+    private var isMuted: Bool { viewModel.needsAttention }
+
+    private var glyphColor: Color {
+        guard isEnabled else { return Theme.sendDisabledGlyph }
+        return isMuted ? Theme.textSecondary : Theme.sendGlyph
+    }
+
     var body: some View {
         let role = self.role
         let isEnabled = self.isEnabled
         let isStop = role == .stop
+        let isMuted = self.isMuted
         Button {
             switch role {
             case .finishVoice: viewModel.finishVoice(send: true)
@@ -372,15 +383,16 @@ private struct SendButton: View {
             Image(systemName: isStop ? "stop.fill" : "arrow.up")
                 // 13 pt medium draws a thin arrow (≈1.5 pt stroke), as in the reference.
                 .font(.system(size: isStop ? 11 : 13, weight: isStop ? .semibold : .medium))
-                .foregroundStyle(isEnabled ? Theme.sendGlyph : Theme.sendDisabledGlyph)
+                .foregroundStyle(glyphColor)
                 .contentTransition(.symbolEffect(.replace))
                 .frame(width: ComposerView.sendSize, height: ComposerView.sendSize)
-                .background { disc(isEnabled: isEnabled) }
+                .background { disc(isLit: isEnabled && !isMuted) }
                 .contentShape(Circle())
         }
         .buttonStyle(PressableButtonStyle())
         .disabled(!isEnabled)
         .animation(.easeOut(duration: 0.15), value: isEnabled)
+        .animation(.easeOut(duration: 0.2), value: isMuted)
         .help(help)
         .accessibilityLabel(accessibilityLabel)
     }
@@ -388,7 +400,8 @@ private struct SendButton: View {
     /// Enabled: a cool light-grey disc, gently domed (#E2E3E5 → #C9CACC), with a line of light
     /// across its top and a soft shadow. Disabled: a dark clay disc on the pebble gradient (rather
     /// than a faded pearl, which reads as a muddy gray blob, or a flat grey hole).
-    private func disc(isEnabled: Bool) -> some View {
+    /// `isLit` is false for a disabled control and while an approval waits (`isMuted`).
+    private func disc(isLit: Bool) -> some View {
         ZStack {
             Circle()
                 .fill(
@@ -412,7 +425,7 @@ private struct SendButton: View {
                     )
                 }
                 .background { LayeredShadow(shape: Circle(), opacity: 0.5, radius: 6, y: 2.5, layers: 8) }
-                .opacity(isEnabled ? 1 : 0)
+                .opacity(isLit ? 1 : 0)
             Circle()
                 .fill(LinearGradient(stops: Theme.sendDisabledGradient, startPoint: .top, endPoint: .bottom))
                 .overlay {
@@ -429,7 +442,7 @@ private struct SendButton: View {
                     )
                 }
                 .background { LayeredShadow(shape: Circle(), opacity: 0.45, radius: 3, y: 1.5, layers: 6) }
-                .opacity(isEnabled ? 0 : 1)
+                .opacity(isLit ? 0 : 1)
         }
     }
 }

@@ -2,8 +2,9 @@
 //  RoutePebble.swift
 //  Otto
 //
-//  A header pebble for one page of the open notch (Recents, Shelf). The active page's pebble reads
-//  pressed with a warm glyph, and clicking it goes back to Chat. The Shelf pebble can carry a count badge.
+//  A header pebble for one page of the open notch (Recents, Shelf). The active page's pebble carries a
+//  white 0.10 wash and a primary-white glyph, and clicking it goes back to Chat. The Shelf pebble can carry
+//  a count badge.
 //
 
 import SwiftUI
@@ -26,6 +27,8 @@ struct RoutePebble: View {
     static let size: CGFloat = 28
     /// The clickable area around it.
     static let hitSize: CGFloat = 34
+    /// The white wash on the open page's pebble.
+    static let activeWashOpacity: Double = 0.10
 
     /// "3", "99+", or nil for no badge.
     static func badgeText(for count: Int?) -> String? {
@@ -55,15 +58,20 @@ struct RoutePebble: View {
         Button(action: action) {
             Image(systemName: route.symbol)
                 .font(.system(size: 11.5, weight: .medium))
-                .foregroundStyle(isActive ? Theme.orbLight : Color.white.opacity(isHovering ? 0.9 : 0.72))
+                .foregroundStyle(isActive ? Theme.textPrimary : Color.white.opacity(isHovering ? 0.9 : 0.72))
                 .frame(width: Self.size, height: Self.size)
                 .background {
                     ClaySurface(
                         shape: Circle(),
                         style: .pebble,
-                        isPressed: isActive,
                         isHighlighted: isHovering && !isActive
                     )
+                    .overlay {
+                        // The open page's pebble: a lit wash, crossfaded in (color only).
+                        Circle()
+                            .fill(Color.white.opacity(Self.activeWashOpacity))
+                            .opacity(isActive ? 1 : 0)
+                    }
                 }
                 .overlay(alignment: .topTrailing) {
                     if let badge = Self.badgeText(for: badgeCount) {
@@ -87,7 +95,7 @@ struct RoutePebble: View {
         .onHover { hovering in
             withAnimation(.easeOut(duration: 0.12)) { isHovering = hovering }
         }
-        .animation(Theme.Motion.press, value: isActive)
+        .animation(.easeOut(duration: 0.15), value: isActive)
         .help(Self.help(for: route, isActive: isActive))
         .accessibilityLabel(route.title)
         .accessibilityValue(accessibilityValue)
