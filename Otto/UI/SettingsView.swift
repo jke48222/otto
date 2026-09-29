@@ -4,7 +4,8 @@
 //
 //  One Settings pane per SettingsTab, and the services the panes read from. The window controller hosts one
 //  SettingsView per tab; snapshots and the promo stage use `SettingsView(settings:)`, which shows General
-//  with inert services.
+//  with inert services. The paid and licensing-check builds add the License tab (§14.10.2): the license pane
+//  and, in the paid build, the Updates section.
 //
 
 import AppKit
@@ -85,6 +86,10 @@ struct SettingsView: View {
     @Bindable var settings: AppSettings
     let tab: SettingsTab
     @State private var services: SettingsServices
+    #if OTTO_LICENSING
+    @Environment(SettingsNavigation.self) private var navigation: SettingsNavigation?
+    @Environment(\.settingsOpenExternal) private var openExternal
+    #endif
 
     /// General, with inert services (snapshots, the promo stage).
     init(settings: AppSettings) {
@@ -115,8 +120,27 @@ struct SettingsView: View {
         case .voice: SettingsVoicePane(settings: settings, services: services)
         case .privacy: SettingsPrivacyPane(settings: settings, services: services)
         #if OTTO_LICENSING
-        case .license: SettingsGeneralPane(settings: settings, services: services)
+        case .license: licensePane
         #endif
         }
     }
+
+    #if OTTO_LICENSING
+    /// Settings → License: the license pane (only the demo line when there is no license engine), then the paid
+    /// build's Updates section. "Enter License" (anchor `.licenseKey`) focuses the key field, which sits at the top.
+    private var licensePane: some View {
+        let opener = openExternal
+        return SettingsPane(tab: .license, settings: settings) {
+            LicensePane(model: services.license,
+                        focusKeyField: navigation?.pendingAnchor == .licenseKey,
+                        openExternal: { opener($0) })
+            #if OTTO_SPARKLE
+            if let updater = services.updater {
+                UpdatesSection(updater: updater, siteHost: services.license?.configuration.siteHost,
+                               openExternal: { opener($0) })
+            }
+            #endif
+        }
+    }
+    #endif
 }

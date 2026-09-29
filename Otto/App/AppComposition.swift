@@ -7,7 +7,9 @@
 //  context and voice subsystems, the notch view model, its windows, the status item, the global shortcut
 //  with its tap/hold routing, the Services provider and the notch-neighbor monitor. Three recipes:
 //  `live()` for the app, `selfTest(directory:)` for --selftest, and `inert()` for tests, which touches
-//  neither the system nor the user's data.
+//  neither the system nor the user's data. The paid and Setapp builds add their own parts here (SPEC-v2
+//  §14.10, §14.11): the license engine behind the composer gate, the updater, the status menu's extra items
+//  and Setapp's usage events. The source build compiles none of them.
 //
 
 import AppKit
@@ -15,6 +17,9 @@ import Carbon.HIToolbox
 import Foundation
 import Observation
 import os
+#if OTTO_LICENSING
+import Security
+#endif
 
 @MainActor
 final class AppComposition {
@@ -119,6 +124,15 @@ final class AppComposition {
     private(set) var statusItemController: StatusItemController?
     /// Live only; installed as `NSApp.servicesProvider` by `start()`.
     let servicesProvider: ServicesProvider?
+    #if OTTO_LICENSING
+    /// Settings → License and the composer gate (§14.10.4): the live paid graph's LicenseController, a
+    /// StaticLicenseModel (licensed) in the self-test, nil for demo, inert and snapshot graphs.
+    let license: LicenseControlling?
+    #endif
+    #if OTTO_SPARKLE || OTTO_SETAPP
+    /// Sparkle (paid) or Setapp's pending-update API; nil for demo, inert, snapshot and self-test graphs.
+    let updater: UpdaterControlling?
+    #endif
 
     private(set) var isStarted = false
     private(set) var isTerminated = false
@@ -132,6 +146,12 @@ final class AppComposition {
 
     private let hotKeyTarget: HotKeyTarget
     private let externalURLs: ExternalURLRecorder
+    /// The flavor's license engine and updater, as the recipe built them.
+    private let flavor: FlavorServices
+    #if OTTO_LICENSING
+    /// The live engine behind `license`, which `start()` starts and `terminate()` stops. nil unless live.
+    private let licenseController: LicenseController?
+    #endif
     /// The throwaway UserDefaults suite of a self-test or inert graph, removed by `terminate()`.
     private let throwawaySuiteName: String?
     private var cancellations: [() -> Void] = []
@@ -157,6 +177,8 @@ final class AppComposition {
             permissionProbe: nil,
             storage: liveStorage(isDemo: isDemo),
             isDemo: isDemo,
+            // --demo (every flavor): no license engine and no updater, so the gate never shows (§14.10.4).
+            flavor: isDemo ? FlavorServices() : liveFlavorServices(),
             makeClient: {
                 if LaunchOptions.demo { return MockLLMClient() }
                 guard let apiKey = settings.resolvedAPIKey else { throw LLMError.missingAPIKey }
@@ -187,6 +209,7 @@ final class AppComposition {
             permissionProbe: probe,
             storage: storage,
             isDemo: true,
+            flavor: selfTestFlavorServices(),
             makeClient: { MockLLMClient(latencyScale: 0.2) }
         )
     }
@@ -217,18 +240,27 @@ final class AppComposition {
             permissionProbe: nil,
             storage: .inMemory,
             isDemo: true,
+            flavor: FlavorServices(),
             makeClient: { MockLLMClient(latencyScale: 0) }
         )
     }
 
     private init(kind: Kind, settings: AppSettings, defaults: UserDefaults, throwawaySuiteName: String?,
                  probe: PermissionProbe, permissionProbe: MutablePermissionProbe?, storage: Storage, isDemo: Bool,
-                 makeClient: @escaping @MainActor () throws -> LLMClient) {
+                 flavor: FlavorServices, makeClient: @escaping @MainActor () throws -> LLMClient) {
         self.kind = kind
         self.storage = storage
         self.settings = settings
         self.permissionProbe = permissionProbe
         self.throwawaySuiteName = throwawaySuiteName
+        self.flavor = flavor
+        #if OTTO_LICENSING
+        self.license = flavor.license
+        self.licenseController = flavor.license as? LicenseController
+        #endif
+        #if OTTO_SPARKLE || OTTO_SETAPP
+        self.updater = flavor.updater
+        #endif
         let isLive = kind == .live
         let externalURLs = ExternalURLRecorder()
         self.externalURLs = externalURLs
@@ -264,9 +296,10 @@ final class AppComposition {
                                     logFullScripts: { [settings] in settings.actions.logFullScripts })
         self.executor = executor
 
-        // The conversation, its usage and its history.
-        let chat = ChatSession(settings: settings, makeClient: makeClient, tools: tools, executor: executor,
-                               permissions: permissions, isDemo: isDemo)
+        // The conversation, its usage and its history. A request that starts while sending is paused fails on its
+        // own turn (the makeClient backstop, §14.10.1); nothing else checks the license.
+        let chat = ChatSession(settings: settings, makeClient: Self.backstopped(makeClient, by: flavor.sendGate),
+                               tools: tools, executor: executor, permissions: permissions, isDemo: isDemo)
         self.chat = chat
         let ledger = UsageLedger(fileURL: storage.ledgerFile)
         self.ledger = ledger
@@ -330,7 +363,7 @@ final class AppComposition {
         let services = NotchServices(permissions: permissions, approvals: approvals, voice: voice, history: history,
                                      recents: recents, glance: glance, ledger: ledger, nowPlaying: nowPlaying,
                                      calendar: calendar, shelf: shelf, suggestions: suggestions, inserter: inserter,
-                                     notifications: notifications)
+                                     notifications: notifications, sendGate: flavor.sendGate)
         let viewModel = NotchViewModel(settings: settings, chat: chat, services: services)
         self.viewModel = viewModel
         if !isLive {
@@ -346,7 +379,7 @@ final class AppComposition {
         self.neighbors = neighbors
 
         // Settings.
-        let settingsServices = SettingsServices(
+        var settingsServices = SettingsServices(
             permissions: permissions,
             approvals: approvals,
             actionLog: actionLog,
@@ -359,6 +392,12 @@ final class AppComposition {
             speaker: voice.speaker,
             processRunner: isLive ? ProcessRunner() : nil
         )
+        #if OTTO_LICENSING
+        settingsServices.license = flavor.license
+        #endif
+        #if OTTO_SPARKLE || OTTO_SETAPP
+        settingsServices.updater = flavor.updater
+        #endif
         let settingsWindowController = SettingsWindowController(settings: settings, services: settingsServices)
         if !isLive {
             settingsWindowController.externalOpener = { externalURLs.record($0) }
@@ -413,10 +452,11 @@ final class AppComposition {
 
     // MARK: - Lifecycle
 
-    /// Shows the notch and starts what the graph runs. Live: the status item, the global shortcut (unless
-    /// `registeringHotKey` is false — a second `--demo` instance), the Services provider, notifications and the
-    /// attention monitor (through the glance controller), Now Playing, the calendar chip, History, the Shelf and
-    /// the activity log's launch prune. Self-test: the window, the glance phases and History on its temp folder.
+    /// Shows the notch and starts what the graph runs. Live: the status item (with the flavor's extra items), the
+    /// global shortcut (unless `registeringHotKey` is false — a second `--demo` instance), the Services provider,
+    /// notifications and the attention monitor (through the glance controller), Now Playing, the calendar chip,
+    /// History, the Shelf, the activity log's launch prune, and, once the window shows, the license engine, the
+    /// updater and Setapp's usage events. Self-test: the window, the glance phases and History on its temp folder.
     /// Inert graphs never start. Idempotent.
     func start(registeringHotKey: Bool = true) {
         guard kind != .inert, !isStarted, !isTerminated else { return }
@@ -427,7 +467,10 @@ final class AppComposition {
         Task { await history.start() }
         guard kind == .live else { return }
 
-        statusItemController = StatusItemController(viewModel: viewModel, settings: settings)
+        startFlavorServices()
+        let statusItemController = StatusItemController(viewModel: viewModel, settings: settings)
+        installExtraMenuItems(on: statusItemController)
+        self.statusItemController = statusItemController
         if registeringHotKey {
             installHotKeyRegistration()
         }
@@ -444,14 +487,19 @@ final class AppComposition {
         Self.logger.info("Otto started (demo: \(LaunchOptions.demo, privacy: .public))")
     }
 
-    /// applicationWillTerminate: stops listening and speaking, cancels the reply (and its tool calls), flushes
-    /// History, the Shelf and the usage ledger, stops the monitors and unregisters the global shortcut. A
-    /// self-test or inert graph also removes its throwaway preferences. Idempotent.
+    /// applicationWillTerminate: stops the license engine (its last clock write), stops listening and speaking,
+    /// cancels the reply (and its tool calls), flushes History, the Shelf and the usage ledger, stops the monitors
+    /// and unregisters the global shortcut. A self-test or inert graph also removes its throwaway preferences.
+    /// Idempotent.
     func terminate() {
         guard !isTerminated else { return }
         isTerminated = true
         cancellations.forEach { $0() }
         cancellations.removeAll()
+        #if OTTO_LICENSING
+        // One last move of the trial's clock high-water mark, then no more scheduled checks.
+        licenseController?.stop()
+        #endif
         settings.shortcuts.registrar = nil
         hotKey.unregister()
         voice.cancel()
@@ -595,6 +643,257 @@ final class AppComposition {
         self.hotKeyErrorMessage = nil
     }
 
+    // MARK: - Flavor (§14.10, §14.11)
+
+    /// What a flavor adds to the graph: the license engine (paid and licensing-check builds) and the updater (paid
+    /// and Setapp builds). Empty in the source build and in every demo, inert and snapshot graph.
+    struct FlavorServices {
+        #if OTTO_LICENSING
+        var license: LicenseControlling? = nil
+        #endif
+        #if OTTO_SPARKLE || OTTO_SETAPP
+        var updater: UpdaterControlling? = nil
+        #endif
+
+        /// What pauses sending (`NotchServices.sendGate`): the license engine, and nothing in the other builds.
+        var sendGate: ComposerGating? {
+            #if OTTO_LICENSING
+            return license
+            #else
+            return nil
+            #endif
+        }
+    }
+
+    /// The makeClient backstop (§14.10.1): while `gate` has a gate up, a request that starts throws
+    /// `ComposerGateError` with the gate's message, which ChatSession's error path shows on that turn. Without a
+    /// gate it is `makeClient` itself.
+    static func backstopped(_ makeClient: @escaping @MainActor () throws -> LLMClient,
+                            by gate: ComposerGating?) -> @MainActor () throws -> LLMClient {
+        guard let gate else { return makeClient }
+        return { [weak gate] in
+            if let paused = gate?.composerGate {
+                throw ComposerGateError(message: paused.message)
+            }
+            return try makeClient()
+        }
+    }
+
+    /// The status menu's items for this flavor, after "Settings…" (§14.10.3). Paid: "Install Otto {version}…" first
+    /// while an update waits, then "License…" ("Enter License…", which goes to the key field, while sending needs a
+    /// license) and "Check for Updates…" (enabled while the updater can check). Setapp: only "Install Otto
+    /// {version}…" while Setapp has one ready. The source build, and a graph without a license engine or updater:
+    /// none.
+    static func extraMenuItems(for flavor: FlavorServices,
+                               openSettings: @escaping @MainActor (SettingsTab, SettingsAnchor?) -> Void)
+        -> [NSMenuItem] {
+        #if OTTO_SPARKLE || OTTO_SETAPP
+        let install = flavor.updater.flatMap { updater in
+            updater.pendingUpdate.map { pending in
+                MenuItemAction.item("Install Otto \(pending.version)…") { updater.installPendingUpdate() }
+            }
+        }
+        #else
+        let install: NSMenuItem? = nil
+        #endif
+        #if OTTO_LICENSING
+        let license = flavor.license.map { license in
+            license.status.allowsSending
+                ? MenuItemAction.item("License…") { openSettings(.license, nil) }
+                : MenuItemAction.item("Enter License…") { openSettings(.license, .licenseKey) }
+        }
+        #else
+        let license: NSMenuItem? = nil
+        #endif
+        #if OTTO_SPARKLE
+        let check = flavor.updater.map { updater in
+            let item = MenuItemAction.item("Check for Updates…") { updater.checkNow() }
+            item.isEnabled = updater.canCheckNow
+            return item
+        }
+        #else
+        let check: NSMenuItem? = nil
+        #endif
+        return [install, license, check].compactMap { $0 }
+    }
+
+    /// Starts what the flavor runs, once the window shows (live graphs only): the license engine, the updater and,
+    /// in the Setapp build, the usage events Setapp asks menu bar apps to report.
+    private func startFlavorServices() {
+        #if OTTO_LICENSING
+        licenseController?.start()
+        #endif
+        #if OTTO_SPARKLE || OTTO_SETAPP
+        updater?.start()
+        #endif
+        #if OTTO_SETAPP
+        installSetappUsageReports()
+        #endif
+    }
+
+    /// Gives the status menu this flavor's items, rebuilt each time it opens. The source build sets nothing.
+    private func installExtraMenuItems(on controller: StatusItemController) {
+        #if OTTO_LICENSING || OTTO_SETAPP
+        let flavor = flavor
+        let viewModel = viewModel
+        controller.extraMenuItems = { [weak viewModel] in
+            Self.extraMenuItems(for: flavor) { tab, anchor in
+                viewModel?.openSettings(tab: tab, anchor: anchor)
+            }
+        }
+        #endif
+    }
+
+    #if OTTO_SETAPP
+    /// Setapp's usage event (§14.11.2) when the notch becomes engaged and when a message is sent; SetappBridge keeps
+    /// the reports at least five minutes apart.
+    private func installSetappUsageReports() {
+        let viewModel = viewModel
+        let chat = chat
+        let engagedLoop = ObservationLoop(read: { viewModel.isEngaged }) { isEngaged in
+            if isEngaged { SetappBridge.reportInteraction(now: Date()) }
+        }
+        var lastMessageCount = chat.messageCount
+        let sentLoop = ObservationLoop(read: { chat.messageCount }) { count in
+            defer { lastMessageCount = count }
+            if count > lastMessageCount { SetappBridge.reportInteraction(now: Date()) }
+        }
+        cancellations.append { engagedLoop.cancel() }
+        cancellations.append { sentLoop.cancel() }
+    }
+    #endif
+
+    /// The live graph's flavor parts (never in demo mode): the license engine and the flavor's updater. Nothing
+    /// starts until `start()`.
+    private static func liveFlavorServices() -> FlavorServices {
+        var flavor = FlavorServices()
+        #if OTTO_LICENSING
+        flavor.license = makeLiveLicenseController()
+        #endif
+        #if OTTO_SPARKLE
+        flavor.updater = SparkleUpdater()
+        #elseif OTTO_SETAPP
+        flavor.updater = SetappUpdater()
+        #endif
+        return flavor
+    }
+
+    /// The self-test's parts: a licensed StaticLicenseModel, so every step sends as before until step 22 changes
+    /// its status. No updater.
+    private static func selfTestFlavorServices() -> FlavorServices {
+        var flavor = FlavorServices()
+        #if OTTO_LICENSING
+        let now = Date()
+        let record = sampleLicenseRecord(configuration: .preview, activatedAt: now.addingTimeInterval(-30 * 86_400),
+                                         validatedAt: now)
+        flavor.license = StaticLicenseModel(status: .licensed(LicenseSummary(record: record)))
+        #endif
+        return flavor
+    }
+
+    #if OTTO_LICENSING
+    /// The live graph's store, and its only way to build one: the Keychain under the configuration's account names
+    /// (§14.9). A Debug build on the Polar sandbox, the licensing-check build and any misconfigured build get the
+    /// `.sandbox` items, so they never read, validate, delete or advance the production license and trial.
+    static func makeLicenseStore(for configuration: LicenseConfiguration) -> KeychainLicenseStore {
+        KeychainLicenseStore(accounts: configuration.keychainAccounts)
+    }
+
+    /// The paid build's engine on this build's configuration and its live backends (the Polar sandbox in Debug).
+    /// In a Debug build, `--license-state` swaps the Keychain for a seeded in-memory store and
+    /// `--license-clock-offset` shifts the engine's clock (§14.10.4).
+    private static func makeLiveLicenseController() -> LicenseController {
+        let configuration = LicenseConfiguration.load(bundle: .main)
+        let store: LicenseStoring
+        #if DEBUG
+        if let state = LaunchOptions.licenseState {
+            store = seededLicenseStore(state, configuration: configuration, now: Date())
+            logger.notice("License engine on an in-memory store seeded for \(state.rawValue, privacy: .public)")
+        } else {
+            store = makeLicenseStore(for: configuration)
+        }
+        #else
+        store = makeLicenseStore(for: configuration)
+        #endif
+        let backends = LicenseBackends.make(configuration: configuration, transport: URLSessionLicenseTransport(),
+                                            store: store, userAgent: LicenseBackends.userAgent())
+        let controller = LicenseController(configuration: configuration, store: store, backends: backends,
+                                           scheduler: TaskLicenseScheduler())
+        #if DEBUG
+        if let offset = LaunchOptions.licenseClockOffset {
+            controller.clockOffset = offset
+            logger.notice("License clock shifted by \(offset / 3_600, privacy: .public) h")
+        }
+        #endif
+        return controller
+    }
+
+    /// A made-up Polar license under `configuration`'s host and IDs, for the self-test's static model and the Debug
+    /// `--license-state` stores. It is never written to the Keychain.
+    nonisolated static func sampleLicenseRecord(configuration: LicenseConfiguration, activatedAt: Date,
+                                                validatedAt: Date) -> LicenseRecord {
+        let key = "OTTO-00000000-0000-4000-8000-000000000000"
+        return LicenseRecord(
+            schema: LicenseRecord.currentSchema,
+            backend: .polar,
+            apiHost: configuration.polar?.apiHost ?? LicenseConfiguration.polarSandboxHost,
+            organizationID: configuration.polar?.organizationID,
+            benefitID: configuration.polar?.benefitID,
+            gumroadProductID: nil,
+            key: key,
+            licenseKeyID: "00000000-0000-4000-8000-000000000001",
+            activationID: "00000000-0000-4000-8000-000000000002",
+            label: "Mac 7F3A",
+            displayKey: LicenseKeyRouter.displayKey(for: key),
+            seatLimit: LicensePolicy.seatsPerLicense,
+            activatedAt: activatedAt,
+            lastValidatedAt: validatedAt,
+            lastAttemptAt: validatedAt,
+            pendingRevocation: nil
+        )
+    }
+
+    #if DEBUG
+    /// `--license-state` (§14.10.4): an in-memory store seeded for `state` relative to `now`. License states carry
+    /// `sampleLicenseRecord` (last attempt an hour ago, so nothing checks before Check Now); `keychain-error` fails
+    /// every read like a locked Keychain.
+    static func seededLicenseStore(_ state: LaunchOptions.LicenseState, configuration: LicenseConfiguration,
+                                   now: Date) -> InMemoryLicenseStore {
+        let day: TimeInterval = 86_400
+        func trial(startedDaysAgo days: Double, removal: LicenseRemoval? = nil) -> TrialRecord {
+            TrialRecord(schema: TrialRecord.currentSchema, startedAt: now.addingTimeInterval(-days * day),
+                        lastSeenAt: now, lastLicenseRemoval: removal)
+        }
+        func license(validatedDaysAgo days: Double) -> LicenseRecord {
+            var record = sampleLicenseRecord(configuration: configuration,
+                                             activatedAt: now.addingTimeInterval(-60 * day),
+                                             validatedAt: now.addingTimeInterval(-days * day))
+            record.lastAttemptAt = now.addingTimeInterval(-3_600)
+            return record
+        }
+        switch state {
+        case .trial:
+            return InMemoryLicenseStore(trial: trial(startedDaysAgo: 3))
+        case .trialLastDay:
+            return InMemoryLicenseStore(trial: trial(startedDaysAgo: 13.5))
+        case .ended:
+            return InMemoryLicenseStore(trial: trial(startedDaysAgo: 20))
+        case .removed:
+            let removal = LicenseRemoval(at: now.addingTimeInterval(-day), reason: .revoked)
+            return InMemoryLicenseStore(trial: trial(startedDaysAgo: 20, removal: removal))
+        case .licensed:
+            return InMemoryLicenseStore(license: license(validatedDaysAgo: 0.1), trial: trial(startedDaysAgo: 60))
+        case .overdue:
+            return InMemoryLicenseStore(license: license(validatedDaysAgo: 35), trial: trial(startedDaysAgo: 60))
+        case .required:
+            return InMemoryLicenseStore(license: license(validatedDaysAgo: 50), trial: trial(startedDaysAgo: 60))
+        case .keychainError:
+            return InMemoryLicenseStore(failure: .keychain(errSecInteractionNotAllowed))
+        }
+    }
+    #endif
+    #endif
+
     // MARK: - History removals (§6.12)
 
     /// Every removal clears Otto's delivered and pending notifications (they may name a deleted conversation);
@@ -735,4 +1034,26 @@ private final class DetachedKeySender: KeySending {
     func areModifiersDown() -> Bool { false }
 
     func postPaste() throws {}
+}
+
+/// The target of a status-menu item that runs a closure. NSMenuItem holds its target weakly, so the item keeps
+/// this object alive as its `representedObject`.
+@MainActor private final class MenuItemAction: NSObject {
+    private let handler: @MainActor () -> Void
+
+    private init(_ handler: @escaping @MainActor () -> Void) {
+        self.handler = handler
+    }
+
+    static func item(_ title: String, _ handler: @escaping @MainActor () -> Void) -> NSMenuItem {
+        let action = MenuItemAction(handler)
+        let item = NSMenuItem(title: title, action: #selector(run(_:)), keyEquivalent: "")
+        item.target = action
+        item.representedObject = action
+        return item
+    }
+
+    @objc private func run(_ sender: NSMenuItem) {
+        handler()
+    }
 }

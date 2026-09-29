@@ -4,8 +4,9 @@
 //
 //  Everything inside the open notch (§4.1): the header, the attention capsule while a prompt waits on
 //  another page, and the page. Chat stacks the glance row, the conversation (or the ⌘/ sheet), the dock,
-//  the Continue chip, the edit banner, the chips, the composer and one line for errors, notices and the
-//  voice hint. Recents and the Shelf replace all of that. Drop overlays cover the page on every route.
+//  the Continue chip, the edit banner, the chips, the composer gate line while sending is paused (§14.10.1),
+//  the composer and one line for errors, notices and the voice hint. Recents and the Shelf replace all of
+//  that. Drop overlays cover the page on every route.
 //  The height arithmetic lives in `NotchLayout`, a pure helper the layout tests drive.
 //
 
@@ -293,6 +294,10 @@ struct NotchOpenContent: View {
             if showsChips {
                 ContextChipsView(viewModel: viewModel)
                     .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .bottom)))
+            }
+            if let gate = viewModel.composerGate {
+                ComposerGateLine(gate: gate, attention: viewModel.gateAttention) { viewModel.performGateChoice($0) }
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
             ComposerView(viewModel: viewModel)
             StatusLineSlot(viewModel: viewModel)

@@ -81,6 +81,9 @@ struct NotchDebugSeed {
     let inserter: InsertCoordinator
     /// nil in inert graphs (tests, snapshots, promo).
     let notifications: NotificationPresenter?
+    /// What can pause sending (§14.10.1): the paid build's license engine, or a static model in the self-test,
+    /// snapshots and tests. nil everywhere else, so sending is never gated there.
+    let sendGate: ComposerGating?
 
     // MARK: Presentation and composer
 
@@ -122,11 +125,24 @@ struct NotchDebugSeed {
     var renderedShapeSize: CGSize = NotchMetrics.virtualNotchSize
 
     var canSend: Bool {
+        hasSendableDraft && !isSendBlocked
+    }
+
+    /// The draft could go now if nothing paused sending.
+    private var hasSendableDraft: Bool {
         guard pendingAttachmentLoads == 0 else { return false }
         // Editing replaces the last turn, which stops a reply that is still streaming.
         guard isEditing || !chat.isStreaming else { return false }
         return !composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty
     }
+
+    // MARK: Composer gate (§14.10.1)
+
+    /// Why sending is paused, shown as one line above the composer; nil = sending allowed.
+    var composerGate: ComposerGate? { sendGate?.composerGate }
+    var isSendBlocked: Bool { composerGate != nil }
+    /// +1 per blocked send, regenerate or voice send; the gate line pulses once for each.
+    private(set) var gateAttention = 0
 
     /// Hover-exit and the drop-settle fold-up never close while true.
     var shouldStayOpen: Bool {
@@ -325,6 +341,7 @@ struct NotchDebugSeed {
         suggestions = services.suggestions
         inserter = services.inserter
         notifications = services.notifications
+        sendGate = services.sendGate
         openExternalURL = isInert ? { _ in } : { NSWorkspace.shared.open($0) }
 
         chat.onReplyFinished = { [weak self] in
@@ -972,6 +989,8 @@ struct NotchDebugSeed {
     // MARK: - Chat
 
     func send() {
+        // Paused: the draft, its chips and a voice transcript stay in the composer; the line above says why.
+        guard !blockIfSendingPaused(attempted: hasSendableDraft) else { return }
         guard canSend else { return }
         // Checked again here (not only when each chip was added): the model may have changed since,
         // and a PDF within Opus's page limit can be over Haiku's. Such a message could never be answered.
@@ -1021,6 +1040,34 @@ struct NotchDebugSeed {
 
     func stop() {
         chat.cancel()
+    }
+
+    // MARK: - Composer gate (§14.10.1)
+
+    /// True while sending is paused. A real attempt (`attempted`: a draft that could otherwise go, a regenerate, a
+    /// retry) bumps `gateAttention`, which pulses the gate line and has VoiceOver read it. Every path that would start
+    /// a request calls this first and returns when it says true; nothing it holds is cleared.
+    @discardableResult func blockIfSendingPaused(attempted: Bool = true) -> Bool {
+        guard let gate = composerGate else { return false }
+        if attempted {
+            gateAttention += 1
+            Self.logger.info("Sending is paused (\(gate.id, privacy: .public)); kept the draft")
+        }
+        return true
+    }
+
+    /// A choice on the gate line: a link closes the notch before the browser opens, Settings opens on its tab and
+    /// section, and anything else goes back to the gate's owner ("check-now").
+    func performGateChoice(_ choice: ComposerGate.Choice) {
+        switch choice.action {
+        case .openURL(let url):
+            close(.programmatic)
+            openExternalURL(url)
+        case .openSettings(let tab, let anchor):
+            openSettings(tab: tab, anchor: anchor)
+        case .gate(let id):
+            sendGate?.handleGateAction(id)
+        }
     }
 
     /// ⌘N: History saves the conversation and offers it as the continuation.

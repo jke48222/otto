@@ -9,9 +9,9 @@
 //  the live geometry), then the v1.1 steps of SPEC-v2 §10.2 (tool approvals and arming, the actions demo, the
 //  fold for System Settings, routes, soft focus, the key map, regenerate, pin, Settings on the current Space,
 //  scripted voice, Services, the Shelf, drop zones, a dry-run paste, permission cards, the closed-notch glance,
-//  History and, on a signed build, a few real system probes). Writes `report.json` (pass/fail per step) and PNG
-//  captures of the panel's content view into <dir>, then exits: 0 when every step passed, 1 otherwise, 3 if the
-//  run wedged.
+//  History and, on a signed build, a few real system probes), and in builds with licensing the composer gate
+//  (§14.17.4). Writes `report.json` (pass/fail per step) and PNG captures of the panel's content view into <dir>,
+//  then exits: 0 when every step passed, 1 otherwise, 3 if the run wedged.
 //
 //  It never moves the pointer, clicks, posts key events outside its own panel, pastes into another app or
 //  opens System Settings (the composition records the URLs instead); browser-tab suggestions are off so no
@@ -140,6 +140,10 @@ final class SelfTest {
             await step("glance", retryable: true) { await self.glance(vm, chat, controller) }
             await step("history", retryable: true) { await self.history(composition, vm, chat) }
             await step("real probes", retryable: true) { await self.realProbes() }
+            #if OTTO_LICENSING
+            // SPEC-v2 §14.17.4: builds with licensing only.
+            await step("license-gate", retryable: true) { await self.licenseGate(composition, vm, chat, controller) }
+            #endif
         }
 
         let screen = controller.map { controller -> String in
@@ -1516,6 +1520,72 @@ final class SelfTest {
         let team = dictionary[kSecCodeInfoTeamIdentifier as String] as? String
         return team == nil ? "a certificate without a team" : "a certificate with a team identifier"
     }
+
+    // MARK: - Licensing (SPEC-v2 §14.17.4)
+
+    #if OTTO_LICENSING
+    /// Step 22: with the self-test's license model set to "trial ended", Return keeps "hello" in the composer and
+    /// pulses the gate line; "Enter License" asks Settings for the License tab's key field (the hook's arguments
+    /// are checked, not real focus, which needs a key window a background run can't count on); licensed again, a
+    /// send goes through.
+    private func licenseGate(_ composition: AppComposition, _ vm: NotchViewModel, _ chat: ChatSession,
+                             _ controller: NotchWindowController) async {
+        guard let license = composition.license as? StaticLicenseModel else {
+            return fail("the self-test graph has a StaticLicenseModel")
+        }
+        let licensed = license.status
+        let settingsHook = vm.onOpenSettingsTab
+        defer {
+            license.status = licensed
+            vm.onOpenSettingsTab = settingsHook
+        }
+
+        await startFreshChat(vm, chat)
+        let messagesBefore = chat.messageCount
+        let attentionBefore = vm.gateAttention
+        license.status = .trialEnded(endedAt: Date().addingTimeInterval(-86_400))
+        check(vm.composerGate?.id == "trial-ended", "the trial-ended gate is up (\(vm.composerGate?.id ?? "none"))")
+        check(!vm.canSend, "canSend is false while sending is paused")
+
+        vm.composerText = "hello"
+        let panel = controller.debugPanel
+        let mirrored = await waitUntil(1) { self.composerTextView(panel)?.string == "hello" }
+        if mirrored, let textView = composerTextView(panel) {
+            // Return in the composer, as in "send and stream a reply".
+            textView.doCommand(by: #selector(NSResponder.insertNewline(_:)))
+        } else {
+            note("the composer's text view wasn't ready; pressed send through the view model")
+            vm.send()
+        }
+        await pause(0.3)
+        check(chat.messageCount == messagesBefore, "no new user message (\(chat.messageCount) messages)")
+        check(vm.composerText == "hello", "the draft stays in the composer (\(vm.composerText.debugDescription))")
+        check(vm.composerGate?.id == "trial-ended", "the gate is still up")
+        check(vm.gateAttention == attentionBefore + 1,
+              "gateAttention counts the blocked send (\(vm.gateAttention), was \(attentionBefore))")
+        capture("open-trial-ended")
+
+        var requests: [(tab: SettingsTab?, anchor: SettingsAnchor?)] = []
+        vm.onOpenSettingsTab = { tab, anchor in requests.append((tab, anchor)) }
+        guard let enterLicense = vm.composerGate?.choices.first(where: { $0.title == "Enter License" }) else {
+            return fail("the gate offers Enter License (\(vm.composerGate?.choices.map(\.title) ?? []))")
+        }
+        vm.performGateChoice(enterLicense)
+        check(requests.count == 1 && requests.first?.tab == .license && requests.first?.anchor == .licenseKey,
+              "Enter License asks Settings for exactly (.license, .licenseKey) (\(requests))")
+        check(!vm.isOpen, "the notch closes for Settings")
+
+        license.status = licensed
+        check(vm.composerGate == nil, "licensed again, the gate is gone")
+        await ensureOpenEngaged(vm)
+        vm.composerText = "hello"
+        vm.send()
+        let sent = await waitUntil(2) { chat.messageCount == messagesBefore + 2 }
+        check(sent, "a send works again (\(chat.messageCount) messages)")
+        let finished = await waitUntil(20) { !chat.isStreaming }
+        check(finished, "the reply finishes")
+    }
+    #endif
 
     // MARK: - Helpers
 

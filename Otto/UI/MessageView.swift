@@ -14,20 +14,38 @@ struct MessageView: View, Equatable {
     let message: ChatMessage
     let viewModel: NotchViewModel
     /// The newest turn keeps its action footer visible; earlier turns reveal it on hover.
-    var isLast: Bool = false
+    var isLast: Bool
     /// Width available to the conversation column (used for the 78 % bubble cap).
-    var availableWidth: CGFloat = NotchMetrics.openWidth - NotchMetrics.openTopRadius * 2 - 32
+    var availableWidth: CGFloat
     /// User turns: attachments History no longer keeps a copy of (history.md §2.5). Empty for other turns.
-    var unavailableAttachmentIDs: Set<UUID> = []
+    var unavailableAttachmentIDs: Set<UUID>
     /// The last reply of a regenerated turn: where it sits among the kept replies. nil for every other turn.
-    var versionInfo: VersionPager.Position? = nil
+    var versionInfo: VersionPager.Position?
     /// Complete replies with text: the app the answer can go back into, while that app still runs.
-    var insertTarget: InsertTarget? = nil
+    var insertTarget: InsertTarget?
+    /// Sending is paused (§14.10.1): Regenerate and Retry are disabled with a tooltip that points at the gate line.
+    /// Read from the view model when the view is made, so the conversation re-renders its turns when it changes.
+    var isSendBlocked: Bool
+
+    init(message: ChatMessage, viewModel: NotchViewModel, isLast: Bool = false,
+         availableWidth: CGFloat = NotchMetrics.openWidth - NotchMetrics.openTopRadius * 2 - 32,
+         unavailableAttachmentIDs: Set<UUID> = [], versionInfo: VersionPager.Position? = nil,
+         insertTarget: InsertTarget? = nil) {
+        self.message = message
+        self.viewModel = viewModel
+        self.isLast = isLast
+        self.availableWidth = availableWidth
+        self.unavailableAttachmentIDs = unavailableAttachmentIDs
+        self.versionInfo = versionInfo
+        self.insertTarget = insertTarget
+        self.isSendBlocked = viewModel.isSendBlocked
+    }
 
     static func == (lhs: MessageView, rhs: MessageView) -> Bool {
         lhs.message == rhs.message && lhs.viewModel === rhs.viewModel && lhs.isLast == rhs.isLast
             && lhs.availableWidth == rhs.availableWidth && lhs.unavailableAttachmentIDs == rhs.unavailableAttachmentIDs
             && lhs.versionInfo == rhs.versionInfo && lhs.insertTarget == rhs.insertTarget
+            && lhs.isSendBlocked == rhs.isSendBlocked
     }
 
     var body: some View {
@@ -45,7 +63,8 @@ struct MessageView: View, Equatable {
                 viewModel: viewModel,
                 isLast: isLast,
                 versionInfo: versionInfo,
-                insertTarget: insertTarget
+                insertTarget: insertTarget,
+                isSendBlocked: isSendBlocked
             )
         }
     }
@@ -176,6 +195,7 @@ private struct AssistantMessageView: View {
     let isLast: Bool
     let versionInfo: VersionPager.Position?
     let insertTarget: InsertTarget?
+    let isSendBlocked: Bool
 
     @State private var isHovering = false
     @State private var showsThinking = false
@@ -412,9 +432,11 @@ private struct AssistantMessageView: View {
                     }
                     if canRetry {
                         FooterButton(title: "Retry", symbol: "arrow.clockwise", isProminent: !needsSettings) {
+                            guard !viewModel.blockIfSendingPaused() else { return }
                             viewModel.chat.retry(messageID: message.id)
                         }
-                        .disabled(viewModel.chat.isStreaming)
+                        .disabled(viewModel.chat.isStreaming || isSendBlocked)
+                        .sendingPausedHelp(isSendBlocked)
                     }
                     if let target = pasteTarget {
                         InsertAnswerControl(
@@ -442,11 +464,12 @@ private struct AssistantMessageView: View {
                     }
                     if isLast, isComplete {
                         FooterButton(title: "Regenerate", symbol: "arrow.clockwise") {
+                            guard !viewModel.blockIfSendingPaused() else { return }
                             viewModel.regenerate()
                         }
-                        .disabled(viewModel.chat.isStreaming)
+                        .disabled(viewModel.chat.isStreaming || isSendBlocked)
                         .opacity(revealsHoverControls ? 1 : 0)
-                        .help("Regenerate (⌘R)")
+                        .help(isSendBlocked ? ComposerView.sendingPausedHelp : "Regenerate (⌘R)")
                     }
                 }
                 Spacer(minLength: 0)
@@ -512,6 +535,18 @@ private struct AssistantMessageView: View {
 }
 
 // MARK: - Pieces
+
+private extension View {
+    /// While sending is paused the control says why (§14.10.1); otherwise it keeps no tooltip.
+    @ViewBuilder
+    func sendingPausedHelp(_ isPaused: Bool) -> some View {
+        if isPaused {
+            help(ComposerView.sendingPausedHelp)
+        } else {
+            self
+        }
+    }
+}
 
 private struct ActivityRow: View {
     let activity: ToolActivity

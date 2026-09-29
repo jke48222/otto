@@ -4,7 +4,7 @@
 //
 //  Menu bar icon with quick actions. Visibility follows `settings.showMenuBarIcon`; the menu lists the
 //  notch's pages (Recent Conversations, and the Shelf while it holds something) and shows the live global
-//  shortcut next to "Open Otto".
+//  shortcut next to "Open Otto". A flavor can add its own items after "Settings…" (`extraMenuItems`).
 //
 
 import AppKit
@@ -17,6 +17,14 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     let menu = NSMenu()
     private let openItem = NSMenuItem()
     private let shelfItem = NSMenuItem()
+    private let settingsItem = NSMenuItem()
+    /// The flavor's items (§14.10.3), appended after "Settings…" and rebuilt each time the menu opens: the paid build's
+    /// License and update items, the Setapp build's pending update. nil (the source build) adds nothing.
+    var extraMenuItems: (@MainActor () -> [NSMenuItem])? {
+        didSet { rebuildExtraItems() }
+    }
+    /// The extra items in the menu now, so the next rebuild takes exactly these out.
+    private var shownExtraItems: [NSMenuItem] = []
     private var statusItem: NSStatusItem?
     private var visibilityObservation: ObservationLoop<Bool>?
 
@@ -78,7 +86,9 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
         menu.addItem(.separator())
 
-        let settingsItem = NSMenuItem(title: "Settings…", action: #selector(openSettings(_:)), keyEquivalent: ",")
+        settingsItem.title = "Settings…"
+        settingsItem.action = #selector(openSettings(_:))
+        settingsItem.keyEquivalent = ","
         settingsItem.keyEquivalentModifierMask = .command
         settingsItem.target = self
         menu.addItem(settingsItem)
@@ -111,9 +121,23 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         shelfItem.isHidden = !settings.shelf.enabled || viewModel.shelf.store.items.isEmpty
     }
 
+    /// Takes the previous extra items out and puts the current ones right after "Settings…".
+    private func rebuildExtraItems() {
+        for item in shownExtraItems where item.menu === menu {
+            menu.removeItem(item)
+        }
+        shownExtraItems = extraMenuItems?() ?? []
+        let settingsIndex = menu.index(of: settingsItem)
+        guard settingsIndex >= 0 else { return }
+        for (offset, item) in shownExtraItems.enumerated() {
+            menu.insertItem(item, at: settingsIndex + 1 + offset)
+        }
+    }
+
     private func refreshItems() {
         updateOpenItemShortcut()
         updateShelfItem()
+        rebuildExtraItems()
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
