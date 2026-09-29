@@ -327,6 +327,20 @@ final class LicenseControllerTests: XCTestCase {
         XCTAssertEqual(store.writes, [])
         XCTAssertEqual(storedTrial(store)?.lastSeenAt, origin)
     }
+
+    func testAnActivationUnderTheDebugClockOffsetReadsAsLicensed() async {
+        let store = FakeLicenseStore(trial: trial(startedAt: origin.addingTimeInterval(-20 * day)))
+        let controller = makeController(store: store)
+        controller.clockOffset = 40 * day
+        controller.start()
+        polar.scriptActivate([.success(polarRecord(validatedAt: origin, attemptAt: origin))])
+        controller.activate(key: LicenseFixtures.polarKey)
+        await settle(controller)
+        XCTAssertEqual(storedLicense(store)?.lastValidatedAt, origin.addingTimeInterval(40 * day))
+        if case .licensed = controller.status {} else {
+            XCTFail("the offset clock stamps the activation, so it isn't overdue: \(controller.status)")
+        }
+    }
     #endif
 
     // MARK: - Activation
@@ -336,7 +350,7 @@ final class LicenseControllerTests: XCTestCase {
         let controller = makeController(store: store)
         controller.start()
         XCTAssertEqual(controller.composerGate?.id, "trial-ended")
-        let activated = polarRecord(validatedAt: origin)
+        let activated = polarRecord(validatedAt: origin, attemptAt: origin)
         polar.scriptActivate([.success(activated)])
 
         controller.activate(key: "  \(LicenseFixtures.polarKey)\n")
@@ -495,6 +509,64 @@ final class LicenseControllerTests: XCTestCase {
         XCTAssertNil(controller.status.summary?.pendingRevocation)
     }
 
+    func testActivationStampsTheEffectiveNowNotTheBackendsWallClock() async {
+        // The clock ran 60 days ahead long enough to save lastSeenAt there, then was put right (§14.16).
+        let lastSeen = origin.addingTimeInterval(60 * day)
+        let store = FakeLicenseStore(trial: trial(startedAt: origin.addingTimeInterval(-20 * day), lastSeenAt: lastSeen))
+        let controller = makeController(store: store)
+        controller.start()
+        // The backend stamps its own wall clock, which is `origin`.
+        polar.scriptActivate([.success(polarRecord(validatedAt: origin, attemptAt: origin))])
+        controller.activate(key: LicenseFixtures.polarKey)
+        await settle(controller)
+
+        XCTAssertEqual(controller.lastMessage, LicenseCopy.activated)
+        let stored = storedLicense(store)
+        XCTAssertEqual(stored?.activatedAt, lastSeen)
+        XCTAssertEqual(stored?.lastValidatedAt, lastSeen)
+        XCTAssertEqual(stored?.lastAttemptAt, lastSeen)
+        if case .licensed = controller.status {} else {
+            XCTFail("a fresh activation reads as licensed, not \(controller.status)")
+        }
+        XCTAssertNil(controller.composerGate, "sending is never paused right after Activated")
+    }
+
+    func testARekeyKeepsActivatedAtAndStampsTheEffectiveNow() async {
+        let lastSeen = origin.addingTimeInterval(50 * day)
+        let current = polarRecord(validatedAt: origin.addingTimeInterval(-2 * day), attemptAt: origin)
+        let store = FakeLicenseStore(license: current,
+                                     trial: trial(startedAt: origin.addingTimeInterval(-40 * day), lastSeenAt: lastSeen))
+        let controller = makeController(store: store)
+        controller.start()
+        var rekeyed = current
+        rekeyed.key = rotatedKey
+        rekeyed.displayKey = LicenseKeyRouter.displayKey(for: rotatedKey)
+        rekeyed.lastValidatedAt = origin
+        rekeyed.lastAttemptAt = origin
+        polar.scriptActivate([.success(rekeyed)])
+        controller.activate(key: rotatedKey)
+        await settle(controller)
+
+        XCTAssertEqual(controller.lastMessage, LicenseCopy.rekeyed)
+        let stored = storedLicense(store)
+        XCTAssertEqual(stored?.activatedAt, current.activatedAt, "a re-key continues the same activation")
+        XCTAssertEqual(stored?.lastValidatedAt, lastSeen)
+        XCTAssertEqual(stored?.lastAttemptAt, lastSeen)
+        XCTAssertNil(controller.composerGate)
+    }
+
+    func testStampActivation() {
+        let effective = origin.addingTimeInterval(3 * day)
+        var fresh = polarRecord(validatedAt: origin)
+        LicenseController.stampActivation(&fresh, at: effective, continuing: false)
+        XCTAssertEqual([fresh.activatedAt, fresh.lastValidatedAt, fresh.lastAttemptAt], [effective, effective, effective])
+        var continued = polarRecord(validatedAt: origin)
+        LicenseController.stampActivation(&continued, at: effective, continuing: true)
+        XCTAssertEqual(continued.activatedAt, origin)
+        XCTAssertEqual(continued.lastValidatedAt, effective)
+        XCTAssertEqual(continued.lastAttemptAt, effective)
+    }
+
     func testActivationClearsTheLastRemoval() async {
         let removal = LicenseRemoval(at: origin.addingTimeInterval(-day), reason: .refunded)
         let store = InMemoryLicenseStore(trial: trial(startedAt: origin.addingTimeInterval(-30 * day), removal: removal))
@@ -515,7 +587,7 @@ final class LicenseControllerTests: XCTestCase {
         let controller = makeController(store: store)
         controller.start()
         store.saveFailure = .keychain(errSecInteractionNotAllowed)
-        let activated = polarRecord(validatedAt: origin)
+        let activated = polarRecord(validatedAt: origin, attemptAt: origin)
         polar.scriptActivate([.success(activated)])
         controller.activate(key: LicenseFixtures.polarKey)
         await settle(controller)

@@ -60,6 +60,7 @@ struct PolarLicenseBackend: LicenseBackend {
         guard case .success(let body) = await send(.validate, host: existing.apiHost, fields: fields),
               let validation = PolarAPI.decodeValidation(body),
               validation.benefitID == benefitID, validation.status == PolarAPI.grantedStatus else { return nil }
+        // Provisional: LicenseController re-stamps these with its effectiveNow (§14.6).
         let now = Date()
         var record = existing
         record.key = key
@@ -84,6 +85,7 @@ struct PolarLicenseBackend: LicenseBackend {
             Self.log(.activate, outcome: wrongProduct ? "wrongProduct" : "keyNotActive")
             return .failure(wrongProduct ? .wrongProduct : .keyNotActive)
         }
+        // Provisional: LicenseController re-stamps these with its effectiveNow (§14.6).
         let now = Date()
         let record = LicenseRecord(
             schema: LicenseRecord.currentSchema,

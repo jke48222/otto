@@ -91,6 +91,7 @@ struct GumroadLicenseBackend: LicenseBackend {
     }
 
     private func record(key: String, productID: String, verification: GumroadAPI.Verification) -> LicenseRecord {
+        // Provisional: LicenseController re-stamps these with its effectiveNow (§14.6).
         let now = Date()
         return LicenseRecord(
             schema: LicenseRecord.currentSchema,

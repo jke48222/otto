@@ -378,10 +378,11 @@ import os
             refreshStatus()
         case .success(var record):
             record.pendingRevocation = nil
-            let rekeyed = previous.map {
+            let sameActivation = previous.map {
                 $0.backend == record.backend && $0.activationID != nil && $0.activationID == record.activationID
-                    && $0.key != record.key
             } ?? false
+            let rekeyed = sameActivation && previous?.key != record.key
+            Self.stampActivation(&record, at: effectiveNow, continuing: sameActivation)
             if let error = persistLicense(record) {
                 lastMessage = LicenseCopy.activatedUnsaved(status: Self.osStatus(of: error))
                 Self.logger.error("Activated, but couldn't save the license: \(Self.name(of: error), privacy: .public)")
@@ -393,6 +394,16 @@ import os
             refreshStatus()
             Self.logger.info("Activated (\(record.backend.rawValue, privacy: .public)\(rekeyed ? ", re-keyed" : "", privacy: .public))")
         }
+    }
+
+    /// §14.6: an activation is a definitive "valid" answer at e = effectiveNow, the clock status reads, so a fresh
+    /// license never starts out check-required (a trial.lastSeenAt left in the future by a clock that ran ahead, or
+    /// the Debug clock offset). The backends only see the wall clock, so their times are replaced here. A record
+    /// that continues the previous activation (a re-key) keeps its activatedAt.
+    static func stampActivation(_ record: inout LicenseRecord, at effective: Date, continuing: Bool) {
+        if !continuing { record.activatedAt = effective }
+        record.lastValidatedAt = effective
+        record.lastAttemptAt = effective
     }
 
     private func finishDeactivation(_ outcome: LicenseDeactivationOutcome, of record: LicenseRecord) {
