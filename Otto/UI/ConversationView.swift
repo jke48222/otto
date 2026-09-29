@@ -39,6 +39,7 @@ struct ConversationView: View {
     /// Row frames and the report/restore tasks. A reference that is never observed: several handlers of one
     /// update read what another just wrote, and none of it needs a re-render.
     @State private var scroll = ScrollBookkeeping()
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private static let bottomAnchorID = "conversation-bottom"
     private static let scrollSpace = "conversation-scroll"
@@ -106,7 +107,7 @@ struct ConversationView: View {
                     if showsJumpToLatest {
                         JumpToLatestPill { followBottom(proxy, animated: true) }
                             .padding(.bottom, 4)
-                            .transition(JumpToLatestPill.transition)
+                            .transition(JumpToLatestPill.transition(reduceMotion: reduceMotion))
                     }
                 }
                 .animation(Theme.Motion.content, value: showsJumpToLatest)
@@ -157,6 +158,8 @@ struct ConversationView: View {
     private var transcript: some View {
         let versions = viewModel.chat.lastTurnVersions
         let lastID = messages.last?.id
+        // Resolved once per render (this body runs on every streamed delta), not once per reply.
+        let insertTargets = insertTargets()
         return ScrollView(.vertical) {
             VStack(spacing: 0) {
                 VStack(alignment: .leading, spacing: 14) {
@@ -167,7 +170,7 @@ struct ConversationView: View {
                             isLast: message.id == lastID,
                             unavailableAttachmentIDs: unavailableAttachmentIDs(of: message),
                             versionInfo: message.id == lastID ? versionInfo(of: message, versions: versions) : nil,
-                            insertTarget: insertTarget(of: message)
+                            insertTarget: insertTargets[message.id]
                         )
                         .equatable()
                         // Every turn gets a marker, not only replies: a saved reading position may name the
@@ -177,7 +180,7 @@ struct ConversationView: View {
                             scroll.rowFrames[message.id] = frame
                         }
                         .id(message.id)
-                        .transition(.opacity.combined(with: .offset(y: 8)))
+                        .transition(.reducible(.opacity.combined(with: .offset(y: 8)), reduceMotion: reduceMotion))
                     }
                 }
                 .padding(.bottom, 2)
@@ -227,9 +230,41 @@ struct ConversationView: View {
         return VersionPager.position(for: versions)
     }
 
-    private func insertTarget(of message: ChatMessage) -> InsertTarget? {
-        guard message.role == .assistant, message.state == .complete, !message.text.isEmpty else { return nil }
-        return viewModel.insertTarget(forAssistant: message.id)
+    private func insertTargets() -> [UUID: InsertTarget] {
+        let recorded = viewModel.inserter.targets
+        guard !recorded.isEmpty else { return [:] }
+        let environment = viewModel.inserter.inserter.environment
+        return Self.insertTargets(for: messages, recorded: recorded, isRunning: environment.isRunning)
+    }
+
+    /// Each complete reply with text → the app its question came from (`recorded` is keyed by user message), while
+    /// that app still runs; the same answer as `InsertCoordinator.target(forAssistant:in:)` for every reply at once.
+    /// One pass over the transcript, and one running check per distinct app rather than one per reply, since the
+    /// transcript re-renders on every streamed delta.
+    static func insertTargets(for messages: [ChatMessage], recorded: [UUID: InsertTarget],
+                              isRunning: (AppRef) -> Bool) -> [UUID: InsertTarget] {
+        guard !recorded.isEmpty else { return [:] }
+        var result: [UUID: InsertTarget] = [:]
+        var running: [AppRef: Bool] = [:]
+        var questionID: UUID?
+        for message in messages {
+            switch message.role {
+            case .user:
+                questionID = message.id
+            case .assistant:
+                guard message.state == .complete, !message.text.isEmpty,
+                      let questionID, let target = recorded[questionID] else { continue }
+                let isAlive: Bool
+                if let known = running[target.app] {
+                    isAlive = known
+                } else {
+                    isAlive = isRunning(target.app)
+                    running[target.app] = isAlive
+                }
+                if isAlive { result[message.id] = target }
+            }
+        }
+        return result
     }
 
     // MARK: - Following and restoring

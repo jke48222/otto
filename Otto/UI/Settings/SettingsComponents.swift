@@ -122,7 +122,7 @@ struct SettingsErrorBanner: View {
             Section {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(SettingsTone.warning)
                     Text(error)
                         .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
@@ -143,6 +143,54 @@ func labeled(_ title: String, _ detail: String) -> some View {
             .font(.caption)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+/// Text colors for warnings, errors and success in Settings, which follows the system appearance (only the notch is
+/// always dark). The system orange, red and green are too light for text on a light window (2.3:1, 3.6:1 and 2.2:1),
+/// so the light variants are darker shades that pass WCAG AA (4.5:1) for caption and callout text; the dark variants
+/// are the system colors (red a little lighter, to pass on the grouped rows).
+enum SettingsTone {
+    static let warning = Color(nsColor: warningColor)
+    static let error = Color(nsColor: errorColor)
+    static let success = Color(nsColor: successColor)
+
+    static let warningColor = dynamic(light: 0xA84B00, dark: .systemOrange)
+    static let errorColor = dynamic(light: 0xC4281C, dark: srgb(0xFF6B61))
+    static let successColor = dynamic(light: 0x1B6E30, dark: .systemGreen)
+
+    private static func dynamic(light: UInt32, dark: NSColor) -> NSColor {
+        let lightColor = srgb(light)
+        return NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? dark : lightColor
+        }
+    }
+
+    private static func srgb(_ hex: UInt32) -> NSColor {
+        NSColor(srgbRed: CGFloat((hex >> 16) & 0xFF) / 255, green: CGFloat((hex >> 8) & 0xFF) / 255,
+                blue: CGFloat(hex & 0xFF) / 255, alpha: 1)
+    }
+
+    /// WCAG contrast ratio of `foreground` on `background` as drawn in `appearance` (tests).
+    static func contrastRatio(_ foreground: NSColor, on background: NSColor, in appearance: NSAppearance) -> CGFloat {
+        var ratio: CGFloat = 1
+        appearance.performAsCurrentDrawingAppearance {
+            guard let text = foreground.usingColorSpace(.sRGB), let fill = background.usingColorSpace(.sRGB) else {
+                return
+            }
+            let lighter = max(luminance(text), luminance(fill))
+            let darker = min(luminance(text), luminance(fill))
+            ratio = (lighter + 0.05) / (darker + 0.05)
+        }
+        return ratio
+    }
+
+    private static func luminance(_ color: NSColor) -> CGFloat {
+        func linear(_ value: CGFloat) -> CGFloat {
+            value <= 0.04045 ? value / 12.92 : pow((value + 0.055) / 1.055, 2.4)
+        }
+        return 0.2126 * linear(color.redComponent) + 0.7152 * linear(color.greenComponent)
+            + 0.0722 * linear(color.blueComponent)
     }
 }
 

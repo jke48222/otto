@@ -2,8 +2,9 @@
 //  ComposerGateLine.swift
 //  Otto
 //
-//  The one line above the composer that says why sending is paused and offers up to two ways forward
-//  (§14.10.1). It is driven only by a ComposerGate value and an attention counter, so it compiles in every
+//  The line above the composer that says why sending is paused and offers up to two ways forward
+//  (§14.10.1). A message too long for one line beside its choices wraps to a second line rather than losing
+//  its end (the part that usually says what is paused). It is driven only by a ComposerGate value and an attention counter, so it compiles in every
 //  flavor; only the paid build ever has a gate to show.
 //
 
@@ -21,7 +22,12 @@ struct ComposerGateLine: View {
         self.onChoice = onChoice
     }
 
+    /// The height of a one-line gate; a message that wraps grows the line to `maxHeight`.
     static let height: CGFloat = 30
+    /// Two lines of the 12 pt message plus its 3 pt margins, with room to spare (a bound, not a size: the line is
+    /// as tall as its message). Beyond two lines the message truncates.
+    static let maxHeight: CGFloat = 44
+    static let messageLineLimit = 2
     static let horizontalPadding: CGFloat = 16
     /// The primary choice: the permission card's off-white capsule at its small size.
     static let primaryHeight: CGFloat = 22
@@ -70,8 +76,9 @@ struct ComposerGateLine: View {
                 Text(gate.message)
                     .font(Theme.font(12))
                     .foregroundStyle(isPulsing ? Theme.textPrimary : Theme.textSecondary)
-                    .lineLimit(1)
+                    .lineLimit(Self.messageLineLimit)
                     .truncationMode(.tail)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityElement(children: .ignore)
@@ -82,7 +89,11 @@ struct ComposerGateLine: View {
             }
         }
         .padding(.horizontal, Self.horizontalPadding)
-        .frame(maxWidth: .infinity, minHeight: Self.height, maxHeight: Self.height)
+        .padding(.vertical, 3)
+        // At least one line's height, else just what the (at most two-line) message needs: never more, even when
+        // the stack around it offers more.
+        .frame(maxWidth: .infinity, minHeight: Self.height)
+        .fixedSize(horizontal: false, vertical: true)
         .overlay(alignment: .top) {
             Rectangle()
                 .fill(Theme.hairline)

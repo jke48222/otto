@@ -52,6 +52,7 @@ struct RecentsView: View {
     private let actions: Actions
 
     @State private var noticeHeight: CGFloat = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// `pageHeight` is the room the page gets under the header; the list scrolls inside what is left.
     init(
@@ -88,7 +89,7 @@ struct RecentsView: View {
                         Color.clear.preference(key: RecentsNoticeHeightKey.self, value: proxy.size.height)
                     }
                 }
-                .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .top)))
+                .transition(.reducible(.opacity.combined(with: .scale(scale: 0.97, anchor: .top)), reduceMotion: reduceMotion))
             }
 
             RecentsSearchField(
@@ -107,20 +108,22 @@ struct RecentsView: View {
         .padding(.bottom, HistoryRecentsLayout.bottomPadding)
         .onPreferenceChange(RecentsNoticeHeightKey.self) { noticeHeight = $0 }
         .animation(Theme.Motion.content, value: showsNotice)
-        .transition(.opacity.combined(with: .offset(y: -6)))
     }
 
     // MARK: - List or empty state
 
-    @ViewBuilder
-    private var content: some View {
-        let emptyState = HistoryRecentsLayout.emptyState(
+    private var emptyState: HistoryRecentsLayout.EmptyState? {
+        HistoryRecentsLayout.emptyState(
             rowCount: recents.rows.count,
             query: recents.query,
             isSearching: recents.isSearching,
             isIndexLoaded: history.isIndexLoaded,
             historyEnabled: settings.enabled
         )
+    }
+
+    @ViewBuilder
+    private var content: some View {
         if let emptyState {
             RecentsEmptyState(state: emptyState, turnOnHistory: actions.turnOnHistory)
         } else {
@@ -145,16 +148,18 @@ struct RecentsView: View {
     private var footer: some View {
         let mode = HistoryRecentsLayout.footer(
             pendingDeletionTitle: history.pendingDeletion?.title,
-            isStreaming: isStreaming
+            isStreaming: isStreaming,
+            hasSelectableRow: !recents.rows.isEmpty && emptyState == nil
         )
         Group {
             switch mode {
             case .undo(let title):
                 RecentsUndoBar(title: title, undo: actions.undoDelete)
-                    .transition(.opacity.combined(with: .move(edge: .bottom)))
-            case .streamingWarning, .hints:
+                    .transition(.reducible(.opacity.combined(with: .move(edge: .bottom)), reduceMotion: reduceMotion))
+            case .streamingWarning, .hints, .backHint:
                 RecentsFooter(
                     showsStreamingWarning: mode == .streamingWarning,
+                    hints: mode == .backHint ? HistoryRecentsText.backHints : HistoryRecentsText.hints,
                     keptLabel: HistoryRecentsText.keptLabel(
                         retention: settings.retention,
                         historyEnabled: settings.enabled
@@ -246,6 +251,7 @@ private struct RecentsList: View {
     let isOpening: Bool
     let now: Date
     let actions: RecentsView.Actions
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -258,6 +264,7 @@ private struct RecentsList: View {
                         case .row(let row):
                             RecentsRowView(
                                 row: row,
+                                query: recents.query,
                                 dateLabel: HistoryRecentsText.dateLabel(
                                     for: row,
                                     now: now,
@@ -278,7 +285,7 @@ private struct RecentsList: View {
                                     Label(HistoryRecentsText.deleteLabel, systemImage: "trash")
                                 }
                             }
-                            .transition(.opacity.combined(with: .move(edge: .trailing)))
+                            .transition(.reducible(.opacity.combined(with: .move(edge: .trailing)), reduceMotion: reduceMotion))
                         }
                     }
                     .id(item.id)
@@ -322,6 +329,8 @@ private struct RecentsSectionTitle: View {
 
 private struct RecentsRowView: View {
     let row: RecentsRow
+    /// The search field's text: its words are bold in the snippet as well as the title.
+    let query: String
     let dateLabel: String
     let isSelected: Bool
     let isOpening: Bool
@@ -342,7 +351,7 @@ private struct RecentsRowView: View {
                     .foregroundStyle(Theme.textPrimary)
                     .lineLimit(1)
                     .truncationMode(.tail)
-                Text(HistoryRecentsText.detail(of: row))
+                Text(styledDetail)
                     .font(Theme.font(12))
                     .foregroundStyle(Theme.textSecondary)
                     .lineLimit(1)
@@ -382,6 +391,19 @@ private struct RecentsRowView: View {
         return text
     }
 
+    /// The snippet with its query matches in the semibold weight of the detail font, a step brighter.
+    private var styledDetail: AttributedString {
+        var text = HistoryRecentsText.styledDetail(of: row, query: query)
+        let bold = text.runs
+            .filter { $0.inlinePresentationIntent == .stronglyEmphasized }
+            .map(\.range)
+        for range in bold {
+            text[range].font = Theme.font(12, .semibold)
+            text[range].foregroundColor = Theme.textPrimary
+        }
+        return text
+    }
+
     @ViewBuilder
     private var plate: some View {
         if isSelected {
@@ -399,16 +421,18 @@ private struct RecentsRowView: View {
         } else if isHovering {
             RecentsDeleteButton(action: delete)
         } else {
+            // Tertiary passes AA on the panel but not on the selected row's lighter chip plate.
+            let color = isSelected ? Theme.textSecondary : Theme.textTertiary
             VStack(alignment: .trailing, spacing: 3) {
                 Text(dateLabel)
                     .font(Theme.font(11.5))
                     .monospacedDigit()
-                    .foregroundStyle(Theme.textTertiary)
+                    .foregroundStyle(color)
                     .lineLimit(1)
                 if row.hasAttachments {
                     Image(systemName: "paperclip")
                         .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(Theme.textTertiary)
+                        .foregroundStyle(color)
                         .accessibilityHidden(true)
                 }
             }
@@ -570,6 +594,7 @@ private struct RecentsNoticeHeightKey: PreferenceKey {
 
 private struct RecentsFooter: View {
     let showsStreamingWarning: Bool
+    let hints: [(key: String, label: String)]
     let keptLabel: String
     let openSettings: () -> Void
 
@@ -583,7 +608,7 @@ private struct RecentsFooter: View {
                     .foregroundStyle(Theme.textTertiary)
                     .lineLimit(1)
             } else {
-                ForEach(HistoryRecentsText.hints, id: \.key) { hint in
+                ForEach(hints, id: \.key) { hint in
                     RecentsKeyHint(key: hint.key, label: hint.label)
                 }
             }

@@ -38,6 +38,60 @@ final class ConversationViewTests: XCTestCase {
         XCTAssertEqual(host.scrollPosition?.hiddenBelow ?? 0, 40, accuracy: 6)
     }
 
+    // MARK: - Insert targets
+
+    /// One pass gives every complete reply the target of the question it answers (what
+    /// `InsertCoordinator.target(forAssistant:in:)` gives one reply at a time), and each app is checked once.
+    func testInsertTargetsResolveInOnePassWithOneRunningCheckPerApp() {
+        let notes = AppRef(pid: 4101, bundleID: "com.apple.Notes", name: "Notes")
+        let mail = AppRef(pid: 4102, bundleID: "com.apple.mail", name: "Mail")
+        let quit = AppRef(pid: 4103, bundleID: "com.example.gone", name: "Gone")
+        var messages: [ChatMessage] = []
+        var recorded: [UUID: InsertTarget] = [:]
+        var expected: [UUID: InsertTarget] = [:]
+        for index in 0..<30 {
+            let question = ChatMessage(role: .user, text: "Question \(index)")
+            let app = [notes, mail, quit][index % 3]
+            let target = InsertTarget(app: app, selection: nil)
+            if index % 5 != 4 { recorded[question.id] = target }
+            let state: MessageState = index == 29 ? .streaming : .complete
+            let reply = ChatMessage(role: .assistant, text: index == 7 ? "" : "Answer \(index)", state: state)
+            messages += [question, reply]
+            if index % 5 != 4, app != quit, index != 7, index != 29 { expected[reply.id] = target }
+        }
+        // A reply before any question and a second reply to one question.
+        let orphan = ChatMessage(role: .assistant, text: "Hello")
+        messages.insert(orphan, at: 0)
+        let followUp = ChatMessage(role: .assistant, text: "And more")
+        messages.insert(followUp, at: 3)
+        if let target = recorded[messages[1].id], target.app != quit { expected[followUp.id] = target }
+
+        var checks: [AppRef: Int] = [:]
+        let targets = ConversationView.insertTargets(for: messages, recorded: recorded) { app in
+            checks[app, default: 0] += 1
+            return app != quit
+        }
+
+        XCTAssertEqual(targets, expected)
+        XCTAssertNil(targets[orphan.id])
+        XCTAssertEqual(checks, [notes: 1, mail: 1, quit: 1], "one running check per app, not per reply")
+        XCTAssertTrue(ConversationView.insertTargets(for: messages, recorded: [:]) { _ in
+            XCTFail("no targets, no checks")
+            return true
+        }.isEmpty)
+    }
+
+    func testAMissingAPIKeyOpensTheModelsTab() {
+        XCTAssertEqual(MessageView.apiKeySettingsTab, .models)
+    }
+
+    func testATooLongConversationOffersNewChatInsteadOfRetry() {
+        XCTAssertTrue(MessageView.offersNewChat(for: .failed(ChatSession.conversationTooLongDescription)))
+        XCTAssertFalse(MessageView.offersNewChat(for: .failed("Otto couldn't reach Claude.")))
+        XCTAssertFalse(MessageView.offersNewChat(for: .refused(ChatSession.conversationTooLongDescription)))
+        XCTAssertFalse(MessageView.offersNewChat(for: .complete))
+    }
+
     private func makeViewModel() -> NotchViewModel {
         let suiteName = "otto.tests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!

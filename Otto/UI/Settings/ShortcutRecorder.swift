@@ -66,13 +66,21 @@ struct ShortcutRecorder: View {
             }
             switch feedback {
             case .rejected(let message)?:
-                SettingsCaption(message, color: .red)
+                SettingsCaption(message, color: SettingsTone.error)
             case .applied(let message)?:
                 SettingsCaption(message)
             case nil:
                 if settings.voice.enabled && settings.voice.holdShortcutToTalk && settings.hotKeyEnabled {
                     SettingsCaption("Hold it to talk.")
                 }
+            }
+        }
+        // Whatever ends recording elsewhere (the window closing, another recorder) ends it here too, so the field
+        // never shows "Type shortcut…" while the global shortcut is registered again.
+        .onChange(of: settings.shortcuts.isRecording) { _, recording in
+            if !recording, isRecording {
+                isRecording = false
+                liveModifiers = []
             }
         }
         .onDisappear {
@@ -205,7 +213,8 @@ private struct RecorderField: NSViewRepresentable {
     }
 }
 
-private final class RecorderNSView: NSView {
+/// Internal (not private) for its unit tests.
+final class RecorderNSView: NSView {
     var onBegin: () -> Void = {}
     var onCancel: () -> Void = {}
     var onClear: () -> Void = {}
@@ -214,6 +223,8 @@ private final class RecorderNSView: NSView {
 
     private(set) var isRecording = false
     private let label = NSTextField(labelWithString: "")
+    /// The window's resign-key and will-close observers while the view is in one.
+    private var windowObservers: [NSObjectProtocol] = []
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -236,6 +247,40 @@ private final class RecorderNSView: NSView {
 
     required init?(coder: NSCoder) {
         nil
+    }
+
+    deinit {
+        windowObservers.forEach(NotificationCenter.default.removeObserver)
+    }
+
+    /// Recording holds the global shortcut off (AppComposition unregisters it while `isRecording`). The Settings
+    /// panel is non-activating, so clicking another app resigns its key status without resigning this first
+    /// responder: stop recording then too, and when the window closes, so the shortcut never stays off unseen.
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        super.viewWillMove(toWindow: newWindow)
+        guard newWindow !== window else { return }
+        windowObservers.forEach(NotificationCenter.default.removeObserver)
+        windowObservers = []
+        if newWindow == nil { cancelRecording() }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard let window, windowObservers.isEmpty else { return }
+        let center = NotificationCenter.default
+        windowObservers = [NSWindow.didResignKeyNotification, NSWindow.willCloseNotification].map { name in
+            center.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.cancelRecording() }
+            }
+        }
+    }
+
+    /// Ends recording without changing the shortcut, as Esc does.
+    func cancelRecording() {
+        guard isRecording else { return }
+        isRecording = false
+        updateColors()
+        onCancel()
     }
 
     func display(text: String, isPlaceholder: Bool, isRecording: Bool) {
@@ -290,8 +335,7 @@ private final class RecorderNSView: NSView {
         let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
         switch Int(event.keyCode) {
         case kVK_Escape where modifiers.isEmpty:
-            isRecording = false
-            onCancel()
+            cancelRecording()
         case kVK_Delete where modifiers.isEmpty, kVK_ForwardDelete where modifiers.isEmpty:
             isRecording = false
             onClear()
@@ -320,10 +364,7 @@ private final class RecorderNSView: NSView {
     }
 
     override func resignFirstResponder() -> Bool {
-        if isRecording {
-            isRecording = false
-            onCancel()
-        }
+        cancelRecording()
         return super.resignFirstResponder()
     }
 

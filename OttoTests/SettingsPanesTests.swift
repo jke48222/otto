@@ -261,6 +261,79 @@ final class SettingsPanesTests: XCTestCase {
         XCTAssertFalse(settings.shortcuts.isRecording)
     }
 
+    /// The non-activating Settings panel resigns key without resigning its first responder when the user clicks
+    /// another app: recording must stop then (and on close), or the global shortcut stays unregistered.
+    func testRecorderStopsWhenItsWindowResignsKeyOrCloses() {
+        for name in [NSWindow.didResignKeyNotification, NSWindow.willCloseNotification] {
+            let window = NSWindow(contentRect: NSRect(x: -10_000, y: -10_000, width: 200, height: 40),
+                                  styleMask: [.borderless], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            let recorder = RecorderNSView(frame: NSRect(x: 0, y: 0, width: 150, height: 24))
+            var cancels = 0
+            recorder.onCancel = { cancels += 1 }
+            window.contentView?.addSubview(recorder)
+            XCTAssertTrue(recorder.accessibilityPerformPress())
+            XCTAssertTrue(recorder.isRecording)
+
+            NotificationCenter.default.post(name: name, object: window)
+
+            XCTAssertFalse(recorder.isRecording, "\(name.rawValue)")
+            XCTAssertEqual(cancels, 1, "\(name.rawValue)")
+            // Another window's notification doesn't touch it.
+            XCTAssertTrue(recorder.accessibilityPerformPress())
+            NotificationCenter.default.post(name: name, object: NSWindow())
+            XCTAssertTrue(recorder.isRecording)
+            recorder.cancelRecording()
+            XCTAssertEqual(cancels, 2)
+            recorder.removeFromSuperview()
+            window.close()
+        }
+    }
+
+    func testVoiceRecognitionStatusFollowsTheServiceSwitch() {
+        XCTAssertEqual(SettingsVoicePane.recognitionStatus(isOnDevice: true, allowsServer: false), .onDevice)
+        XCTAssertEqual(SettingsVoicePane.recognitionStatus(isOnDevice: true, allowsServer: true), .onDevice)
+        XCTAssertEqual(SettingsVoicePane.recognitionStatus(isOnDevice: false, allowsServer: true), .server)
+        XCTAssertEqual(SettingsVoicePane.recognitionStatus(isOnDevice: false, allowsServer: false), .asksFirst)
+        XCTAssertEqual(SettingsVoicePane.RecognitionStatus.server.text, "Uses Apple's speech service")
+        XCTAssertEqual(SettingsVoicePane.RecognitionStatus.asksFirst.text,
+                       "Not available on this Mac. Otto will ask before using Apple's speech service.")
+    }
+
+    /// "Transcribed on this Mac" only ever shows under the on-device status, and nothing is claimed before the
+    /// Mac's languages have loaded.
+    func testVoiceRecognitionCaptionNeverContradictsTheStatus() {
+        XCTAssertEqual(SettingsVoicePane.recognitionStatus(isOnDevice: nil, allowsServer: true), .checking)
+        XCTAssertEqual(SettingsVoicePane.recognitionStatus(isOnDevice: nil, allowsServer: false), .checking)
+        XCTAssertEqual(SettingsVoicePane.RecognitionStatus.onDevice.caption, "✓ Transcribed on this Mac.")
+        for status in [SettingsVoicePane.RecognitionStatus.server, .asksFirst, .checking] {
+            XCTAssertFalse(status.caption?.contains("on this Mac") ?? false, "\(status)")
+        }
+        XCTAssertNil(SettingsVoicePane.RecognitionStatus.checking.caption)
+    }
+
+    /// Warning, error and success text in Settings passes WCAG AA (4.5:1) in both appearances, on the window and on
+    /// the grouped rows (the system orange, red and green fail on a light window).
+    func testSettingsToneTextPassesAAInBothAppearances() throws {
+        let tones: [(String, NSColor)] = [("warning", SettingsTone.warningColor), ("error", SettingsTone.errorColor),
+                                          ("success", SettingsTone.successColor)]
+        let light = try XCTUnwrap(NSAppearance(named: .aqua))
+        let dark = try XCTUnwrap(NSAppearance(named: .darkAqua))
+        let groupedDarkRow = NSColor(srgbRed: 0.16, green: 0.16, blue: 0.16, alpha: 1)
+        for (name, color) in tones {
+            for background in [NSColor.windowBackgroundColor, .controlBackgroundColor, .white] {
+                XCTAssertGreaterThanOrEqual(SettingsTone.contrastRatio(color, on: background, in: light), 4.5,
+                                            "\(name) on \(background) in light")
+            }
+            for background in [NSColor.windowBackgroundColor, .controlBackgroundColor, groupedDarkRow] {
+                XCTAssertGreaterThanOrEqual(SettingsTone.contrastRatio(color, on: background, in: dark), 4.5,
+                                            "\(name) on \(background) in dark")
+            }
+        }
+        XCTAssertLessThan(SettingsTone.contrastRatio(.systemOrange, on: .white, in: light), 4.5,
+                          "the system orange is what this replaces")
+    }
+
     func testPanelPlacementStaysOnTheVisibleFrame() {
         let visible = NSRect(x: 0, y: 25, width: 1440, height: 875)
         let origin = SettingsWindowController.origin(for: NSSize(width: 560, height: 760), on: visible)

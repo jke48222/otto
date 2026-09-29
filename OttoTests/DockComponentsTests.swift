@@ -8,6 +8,7 @@
 //
 
 import AppKit
+import Carbon.HIToolbox
 import SwiftUI
 import XCTest
 @testable import Otto
@@ -184,6 +185,8 @@ final class DockComponentsTests: XCTestCase {
 
     func testCardCopyHelpers() {
         XCTAssertNil(ApprovalCard.counterText(position: 1, total: 1))
+        XCTAssertEqual(ApprovalCard.reviewHint(reviewed: false), "Scroll to review")
+        XCTAssertNil(ApprovalCard.reviewHint(reviewed: true))
         XCTAssertEqual(ApprovalCard.counterText(position: 2, total: 3), "2 of 3")
 
         let scope = ApprovalScope(toolName: "run_shortcut", key: "shortcut:1", label: "“Log water”")
@@ -205,6 +208,22 @@ final class DockComponentsTests: XCTestCase {
         XCTAssertTrue(plain.runs.allSatisfy { $0.inlinePresentationIntent == nil })
     }
 
+    /// After a screen capture the view model drops the card's review while the card stays up; the card reports it
+    /// again once nothing covers it, only for its own call, and not while it is still covered.
+    func testReviewedCardReportsAgainAfterItWasCovered() {
+        let since = Date(timeIntervalSinceReferenceDate: 1000)
+        XCTAssertTrue(ApprovalCard.reportsReviewAgain(reportedCallID: "call-1", callID: "call-1", visibleSince: nil,
+                                                      isSuspended: false), "capture ended, visibility was dropped")
+        XCTAssertFalse(ApprovalCard.reportsReviewAgain(reportedCallID: "call-1", callID: "call-1", visibleSince: nil,
+                                                       isSuspended: true), "still capturing")
+        XCTAssertFalse(ApprovalCard.reportsReviewAgain(reportedCallID: "call-1", callID: "call-1", visibleSince: since,
+                                                       isSuspended: false), "already visible and arming")
+        XCTAssertFalse(ApprovalCard.reportsReviewAgain(reportedCallID: nil, callID: "call-1", visibleSince: nil,
+                                                       isSuspended: false), "never reviewed")
+        XCTAssertFalse(ApprovalCard.reportsReviewAgain(reportedCallID: "call-1", callID: "call-2", visibleSince: nil,
+                                                       isSuspended: false), "a review never carries to another call")
+    }
+
     func testPromptChromeHelpers() {
         let permission = PermissionCardContent.make(permission: .accessibility, purpose: .paste(appName: "Notes"),
                                                     phase: .needsRelaunch, status: .needsRelaunch)
@@ -212,6 +231,20 @@ final class DockComponentsTests: XCTestCase {
         let explain = PermissionCardContent.make(permission: .calendars, purpose: .calendarGlance,
                                                  phase: .explain, status: .notDetermined)
         XCTAssertEqual(PermissionCard.primaryHint(for: explain), "↩")
+
+        // A card standing in for an approval (a tool that needs Calendars first): the key map refuses a bare Return
+        // for approvals, so the cap must say ⌘↩.
+        let tool = PermissionCardContent.make(permission: .calendars,
+                                              purpose: .tool(title: "Add “Dentist” to Calendar", dataFlow: nil),
+                                              phase: .explain, status: .notDetermined)
+        var approvalContext = NotchKeyContext()
+        approvalContext.prompt = .approval
+        approvalContext.promptPrimaryRequiresCommand = tool.primaryRequiresCommand
+        XCTAssertNotEqual(NotchKeyCommands.command(keyCode: UInt16(kVK_Return), characters: "\r", flags: [],
+                                                   context: approvalContext), .promptPrimary)
+        XCTAssertEqual(NotchKeyCommands.command(keyCode: UInt16(kVK_Return), characters: "\r", flags: .command,
+                                                context: approvalContext), .promptPrimary)
+        XCTAssertEqual(PermissionCard.primaryHint(for: tool, isApproval: true), "⌘↩")
         XCTAssertEqual(String(PermissionCard.bodyText("Otto pastes into **Notes**.").characters),
                        "Otto pastes into Notes.")
 
@@ -379,6 +412,63 @@ final class DockComponentsTests: XCTestCase {
         XCTAssertEqual(reviewed, 1)
     }
 
+    /// The approval-applescript-long scene on the 14-inch MacBook Pro (a 287 pt dock): the code box is the card's
+    /// only scroller and shows at least three rows of the script. With a caution banner and a provenance line there
+    /// is no room for that, so the whole body scrolls with every code row in it, still with one scroller only.
+    func testLongScriptCodeIsTheCardsOnlyScroller() {
+        let source = (1...22).map { "\tset item\($0) to folder \"Folder \($0)\" of downloadsFolder" }.joined(separator: "\n")
+        var preview = scriptPreview(source: source)
+        preview.purpose = "Move installers and archives, then images, out of Downloads into two new folders."
+        preview.capabilities = []
+        preview.inheritedAccess = ["Accessibility", "Screen & System Audio Recording", "Calendars", "Finder"]
+
+        func scrollers(caution: Bool) -> [NSScrollView] {
+            let base = makeApproval(body: .appleScript(preview))
+            let approval = PendingApproval(
+                callID: base.callID, messageID: base.messageID, toolName: "run_applescript", kind: base.kind,
+                presentation: base.presentation, body: base.body, confirmLabel: "Run Script", declineLabel: "Don't run",
+                provenance: caution ? "Requested after reading example.com" : nil,
+                caution: caution ? CautionBanner(headline: "Otto read example.com just before asking.",
+                                                 body: "Pages and files can hide instructions. Only continue if you asked for this.")
+                    : nil,
+                armingDelay: base.armingDelay, presentedAt: base.presentedAt, position: 1, total: 1)
+            let card = ApprovalCard(approval: approval, options: .constant(ApprovalOptions()), visibleSince: nil,
+                                    onReviewed: {}, onDecision: { _ in })
+            let hosting = NSHostingView(rootView: card.frame(width: 548).frame(maxHeight: 287, alignment: .top)
+                .background(Theme.panel))
+            hosting.frame = NSRect(x: 0, y: 0, width: 548, height: 600)
+            let window = NSWindow(contentRect: hosting.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.contentView = hosting
+            defer { window.close() }
+            settle(hosting)
+            settle(hosting)
+            return scrollViews(in: hosting).filter { scrollView in
+                (scrollView.documentView?.frame.height ?? 0) > scrollView.frame.height + 1
+            }
+        }
+
+        let plain = scrollers(caution: false)
+        XCTAssertEqual(plain.count, 1, "one scroller: the code box")
+        let rowHeight = (AppleScriptCodeView.fontSize * 1.35).rounded(.up)
+        XCTAssertGreaterThanOrEqual(plain.first?.frame.height ?? 0, DockCardChrome.MonoBox.padding * 2 + 3 * rowHeight,
+                                    "at least three rows of the script show before any scrolling")
+
+        XCTAssertEqual(scrollers(caution: true).count, 1, "never a scroller inside a scroller")
+    }
+
+    func testCompactAccessRowKeepsDangerousAccessInSight() {
+        let access = ["Calendars", "Accessibility", "Finder", "Screen & System Audio Recording"]
+        let variants = ScriptInheritedAccessRow.compactVariants(access)
+        XCTAssertEqual(variants.first?.shown, access)
+        XCTAssertEqual(variants.first?.showsTrail, true)
+        let folded = variants.first { $0.hidden.count == 2 }
+        XCTAssertEqual(folded?.shown, ["Accessibility", "Screen & System Audio Recording"])
+        XCTAssertEqual(folded.map { ScriptInheritedAccessRow.moreLabel($0.hidden) }, "+2 more")
+        XCTAssertEqual(variants.last?.shown, [])
+        XCTAssertTrue(ScriptInheritedAccessRow.spokenSummary(access).contains("Calendars, Accessibility, Finder"))
+    }
+
     func testLongScriptIsNotReviewedUntilItsLastRowIsShown() {
         let source = (1...60).map { "log \"step \($0)\"" }.joined(separator: "\n")
         var reviewed = 0
@@ -451,6 +541,12 @@ final class DockComponentsTests: XCTestCase {
                            capabilities: [ScriptChip(label: "Runs shell commands", isDanger: true, bundleID: nil)],
                            lineCount: AppleScriptCodeLayout.lineCount(of: source),
                            inheritedAccess: ["Accessibility", "Calendars"])
+    }
+
+    private func scrollViews(in view: NSView) -> [NSScrollView] {
+        view.subviews.flatMap { subview -> [NSScrollView] in
+            ((subview as? NSScrollView).map { [$0] } ?? []) + scrollViews(in: subview)
+        }
     }
 
     private func settle(_ hosting: NSView) {

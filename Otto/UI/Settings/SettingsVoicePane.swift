@@ -17,6 +17,12 @@ struct SettingsVoicePane: View {
 
     @Environment(\.settingsOpenExternal) private var openExternal
     @State private var languages: [Language] = []
+    /// `languages` has loaded; until then the recognition row says it is checking instead of guessing.
+    @State private var languagesLoaded = false
+    /// The reply voices for the current language, loaded off the main thread (listing the system's voices can take
+    /// a few hundred milliseconds the first time), and again whenever voices are installed or removed.
+    @State private var voices: [AVSpeechSynthesisVoice] = []
+    @State private var voicesGeneration = 0
 
     /// One recognition language for the picker.
     struct Language: Identifiable, Equatable, Sendable {
@@ -31,7 +37,21 @@ struct SettingsVoicePane: View {
             spokenRepliesSection
             dictationSection
         }
-        .task { languages = await Self.loadLanguages() }
+        .task {
+            languages = await Self.loadLanguages()
+            languagesLoaded = true
+        }
+        .task(id: VoicesKey(language: settings.voice.locale.identifier, generation: voicesGeneration)) {
+            voices = await ReplySpeaker.loadAvailableVoices(languageCode: settings.voice.locale.identifier)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: AVSpeechSynthesizer.availableVoicesDidChangeNotification)) { _ in
+            voicesGeneration += 1
+        }
+    }
+
+    private struct VoicesKey: Equatable {
+        let language: String
+        let generation: Int
     }
 
     private var shortcut: String {
@@ -48,7 +68,6 @@ struct SettingsVoicePane: View {
                 isOn: talkToOtto,
                 permissions: SettingsFeatureToggle.voice.displayedPermissions
             )
-            recognitionRow
             Toggle("Hold \(shortcut) to talk", isOn: Bindable(settings.voice).holdShortcutToTalk)
                 .disabled(!settings.voice.enabled || !settings.hotKeyEnabled)
             Toggle("Send when I let go", isOn: Bindable(settings.voice).autoSend)
@@ -68,8 +87,53 @@ struct SettingsVoicePane: View {
                 }
             }
             .pickerStyle(.menu)
-            SettingsCaption("✓ Transcribed on this Mac.")
+            recognitionRow
         }
+    }
+
+    /// Where the chosen language's audio goes, under the picker it describes.
+    enum RecognitionStatus: Equatable {
+        /// Transcribed on this Mac.
+        case onDevice
+        /// Not on this Mac, and Apple's speech service is allowed: audio goes to Apple.
+        case server
+        /// Not on this Mac and the service isn't allowed: Otto asks (the on-device card) before any audio leaves.
+        case asksFirst
+        /// The Mac's recognition languages are still loading; nothing is claimed yet.
+        case checking
+
+        var text: String {
+            switch self {
+            case .onDevice: return "On-device"
+            case .server: return "Uses Apple's speech service"
+            case .asksFirst: return "Not available on this Mac. Otto will ask before using Apple's speech service."
+            case .checking: return "Checking this Mac's languages…"
+            }
+        }
+
+        /// The line under the status, only where it holds: audio stays on this Mac only when it is on-device.
+        var caption: String? {
+            switch self {
+            case .onDevice: return "✓ Transcribed on this Mac."
+            case .server: return "Your audio goes to Apple to be transcribed."
+            case .asksFirst, .checking: return nil
+            }
+        }
+
+        var dotColor: Color {
+            switch self {
+            case .onDevice: return .green
+            case .server: return .orange
+            case .asksFirst, .checking: return .secondary
+            }
+        }
+    }
+
+    /// `isOnDevice` nil: the languages haven't loaded yet.
+    static func recognitionStatus(isOnDevice: Bool?, allowsServer: Bool) -> RecognitionStatus {
+        guard let isOnDevice else { return .checking }
+        if isOnDevice { return .onDevice }
+        return allowsServer ? .server : .asksFirst
     }
 
     /// The ★ row: turning it on runs the microphone and speech recognition requests without starting to listen.
@@ -88,16 +152,25 @@ struct SettingsVoicePane: View {
     }
 
     @ViewBuilder private var recognitionRow: some View {
-        let onDevice = isCurrentLanguageOnDevice
+        let status = Self.recognitionStatus(isOnDevice: languagesLoaded ? isCurrentLanguageOnDevice : nil,
+                                            allowsServer: settings.voice.allowServerRecognition)
         VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 6) {
+            HStack(alignment: .top, spacing: 6) {
                 Circle()
-                    .fill(onDevice ? Color.green : Color.orange)
+                    .fill(status.dotColor)
                     .frame(width: 7, height: 7)
-                Text(onDevice ? "On-device" : "Uses Apple's speech service")
+                    .padding(.top, 3)
+                    .accessibilityHidden(true)
+                Text(status.text)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
+            if let caption = status.caption {
+                SettingsCaption(caption)
+            }
+        }
+        VStack(alignment: .leading, spacing: 4) {
             Toggle(isOn: Bindable(settings.voice).allowServerRecognition) {
                 labeled("Allow Apple's speech service",
                         "Only for languages this Mac can't transcribe itself. Your audio then goes to Apple.")
@@ -154,10 +227,6 @@ struct SettingsVoicePane: View {
                                 + "Spoken Content.")
             }
         }
-    }
-
-    private var voices: [AVSpeechSynthesisVoice] {
-        ReplySpeaker.availableVoices(languageCode: settings.voice.locale.identifier)
     }
 
     private static func label(for voice: AVSpeechSynthesisVoice) -> String {

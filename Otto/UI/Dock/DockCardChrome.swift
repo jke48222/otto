@@ -123,7 +123,8 @@ struct DockCardChrome: ViewModifier {
                         .foregroundStyle(Theme.textPrimary)
                         .lineLimit(1)
                     if let hint {
-                        KeyHint(text: hint, color: Theme.textTertiary)
+                        // Secondary, not tertiary: the chip clay is lighter than the panel (AA, 10.5 pt).
+                        KeyHint(text: hint, color: Theme.textSecondary)
                     }
                 }
                 .padding(.horizontal, 14)
@@ -157,7 +158,7 @@ struct DockCardChrome: ViewModifier {
                         .foregroundStyle(Theme.sendGlyph)
                         .lineLimit(1)
                     if let hint {
-                        KeyHint(text: hint, color: Theme.sendGlyph.opacity(0.55))
+                        KeyHint(text: hint, color: Theme.sendHint)
                     }
                 }
                 .padding(.horizontal, 14)

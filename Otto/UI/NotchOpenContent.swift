@@ -127,7 +127,8 @@ struct NotchOpenContent: View {
                 if let prompt = capsulePrompt {
                     AttentionCapsule(prompt: prompt) { viewModel.navigate(to: .chat) }
                         .padding(.top, NotchLayout.topGap)
-                        .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .top)))
+                        .transition(.reducible(.opacity.combined(with: .scale(scale: 0.96, anchor: .top)),
+                                               reduceMotion: reduceMotion))
                 }
             }
             .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { capsuleSectionHeight = $0 }
@@ -155,6 +156,7 @@ struct NotchOpenContent: View {
                 ShelfView(
                     controller: viewModel.shelf,
                     focusRequest: viewModel.focusRequest,
+                    isEngaged: viewModel.isEngaged,
                     onAskAbout: { viewModel.askAboutShelfItems($0) }
                 )
                 .transition(pageTransition)
@@ -165,11 +167,10 @@ struct NotchOpenContent: View {
 
     /// Pages slide in from the trailing edge and out to the leading one; Reduce Motion fades them.
     private var pageTransition: AnyTransition {
-        if reduceMotion { return .opacity.animation(.easeInOut(duration: 0.15)) }
-        return .asymmetric(
+        .reducible(.asymmetric(
             insertion: .move(edge: .trailing).combined(with: .opacity),
             removal: .move(edge: .leading).combined(with: .opacity)
-        )
+        ), reduceMotion: reduceMotion)
     }
 
     private var recentsPage: some View {
@@ -272,7 +273,8 @@ struct NotchOpenContent: View {
                 maxHeight: maxHeight,
                 onDismiss: { viewModel.dismissOverlay() }
             )
-            .transition(.opacity.combined(with: .scale(scale: 0.98)).animation(.easeOut(duration: 0.2)))
+            .transition(.reducible(.opacity.combined(with: .scale(scale: 0.98)).animation(.easeOut(duration: 0.2)),
+                                   reduceMotion: reduceMotion))
         } else {
             ConversationSection(viewModel: viewModel, maxHeight: maxHeight, headerGap: gap, fillsHeight: fillsHeight)
         }
@@ -289,15 +291,16 @@ struct NotchOpenContent: View {
             ContinuationRow(viewModel: viewModel)
             if viewModel.isEditing {
                 EditBanner { viewModel.cancelEditing() }
-                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+                    .transition(.reducible(.opacity.combined(with: .move(edge: .bottom)), reduceMotion: reduceMotion))
             }
             if showsChips {
                 ContextChipsView(viewModel: viewModel)
-                    .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .bottom)))
+                    .transition(.reducible(.opacity.combined(with: .scale(scale: 0.97, anchor: .bottom)),
+                                           reduceMotion: reduceMotion))
             }
             if let gate = viewModel.composerGate {
                 ComposerGateLine(gate: gate, attention: viewModel.gateAttention) { viewModel.performGateChoice($0) }
-                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+                    .transition(.reducible(.opacity.combined(with: .move(edge: .bottom)), reduceMotion: reduceMotion))
             }
             ComposerView(viewModel: viewModel)
             StatusLineSlot(viewModel: viewModel)
@@ -307,11 +310,10 @@ struct NotchOpenContent: View {
 
     /// The dock rises from the composer (§4.3); Reduce Motion fades it.
     private var dockTransition: AnyTransition {
-        if reduceMotion { return .opacity.animation(.easeInOut(duration: 0.15)) }
-        return .asymmetric(
+        .reducible(.asymmetric(
             insertion: .move(edge: .bottom).combined(with: .opacity).combined(with: .scale(scale: 0.97, anchor: .bottom)),
             removal: .opacity.animation(.easeOut(duration: 0.14))
-        )
+        ), reduceMotion: reduceMotion)
     }
 
     private var showsChips: Bool {
@@ -334,8 +336,19 @@ struct NotchOpenContent: View {
             }
             .padding(EdgeInsets(top: 0, leading: 8, bottom: 8, trailing: 8))
             .allowsHitTesting(false)
-            .transition(.opacity.combined(with: .scale(scale: 0.98)))
+            .transition(.reducible(.opacity.combined(with: .scale(scale: 0.98)), reduceMotion: reduceMotion))
         }
+    }
+}
+
+extension AnyTransition {
+    /// SPEC-v2 §4.9: with Reduce Motion an open-panel transition is a 0.15 s fade, with no scale, move or blur
+    /// (and it keeps that timing under the dock's spring, since a transition's own animation wins).
+    static let reducedMotion = AnyTransition.opacity.animation(.easeInOut(duration: 0.15))
+
+    /// `full`, or the Reduce Motion fade.
+    static func reducible(_ full: AnyTransition, reduceMotion: Bool) -> AnyTransition {
+        reduceMotion ? reducedMotion : full
     }
 }
 
@@ -373,16 +386,17 @@ private struct NotchDockHost: View {
     @Bindable var viewModel: NotchViewModel
     let prompt: NotchPrompt
     let maxHeight: CGFloat
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         DockHeightCap(maxHeight: maxHeight) {
             content
         }
         .id(prompt.id)
-        .transition(.asymmetric(
+        .transition(.reducible(.asymmetric(
             insertion: .opacity.combined(with: .offset(y: 6)),
             removal: .opacity.animation(.easeOut(duration: 0.14))
-        ))
+        ), reduceMotion: reduceMotion))
         .animation(Theme.Motion.content, value: prompt.id)
     }
 
@@ -397,6 +411,7 @@ private struct NotchDockHost: View {
                     approval: approval,
                     options: $viewModel.approvalOptions,
                     visibleSince: visibleSince(for: approval),
+                    isSuspended: viewModel.isMenuPresented,
                     onReviewed: { viewModel.noteApprovalReviewed(callID: approval.callID) },
                     onDecision: { decision in
                         viewModel.resolveApproval(decision, input: currentInput())
@@ -420,10 +435,13 @@ private struct NotchDockHost: View {
 
     /// An approval that needs macOS access first: the permission card, whose primary approves with the
     /// click's evidence (then the access steps run) and whose "Quit & Reopen Otto" relaunches. Its body
-    /// always fits, so it counts as reviewed as soon as it shows.
+    /// always fits, so it counts as reviewed as soon as it shows, and again whenever it comes back on screen with
+    /// the view still up (after a screen capture, the view model has dropped the review). Its primary never runs
+    /// on a bare Return (approvals take ⌘↩), and its key cap says so.
     private func toolPermissionCard(_ content: PermissionCardContent, approval: PendingApproval) -> some View {
         PermissionCard(
             content: content,
+            isApproval: true,
             onPrimary: {
                 if content.primaryAction == .relaunch {
                     viewModel.permissionPromptAction(.relaunch)
@@ -435,6 +453,18 @@ private struct NotchDockHost: View {
         )
         .onAppear { viewModel.noteApprovalReviewed(callID: approval.callID) }
         .onChange(of: approval.callID) { _, callID in viewModel.noteApprovalReviewed(callID: callID) }
+        .onChange(of: viewModel.isMenuPresented) { _, suspended in
+            if ApprovalCard.reportsReviewAgain(reportedCallID: approval.callID, callID: approval.callID,
+                                               visibleSince: visibleSince(for: approval), isSuspended: suspended) {
+                viewModel.noteApprovalReviewed(callID: approval.callID)
+            }
+        }
+        .onChange(of: visibleSince(for: approval)) { _, since in
+            if ApprovalCard.reportsReviewAgain(reportedCallID: approval.callID, callID: approval.callID,
+                                               visibleSince: since, isSuspended: viewModel.isMenuPresented) {
+                viewModel.noteApprovalReviewed(callID: approval.callID)
+            }
+        }
     }
 
     /// Arming counts only from the moment this approval was on screen and reviewed.
@@ -475,6 +505,7 @@ private struct DockHeightCap: Layout {
 /// "Continue: ‹title›" over an empty chat after a fresh start set the last conversation aside.
 private struct ContinuationRow: View {
     let viewModel: NotchViewModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         if viewModel.chat.messageCount == 0, let continuation = viewModel.history.continuation {
@@ -484,7 +515,8 @@ private struct ContinuationRow: View {
                 onDismiss: { viewModel.dismissContinuation() }
             )
             .frame(maxWidth: .infinity, alignment: .leading)
-            .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .bottomLeading)))
+            .transition(.reducible(.opacity.combined(with: .scale(scale: 0.97, anchor: .bottomLeading)),
+                                   reduceMotion: reduceMotion))
         }
     }
 }
@@ -495,6 +527,8 @@ private struct ContinuationRow: View {
 /// neutral notice.
 private struct StatusLineSlot: View {
     let viewModel: NotchViewModel
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     static let holdHint = "Release to send · Esc to cancel"
     static let toggleHint = "Click the mic or press Return to send · Esc to cancel"
@@ -522,7 +556,7 @@ private struct StatusLineSlot: View {
         // No view at all when there is nothing to say, so the stack adds no spacing under the composer.
         if let content {
             line(content)
-                .transition(.opacity.combined(with: .move(edge: .top)))
+                .transition(.reducible(.opacity.combined(with: .move(edge: .top)), reduceMotion: reduceMotion))
         }
     }
 

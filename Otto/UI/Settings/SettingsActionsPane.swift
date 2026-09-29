@@ -250,7 +250,7 @@ private struct SettingsActivityLogSheet: View {
             .frame(minHeight: 280)
 
             if let clearError {
-                SettingsCaption(clearError, color: .red)
+                SettingsCaption(clearError, color: SettingsTone.error)
             }
             SettingsCaption("The log keeps what ran and how it ended, never your messages or the results.")
             HStack {
@@ -293,7 +293,7 @@ private struct SettingsActivityLogSheet: View {
             }
             Text(Self.details(for: entry))
                 .font(.caption)
-                .foregroundStyle(entry.outcome == "ok" ? Color.secondary : Color.orange)
+                .foregroundStyle(entry.outcome == "ok" ? Color.secondary : SettingsTone.warning)
                 .lineLimit(2)
         }
         .padding(.vertical, 2)

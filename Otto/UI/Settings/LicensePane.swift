@@ -291,15 +291,15 @@ struct LicensePane: View {
         }
     }
 
-    /// The pending-revocation line and "Check needed" in the attention amber; on a light Settings window the
-    /// system orange that the other panes use for the same meaning, so the text stays readable.
+    /// The pending-revocation line and "Check needed" in the attention amber; on a light Settings window the darker
+    /// amber the other panes use for the same meaning (`SettingsTone.warning`), which passes AA as text there.
     private var attentionColor: Color {
-        colorScheme == .dark ? Theme.attention : .orange
+        colorScheme == .dark ? Theme.attention : SettingsTone.warning
     }
 
     private func color(for tone: LicenseMessage.Tone) -> Color {
         switch tone {
-        case .success: return .green
+        case .success: return SettingsTone.success
         case .info: return .secondary
         case .problem: return attentionColor
         }

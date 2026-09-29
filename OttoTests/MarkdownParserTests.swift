@@ -101,6 +101,123 @@ final class MarkdownParserTests: XCTestCase {
         XCTAssertTrue(text[split...].hasPrefix("next"))
     }
 
+    // MARK: Streaming tail styling
+
+    /// The streaming tail block styles its settled lines once and only re-styles the rest, yet every delta renders
+    /// exactly what healing and styling the whole block would.
+    func testStreamingInlineMatchesFullStylingForEveryDelta() {
+        let lines = (0..<160).map { index -> String in
+            switch index % 6 {
+            case 0: return "line \(index) with **bold** and `code_\(index)` then [link](https://e.com/\(index))"
+            case 1: return "plain entry snake_case_name \(index)"
+            case 2: return "an *emphasis* here and ~~strike~~ there \(index)"
+            case 3: return "**strong that spans"
+            case 4: return "the next line** and a `span that"
+            default: return "also spans` lines \(index), 2 * 3 = 6"
+            }
+        }
+        let text = lines.joined(separator: "\n")
+        let characters = Array(text)
+        let cache = MarkdownCache()
+        var end = 0
+        var settledAtSomePoint = false
+        while end < characters.count {
+            end = min(characters.count, end + 37)
+            let source = String(characters[..<end])
+            let incremental = cache.streamingInline(source, codeSize: 12, strongSize: 14)
+            let full = cache.inline(MarkdownParser.healStreamingTail(source), codeSize: 12, strongSize: 14,
+                                    cacheable: false)
+            XCTAssertEqual(incremental, full, "at \(end)")
+            if cache.settledStreamingLength > 0 { settledAtSomePoint = true }
+        }
+        XCTAssertTrue(settledAtSomePoint, "a long block settles its closed lines")
+    }
+
+    func testStreamingInlineStartsOverForAnotherBlock() {
+        let cache = MarkdownCache()
+        let first = String(repeating: "A settled line with **bold** text.\n", count: 60) + "tail"
+        _ = cache.streamingInline(first, codeSize: 12)
+        XCTAssertGreaterThan(cache.settledStreamingLength, 0)
+        let other = "A different block with `code"
+        XCTAssertEqual(cache.streamingInline(other, codeSize: 12),
+                       cache.inline(MarkdownParser.healStreamingTail(other), codeSize: 12, cacheable: false))
+        XCTAssertEqual(cache.settledStreamingLength, 0)
+    }
+
+    /// Streams `text` in 120-character deltas, checking every delta against healing and styling the whole block;
+    /// returns the settled length at the end.
+    @discardableResult
+    private func streamAndCompare(_ text: String, cache: MarkdownCache? = nil, step: Int = 120,
+                                  file: StaticString = #filePath, line: UInt = #line) -> Int {
+        let cache = cache ?? MarkdownCache()
+        let characters = Array(text)
+        var end = 0
+        while end < characters.count {
+            end = min(characters.count, end + step)
+            let source = String(characters[..<end])
+            let incremental = cache.streamingInline(source, codeSize: 12, strongSize: 14)
+            let full = cache.inline(MarkdownParser.healStreamingTail(source), codeSize: 12, strongSize: 14,
+                                    cacheable: false)
+            XCTAssertEqual(incremental, full, "at \(end)", file: file, line: line)
+        }
+        return cache.settledStreamingLength
+    }
+
+    /// One literal `~`, `[1]` or glued `*` near the start of a long paragraph no longer keeps the rest of it from
+    /// settling, and the paragraph still renders exactly as a full restyle would, including once the run closes.
+    func testStreamingParagraphSettlesPastAnEarlyOpenRun() {
+        let sentence = "Each step writes its output to the shelf before the next one starts. "
+        let body = String(repeating: sentence, count: 90)
+        for opener in ["This usually takes ~5 minutes. ", "As the docs say [1], it works. ", "Compute 2*3 first. "] {
+            let settled = streamAndCompare(opener + body)
+            XCTAssertGreaterThan(settled, body.utf8.count / 2, "settles after \(opener.debugDescription)")
+        }
+        // The open run closes much later: the provisional part falls back and styling stays exact throughout.
+        let closing = "This usually takes ~5 minutes. " + body + "and then 10~ more. " + body + "Also 2*3 and 4* done. "
+            + body
+        XCTAssertGreaterThan(streamAndCompare(closing), 0)
+    }
+
+    /// A block that follows one whose settling was refused starts from scratch instead of inheriting its attempts.
+    func testNewStreamingBlockDoesNotInheritRefusedAttempts() {
+        let cache = MarkdownCache()
+        let refused = "`" + String(repeating: "an open code span that never closes here. ", count: 80)
+        streamAndCompare(refused, cache: cache)
+        XCTAssertEqual(cache.settledStreamingLength, 0)
+        let clean = String(repeating: "A clean sentence in the next block. ", count: 60)
+        XCTAssertGreaterThan(streamAndCompare(clean, cache: cache), 0)
+    }
+
+    func testStreamingCJKParagraphSettles() {
+        let text = String(repeating: "这是一个很长的段落，用来测试流式渲染。它没有空格！真的吗？", count: 80)
+        XCTAssertGreaterThan(streamAndCompare(text), 0)
+    }
+
+    func testCitationBracketsAndOpenRunsAreReadCorrectly() {
+        func open(_ source: String) -> Set<Character>? {
+            MarkdownCache.openDelimiters(in: MarkdownCache().inline(source, codeSize: 12, cacheable: false))
+        }
+        XCTAssertEqual(open("as cited [1] and [2, 3] here\n"), [])
+        XCTAssertNil(open("see [1](foo\n"), "a link destination can continue on the next line")
+        XCTAssertNil(open("see [the docs\n"), "an open bracket")
+        XCTAssertEqual(open("takes ~5 minutes\n"), ["~"])
+        XCTAssertEqual(open("compute 2*3 now\n"), ["*"])
+        XCTAssertEqual(open("a ~b~ c and ~~d~~\n"), [])
+    }
+
+    func testOnlyFullyClosedInlineTextSettles() {
+        func settled(_ source: String) -> Bool {
+            MarkdownCache.isSettledInline(MarkdownCache().inline(source, codeSize: 12, cacheable: false))
+        }
+        XCTAssertTrue(settled("plain words and snake_case_names\n"))
+        XCTAssertTrue(settled("**bold** *em* `a*b[c]` [link](https://e.com) ~~gone~~\n"))
+        XCTAssertFalse(settled("**bold that spans\n"), "an open strong run")
+        XCTAssertFalse(settled("*a * b\n"), "a star that a later one could close")
+        XCTAssertFalse(settled("a `span that\n"), "an open code span")
+        XCTAssertFalse(settled("[title](https://e.com/part\n"), "an open link")
+        XCTAssertFalse(settled("_leading underscore\n"), "an underscore that can open emphasis")
+    }
+
     // MARK: Links
 
     func testOnlyWebAndMailLinksStayClickable() {

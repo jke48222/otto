@@ -48,7 +48,10 @@ struct InsertConfirmRow: View {
     /// Cancel / Copy (the view model copies for a changed selection).
     let onCancel: () -> Void
 
-    static let transition: AnyTransition = .opacity.combined(with: .move(edge: .top))
+    /// Slides down from the answer as it fades in; with Reduce Motion only the fade (§4.9).
+    static func transition(reduceMotion: Bool) -> AnyTransition {
+        .reducible(.opacity.combined(with: .move(edge: .top)), reduceMotion: reduceMotion)
+    }
 
     var body: some View {
         if let content = Content.make(for: activity) {

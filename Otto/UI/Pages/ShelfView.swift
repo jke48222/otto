@@ -5,7 +5,8 @@
 //  The Shelf page of the open notch: a five-column grid of kept files, an action bar (Ask Otto, Share,
 //  Reveal in Finder, Remove) and the empty state. SwiftUI draws the tiles; each tile's clicks, drags and
 //  context menu go through ShelfController's AppKit hit area. Page keys (arrows, Space, Return, ⌫, ⌘A, ⌘C,
-//  ⌥⌘R) are handled here while the grid has keyboard focus.
+//  ⌥⌘R) are handled here while the grid has keyboard focus, and the grid takes focus only while the notch is
+//  engaged: a pointer resting on the notch (soft focus, §4.4) or a Shelf drop (§4.7) never hands it the keyboard.
 //
 
 import AppKit
@@ -14,6 +15,7 @@ import SwiftUI
 struct ShelfView: View {
     private let controller: ShelfController
     private let focusRequest: Int
+    private let isEngaged: Bool
     private let onAskAbout: ((Set<UUID>) -> Void)?
     private let onFocusChange: (Bool) -> Void
 
@@ -22,17 +24,23 @@ struct ShelfView: View {
     @State private var shareAnchor = ShareAnchor()
 
     /// - Parameters:
-    ///   - focusRequest: bump it to give the grid keyboard focus (a Shelf drop never does).
+    ///   - focusRequest: bump it to give the grid keyboard focus (a Shelf drop never does). Ignored while
+    ///     `isEngaged` is false.
+    ///   - isEngaged: the user clicked into or typed into the notch (`vm.isEngaged`). Soft focus is not engagement:
+    ///     until it is true the grid neither takes the keyboard nor acts on a key (⌫ would delete Otto's copies,
+    ///     ⌘C would replace the user's clipboard).
     ///   - onAskAbout: Ask Otto (button and ⌘↩ are the owner's); nil asks `controller` directly.
     ///   - onFocusChange: the grid gained or lost keyboard focus.
     init(
         controller: ShelfController,
         focusRequest: Int = 0,
+        isEngaged: Bool = true,
         onAskAbout: ((Set<UUID>) -> Void)? = nil,
         onFocusChange: @escaping (Bool) -> Void = { _ in }
     ) {
         self.controller = controller
         self.focusRequest = focusRequest
+        self.isEngaged = isEngaged
         self.onAskAbout = onAskAbout
         self.onFocusChange = onFocusChange
     }
@@ -55,16 +63,25 @@ struct ShelfView: View {
         .focusEffectDisabled()
         .focused($isFocused)
         .onKeyPress(phases: .down, action: handleKey)
-        .onChange(of: focusRequest) { requestFocus() }
+        .onChange(of: focusRequest) {
+            if ShelfPageFocus.takesFocus(onRequest: true, isEngaged: isEngaged) { requestFocus() }
+        }
+        .onChange(of: isEngaged) { _, engaged in
+            if engaged {
+                // A click or a typed key engaged the notch while the Shelf shows: the grid takes the keyboard.
+                requestFocus()
+            } else {
+                // Disengaged (the panel lost key, or the pin hands the keyboard back): a later soft focus must not
+                // find the grid still focused.
+                focusTask?.cancel()
+                isFocused = false
+            }
+        }
         .onChange(of: isFocused) { _, focused in onFocusChange(focused) }
         .onDisappear {
             focusTask?.cancel()
             if isFocused { onFocusChange(false) }
         }
-        .transition(.asymmetric(
-            insertion: .move(edge: .trailing).combined(with: .opacity),
-            removal: .move(edge: .leading).combined(with: .opacity)
-        ))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Shelf")
     }
@@ -198,6 +215,8 @@ struct ShelfView: View {
 
     /// Page keys; everything else (Esc, ⌘↩, ⌘V, ⌘D…) belongs to the panel's key map.
     private func handleKey(_ press: KeyPress) -> KeyPress.Result {
+        // The key that engages a soft-focused notch reaches the page too; it only engages.
+        guard ShelfPageFocus.handlesKeys(isEngaged: isEngaged) else { return .ignored }
         let modifiers = press.modifiers.intersection([.command, .option, .shift, .control])
         let selection = controller.selection
         switch press.key {
@@ -291,7 +310,9 @@ private struct ShelfTileView: View {
         ZStack {
             plate
             VStack(spacing: 4) {
+                // A missing file dims only its thumbnail; the name and "Moved or deleted" stay readable (AA).
                 ShelfThumbnailWell(item: item, thumbnail: thumbnail)
+                    .opacity(isMissing ? 0.45 : 1)
                     .overlay(alignment: .topTrailing) {
                         if isMissing {
                             Image(systemName: "exclamationmark.triangle.fill")
@@ -306,14 +327,13 @@ private struct ShelfTileView: View {
                     if isMissing {
                         Text(ShelfPageText.missingSubtitle)
                             .font(Theme.font(10.5))
-                            .foregroundStyle(Theme.textTertiary)
+                            .foregroundStyle(Theme.textSecondary)
                             .lineLimit(1)
                     }
                 }
                 Spacer(minLength: 0)
             }
             .padding(.top, 6)
-            .opacity(isMissing ? 0.45 : 1)
 
             ShelfTileHitArea(id: item.id, interaction: controller)
         }
@@ -348,7 +368,7 @@ private struct ShelfTileView: View {
                 .truncationMode(.middle)
         }
         .font(Theme.font(11.5))
-        .foregroundStyle(Theme.chipLabel)
+        .foregroundStyle(isMissing ? Theme.textSecondary : Theme.chipLabel)
         .frame(width: ShelfPageLayout.nameMaxWidth)
         .frame(maxHeight: ShelfPageLayout.nameLineHeight * CGFloat(lines), alignment: .top)
     }

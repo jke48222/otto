@@ -98,7 +98,7 @@ struct SettingsNotchPane: View {
     @ViewBuilder private var notificationStatus: some View {
         switch notificationOutcome {
         case .unavailable:
-            SettingsCaption("macOS didn't allow notifications for this build of Otto.", color: .orange)
+            SettingsCaption("macOS didn't allow notifications for this build of Otto.", color: SettingsTone.warning)
         case .deniedInSystemSettings:
             deniedNotificationsRow
         case .applied:
@@ -110,7 +110,7 @@ struct SettingsNotchPane: View {
 
     private var deniedNotificationsRow: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            SettingsCaption("Notifications are off for Otto in System Settings → Notifications.", color: .orange)
+            SettingsCaption("Notifications are off for Otto in System Settings → Notifications.", color: SettingsTone.warning)
             Spacer(minLength: 8)
             if let url = Permission.notifications.settingsURL ?? SettingsLinks.notificationSettings {
                 Button("Open Notification Settings") { openExternal(url) }
@@ -150,7 +150,7 @@ struct SettingsNotchPane: View {
             SettingsCaption("\(player.displayName): Otto asks the first time you press a button.")
         case .denied:
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                SettingsCaption("\(player.displayName): not allowed.", color: .orange)
+                SettingsCaption("\(player.displayName): not allowed.", color: SettingsTone.warning)
                 Spacer(minLength: 8)
                 if let url = Permission.automation(bundleID: player.rawValue, appName: player.displayName).settingsURL {
                     Button("Open System Settings…") { openExternal(url) }
@@ -176,7 +176,7 @@ struct SettingsNotchPane: View {
             if calendarWasRefused || (settings.glance.calendarChipEnabled && calendarAccessDenied) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     SettingsCaption("Otto can't see your calendars. Allow it in System Settings → Privacy & Security → Calendars.",
-                                    color: .orange)
+                                    color: SettingsTone.warning)
                     Spacer(minLength: 8)
                     if let url = Permission.calendars.settingsURL {
                         Button("Open System Settings…") { openExternal(url) }

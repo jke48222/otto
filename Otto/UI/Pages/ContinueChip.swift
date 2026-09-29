@@ -15,6 +15,7 @@ struct ContinueChip: View {
     static let maxTitleLength = 120
 
     private let title: String
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private let onContinue: () -> Void
     private let onDismiss: () -> Void
 
@@ -80,7 +81,7 @@ struct ContinueChip: View {
         .clay(cornerRadius: Self.cornerRadius, style: .chip, isHighlighted: isHovering)
         .onHover { isHovering = $0 }
         .animation(.easeOut(duration: 0.12), value: isHovering)
-        .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .bottom)))
+        .transition(.reducible(.opacity.combined(with: .scale(scale: 0.97, anchor: .bottom)), reduceMotion: reduceMotion))
         .accessibilityElement(children: .contain)
         .accessibilityAction(named: "Dismiss", onDismiss)
     }

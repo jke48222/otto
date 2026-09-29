@@ -17,7 +17,10 @@ struct JumpToLatestPill: View {
 
     static let height: CGFloat = 24
     static let title = "Latest"
-    static let transition: AnyTransition = .opacity.combined(with: .offset(y: 6))
+    /// Rises 6 pt as it fades in; with Reduce Motion only the fade (§4.9).
+    static func transition(reduceMotion: Bool) -> AnyTransition {
+        .reducible(.opacity.combined(with: .offset(y: 6)), reduceMotion: reduceMotion)
+    }
 
     @State private var isHovering = false
 

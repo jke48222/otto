@@ -17,32 +17,45 @@ struct ApprovalCard: View {
     @Binding var options: ApprovalOptions
     /// When the card became visible and reviewed (`vm.approvalVisibility?.since`); nil = not visible now.
     let visibleSince: Date?
+    /// Something covers the card for a while without taking it down (a screen capture, the file picker, a menu:
+    /// `vm.isMenuPresented`). The view model stops counting the card as on screen meanwhile; once it ends, a card
+    /// that was already reviewed says so again, so it can arm again.
+    let isSuspended: Bool
     /// The body fits, or has been scrolled to its end (→ `vm.noteApprovalReviewed(callID:)`).
     let onReviewed: () -> Void
     let onDecision: (ApprovalDecision) -> Void
 
-    init(approval: PendingApproval, options: Binding<ApprovalOptions>, visibleSince: Date?,
+    init(approval: PendingApproval, options: Binding<ApprovalOptions>, visibleSince: Date?, isSuspended: Bool = false,
          onReviewed: @escaping () -> Void, onDecision: @escaping (ApprovalDecision) -> Void) {
         self.approval = approval
         _options = options
         self.visibleSince = visibleSince
+        self.isSuspended = isSuspended
         self.onReviewed = onReviewed
         self.onDecision = onDecision
     }
 
-    /// The tallest the card grows on its own; the frame may cap it lower (§4.1), and the body scrolls.
-    static let maxHeight: CGFloat = 300
+    /// The tallest the card grows on its own, the dock's own cap (§4.1); the frame may cap it lower, and the body
+    /// scrolls (or, for a script, the code box takes what is left).
+    static let maxHeight: CGFloat = NotchLayout.maximumDockHeight
     static let confirmHint = "⌘↩"
     static let declineHint = "esc"
     static let hardwareOnlyAnnouncement = "Approve with this Mac's keyboard or trackpad."
 
     @State private var bodyReviewed = false
     @State private var scrolledToEnd = false
+    /// A script's code box takes the height left on the card and is its only scroller; false once that left it
+    /// too short (a caution banner, a small dock), and then the whole body scrolls with every code row in it.
+    @State private var codeFillsCard = true
     @State private var reportedReviewed = false
+    /// The call the review was reported for; a review never carries over to another call.
+    @State private var reportedCallID: String?
     @State private var scrollViewportHeight: CGFloat = 0
     @State private var sentinelMaxY: CGFloat = .infinity
     /// Set once the arming delay has passed for the current `visibleSince`, so the ring's clock can stop.
     @State private var armedFor: Date?
+    /// The review hint waits a moment, so a body that fits (reviewed on its first layout) never flashes it.
+    @State private var reviewHintReady = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private static let scrollSpace = "approval-card-body"
@@ -75,6 +88,22 @@ struct ApprovalCard: View {
         visibleSince != nil
             && armingProgress(visibleSince: visibleSince, armingDelay: approval.armingDelay, now: now) >= 1
             && hasRequiredSelection(body: approval.body, options: options)
+    }
+
+    /// Whether a card whose review was already reported reports it again: the view model dropped the review while
+    /// the card stayed up (it went off screen and came back, e.g. around a screen capture), nothing covers it now,
+    /// and the review belongs to this very call. The view model restamps visibility, so arming starts over.
+    static func reportsReviewAgain(reportedCallID: String?, callID: String, visibleSince: Date?,
+                                   isSuspended: Bool) -> Bool {
+        reportedCallID == callID && visibleSince == nil && !isSuspended
+    }
+
+    static let reviewHint = "Scroll to review"
+
+    /// Why the primary is still disabled, in the footer's leading slot where it is always on screen: the card's
+    /// body, or a box inside it (a script, a long input), hasn't been scrolled to its end yet. nil once reviewed.
+    static func reviewHint(reviewed: Bool) -> String? {
+        reviewed ? nil : reviewHint
     }
 
     /// "2 of 3" when the round asks about more than one call.
@@ -134,19 +163,19 @@ struct ApprovalCard: View {
                 title: approval.presentation.title,
                 counter: Self.counterText(position: approval.position, total: approval.total)
             )
-            if let detail = approval.presentation.detail, !detail.isEmpty {
-                Text(detail)
-                    .font(Theme.font(12.5))
-                    .foregroundStyle(Theme.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+            // No `presentation.detail` row (§5.7): the body shows the same facts, and for a script the detail is the
+            // model's own purpose, which appears only in the body, labeled "Otto says:" (actions.md §9).
             if let provenance = approval.provenance, !provenance.isEmpty {
                 provenanceLine(provenance)
             }
             if let caution = approval.caution {
                 cautionBanner(caution)
             }
-            scrollingBody
+            if usesFlexibleCodeBox {
+                flexibleBody
+            } else {
+                scrollingBody
+            }
             if let label = Self.rememberLabel(for: approval.kind) {
                 DockCardChrome.Checkbox(isOn: $options.alwaysAllow, label: label)
             }
@@ -164,14 +193,24 @@ struct ApprovalCard: View {
             // A new call in the same slot starts over: unreviewed, unarmed, "Always allow" off.
             bodyReviewed = false
             scrolledToEnd = false
+            codeFillsCard = true
             reportedReviewed = false
+            reportedCallID = nil
+            reviewHintReady = false
             sentinelMaxY = .infinity
             armedFor = nil
             options.alwaysAllow = false
             DockCardChrome.announce(Self.appearanceAnnouncement(for: approval))
         }
+        .onChange(of: isSuspended) { _, suspended in reportAgainIfDropped(visibleSince: visibleSince, suspended: suspended) }
+        .onChange(of: visibleSince) { _, since in reportAgainIfDropped(visibleSince: since, suspended: isSuspended) }
         .task(id: ArmingKey(callID: approval.callID, visibleSince: visibleSince)) {
             await waitUntilArmed()
+        }
+        .task(id: approval.callID) {
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled else { return }
+            reviewHintReady = true
         }
     }
 
@@ -209,16 +248,34 @@ struct ApprovalCard: View {
         .accessibilityLabel("Caution. \(caution.headline) \(caution.body)")
     }
 
+    /// A script body whose code box fills the card: nothing around the code scrolls, so the box's own review (its
+    /// last row was shown) is the card's.
+    private var usesFlexibleCodeBox: Bool {
+        ApprovalBodyView.flexesCodeBox(approval.body) && codeFillsCard
+    }
+
+    private var flexibleBody: some View {
+        ApprovalBodyView(body: approval.body, options: $options, codeSizing: .fillsCard,
+                         onCodeCramped: { codeFillsCard = false }) {
+            bodyReviewed = true
+            reportIfReviewed()
+        }
+        .id(approval.callID)
+    }
+
     /// The body scrolls inside whatever height is left; it counts as reviewed once the body itself says so
     /// (a long script's last row was shown) and the card's own scroll has reached its end.
     private var scrollingBody: some View {
         DockCardChrome.ScrollCap(idealCap: Self.maxHeight - 110) {
             ScrollView(.vertical) {
                 VStack(alignment: .leading, spacing: 0) {
-                    ApprovalBodyView(body: approval.body, options: $options) {
-                        bodyReviewed = true
-                        reportIfReviewed()
-                    }
+                    // A script shows every code row here, so this is still the card's one scroller.
+                    ApprovalBodyView(body: approval.body, options: $options,
+                                     codeSizing: ApprovalBodyView.flexesCodeBox(approval.body) ? .fullHeight : .ownCap,
+                                     onReviewed: {
+                                         bodyReviewed = true
+                                         reportIfReviewed()
+                                     })
                     Color.clear
                         .frame(height: 1)
                         .onGeometryChange(for: CGFloat.self, of: { $0.frame(in: .named(Self.scrollSpace)).maxY }) {
@@ -243,6 +300,16 @@ struct ApprovalCard: View {
                 DockCardChrome.TextButton(title: "Decline All") { onDecision(.denyAll) }
                     .accessibilityHint("Declines this and the other actions Otto asked about in this step")
             }
+            if reviewHintReady, let hint = Self.reviewHint(reviewed: reportedReviewed) {
+                Label(hint, systemImage: "arrow.down")
+                    .labelStyle(.titleAndIcon)
+                    .font(Theme.font(11.5))
+                    .foregroundStyle(Theme.textSecondary)
+                    .lineLimit(1)
+                    .layoutPriority(-1)
+                    .transition(.opacity)
+                    .accessibilityLabel("Scroll to the end to review before approving")
+            }
             Spacer(minLength: 8)
             DockCardChrome.SecondaryButton(title: approval.declineLabel, hint: Self.declineHint) {
                 onDecision(.deny)
@@ -250,6 +317,7 @@ struct ApprovalCard: View {
             primaryButton
         }
         .frame(height: DockCardChrome.footerHeight)
+        .animation(.easeOut(duration: 0.15), value: reportedReviewed)
     }
 
     private var primaryButton: some View {
@@ -300,8 +368,18 @@ struct ApprovalCard: View {
     }
 
     private func reportIfReviewed() {
-        guard bodyReviewed, scrolledToEnd, !reportedReviewed else { return }
+        guard bodyReviewed, usesFlexibleCodeBox || scrolledToEnd, !reportedReviewed else { return }
         reportedReviewed = true
+        reportedCallID = approval.callID
+        onReviewed()
+    }
+
+    /// The card is still up and was reviewed, but the view model no longer counts it as visible: say so again once
+    /// nothing covers it (its geometry didn't change, so the one-shot report above won't fire again).
+    private func reportAgainIfDropped(visibleSince: Date?, suspended: Bool) {
+        guard reportedReviewed, Self.reportsReviewAgain(reportedCallID: reportedCallID, callID: approval.callID,
+                                                        visibleSince: visibleSince, isSuspended: suspended)
+        else { return }
         onReviewed()
     }
 

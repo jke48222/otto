@@ -205,6 +205,34 @@ final class PagesComponentsTests: XCTestCase {
         XCTAssertFalse(DisplayText.containsHiddenOrBidi(HistoryRecentsText.detail(of: row)))
     }
 
+    /// history.md §3: a body-only match shows the snippet around it with the match in bold.
+    func testStyledDetailBoldsTheQueryInTheSnippet() throws {
+        let preview = "The compiler checks isolation, and the actor hops back after every await, so state can change."
+        let summary = PagesFixtures.summary("Swift concurrency notes", preview: preview)
+        let row = try XCTUnwrap(HistorySearch.run("AWAIT", in: [summary], currentID: nil).first)
+        XCTAssertTrue(row.titleMatches.isEmpty, "the title doesn't hold the word")
+
+        let styled = HistoryRecentsText.styledDetail(of: row, query: "AWAIT")
+
+        XCTAssertEqual(String(styled.characters), HistoryRecentsText.detail(of: row))
+        XCTAssertEqual(HistoryRecentsText.boldRuns(in: styled), ["await"])
+    }
+
+    func testStyledDetailWithoutAQueryHasNoBold() {
+        let row = PagesFixtures.row("Plain title", detail: "Every await is a suspension point.")
+        XCTAssertTrue(HistoryRecentsText.boldRuns(in: HistoryRecentsText.styledDetail(of: row, query: "")).isEmpty)
+        XCTAssertTrue(HistoryRecentsText.boldRuns(in: HistoryRecentsText.styledDetail(of: row, query: "  ")).isEmpty)
+        XCTAssertEqual(HistoryRecentsText.boldRuns(in: HistoryRecentsText.styledDetail(of: row, query: "await point")),
+                       ["await", "point"])
+    }
+
+    func testStyledDetailWithHiddenCharactersIsCleanedAndNotBolded() {
+        let row = PagesFixtures.row("Invoice", detail: "Open the invoice \u{202E}fdp.exe")
+        let styled = HistoryRecentsText.styledDetail(of: row, query: "invoice")
+        XCTAssertEqual(String(styled.characters), HistoryRecentsText.detail(of: row))
+        XCTAssertTrue(HistoryRecentsText.boldRuns(in: styled).isEmpty)
+    }
+
     // MARK: - Empty states and footer
 
     func testEmptyStates() {
@@ -234,6 +262,18 @@ final class PagesComponentsTests: XCTestCase {
                        .undo(title: "Q3 plan"))
         XCTAssertEqual(HistoryRecentsLayout.footer(pendingDeletionTitle: nil, isStreaming: true), .streamingWarning)
         XCTAssertEqual(HistoryRecentsLayout.footer(pendingDeletionTitle: nil, isStreaming: false), .hints)
+    }
+
+    /// "↩ Open" and "⌘⌫ Delete" only show when there is a row they act on; an empty list offers only Back, but a
+    /// delete that can still be undone keeps its Undo bar.
+    func testFooterOffersOnlyBackWithoutARow() {
+        XCTAssertEqual(HistoryRecentsLayout.footer(pendingDeletionTitle: nil, isStreaming: false,
+                                                   hasSelectableRow: false), .backHint)
+        XCTAssertEqual(HistoryRecentsLayout.footer(pendingDeletionTitle: nil, isStreaming: true,
+                                                   hasSelectableRow: false), .backHint)
+        XCTAssertEqual(HistoryRecentsLayout.footer(pendingDeletionTitle: "Q3 plan", isStreaming: false,
+                                                   hasSelectableRow: false), .undo(title: "Q3 plan"))
+        XCTAssertEqual(HistoryRecentsText.backHints.map(\.key), ["esc"])
     }
 
     func testFooterAndUndoCopy() {
@@ -438,6 +478,16 @@ final class PagesComponentsTests: XCTestCase {
         let filled = host(ShelfView(controller: controller))
         let expected = 10 + ShelfPageLayout.gridHeight(itemCount: 6) + 10 + ShelfPageLayout.actionBarHeight + 16
         XCTAssertEqual(filled.fittingSize.height, expected, accuracy: 1)
+    }
+
+    /// Soft focus and a Shelf drop never give the grid the keyboard (SPEC-v2 §4.4, §4.7): a ⌫, ⌘C or Space typed
+    /// for the user's own app must not remove tiles, replace the clipboard or open Quick Look.
+    func testShelfGridTakesTheKeyboardOnlyWhileEngaged() {
+        XCTAssertFalse(ShelfPageFocus.takesFocus(onRequest: true, isEngaged: false), "soft focus bumps focusRequest")
+        XCTAssertTrue(ShelfPageFocus.takesFocus(onRequest: true, isEngaged: true))
+        XCTAssertFalse(ShelfPageFocus.takesFocus(onRequest: false, isEngaged: true))
+        XCTAssertFalse(ShelfPageFocus.handlesKeys(isEngaged: false), "the key that engages only engages")
+        XCTAssertTrue(ShelfPageFocus.handlesKeys(isEngaged: true))
     }
 
     func testContinueChipIsThirtyPointsTall() {

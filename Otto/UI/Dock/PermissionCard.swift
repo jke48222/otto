@@ -7,23 +7,35 @@
 //  and the Return-key rules can't disagree.
 //
 
+import Carbon.HIToolbox
 import SwiftUI
 
 struct PermissionCard: View {
     let content: PermissionCardContent
+    /// The card stands in for a pending approval (a tool that needs macOS access first). Approvals never run on a
+    /// bare Return, so its primary takes ⌘↩.
+    let isApproval: Bool
     let onPrimary: () -> Void
     let onSecondary: () -> Void
 
-    init(content: PermissionCardContent, onPrimary: @escaping () -> Void, onSecondary: @escaping () -> Void) {
+    init(content: PermissionCardContent, isApproval: Bool = false, onPrimary: @escaping () -> Void,
+         onSecondary: @escaping () -> Void) {
         self.content = content
+        self.isApproval = isApproval
         self.onPrimary = onPrimary
         self.onSecondary = onSecondary
     }
 
-    /// Return performs the primary unless it quits Otto, which takes ⌘↩ (§4.4).
-    static func primaryHint(for content: PermissionCardContent) -> String? {
+    /// The key cap on the primary, read from the notch's key map (§4.4) so the two can't disagree: "↩" when a bare
+    /// Return performs it, "⌘↩" otherwise (Quit & Reopen Otto, and any card that stands in for an approval).
+    static func primaryHint(for content: PermissionCardContent, isApproval: Bool = false) -> String? {
         guard content.primaryTitle != nil else { return nil }
-        return content.primaryRequiresCommand ? "⌘↩" : "↩"
+        var context = NotchKeyContext()
+        context.prompt = isApproval ? .approval : .other
+        context.promptPrimaryRequiresCommand = content.primaryRequiresCommand
+        let bareReturn = NotchKeyCommands.command(keyCode: UInt16(kVK_Return), characters: "\r", flags: [],
+                                                  context: context)
+        return bareReturn == .promptPrimary ? "↩" : "⌘↩"
     }
 
     /// The body's inline Markdown (bold names) as styled text; plain text if it doesn't parse.
@@ -61,7 +73,7 @@ struct PermissionCard: View {
                         DockCardChrome.SecondaryButton(title: content.secondaryTitle, hint: "esc", action: onSecondary)
                     }
                     if let primary = content.primaryTitle {
-                        DockCardChrome.PrimaryButton(title: primary, hint: Self.primaryHint(for: content),
+                        DockCardChrome.PrimaryButton(title: primary, hint: Self.primaryHint(for: content, isApproval: isApproval),
                                                      action: onPrimary)
                             .accessibilityLabel(primary)
                     }

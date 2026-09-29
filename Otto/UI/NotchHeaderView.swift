@@ -13,6 +13,7 @@ import SwiftUI
 
 struct NotchHeaderView: View {
     let viewModel: NotchViewModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// Horizontal padding applied to the header by its container (inside the shape's side walls).
     static let horizontalPadding: CGFloat = 16
@@ -123,13 +124,13 @@ struct NotchHeaderView: View {
         return HStack(spacing: Self.rightSpacing) {
             if viewModel.isPinned {
                 PinIndicator { viewModel.togglePin() }
-                    .transition(.opacity.combined(with: .scale(scale: 0.8)))
+                    .transition(.reducible(.opacity.combined(with: .scale(scale: 0.8)), reduceMotion: reduceMotion))
             }
             if showsShelf {
                 RoutePebble(route: .shelf, isActive: viewModel.route == .shelf, badgeCount: shelfCount) {
                     viewModel.toggle(route: .shelf)
                 }
-                .transition(.opacity.combined(with: .scale(scale: 0.8)))
+                .transition(.reducible(.opacity.combined(with: .scale(scale: 0.8)), reduceMotion: reduceMotion))
             }
             if routes.contains(.history) {
                 RoutePebble(route: .history, isActive: viewModel.route == .history) {

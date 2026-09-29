@@ -52,9 +52,16 @@ enum Theme {
     // Tertiary text carries model names, code languages and the Copy row, so it is readable text,
     // not decoration. Measured on panel / clayRaised: primary 17.3 / 14.4, secondary 8.06 / 6.72,
     // muted 6.29 / 5.24, tertiary 5.66 / 4.72. The steps keep primary > secondary > muted > tertiary.
+    // The chip and pebble gradients are lighter still (tops #2B2C2F / #2A2B2E): there tertiary drops to
+    // 3.91 / 3.96, so text on a `.chip` or `.pebble` surface (key hints in secondary buttons, a selected
+    // Recents row's date) uses secondary (5.56 / 5.64) or brighter. Never dim text with `.opacity`: dim the
+    // chrome around it instead.
     static let textPrimary = rgb(0xEDEDED)
     static let textSecondary = rgb(0xA3A3A8)
     static let textTertiary = rgb(0x87878C)
+    /// The composer's placeholder and status ("Ask Otto anything…", "Waiting for your OK…"): 5.12 on the
+    /// slab's lit top (#18191B), 4.86 on #1D1E20.
+    static let placeholder = rgb(0x8A8A8F)
     /// Assistant reply body text: a touch softer than `textPrimary`.
     static let textBody = rgb(0xE2E2E4)
     /// Tool activity and thought-process rows.
@@ -73,6 +80,8 @@ enum Theme {
     static let sendTop = rgb(0xE2E3E5)
     static let sendBottom = rgb(0xC9CACC)
     static let sendGlyph = rgb(0x1A1A1C)
+    /// Key hints on the send gradient ("⌘↩" on a primary button): solid, 5.38 on its darker end (#C9CACC).
+    static let sendHint = rgb(0x4A4A4E)
     /// The disabled disc reads as clay (the pebble gradient), not a flat grey hole.
     static let sendDisabledGradient: [Gradient.Stop] = [
         .init(color: rgb(0x2A2B2E), location: 0),

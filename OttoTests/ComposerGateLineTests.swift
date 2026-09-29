@@ -2,9 +2,9 @@
 //  ComposerGateLineTests.swift
 //  OttoTests
 //
-//  The composer gate line: its fixed height, the order and style of its choices (the primary capsule first),
-//  what VoiceOver reads, no pulse with Reduce Motion, and that it lays out at the notch's width with zero, one
-//  or two choices and a message too long for one line.
+//  The composer gate line: its one-line height, the order and style of its choices (the primary capsule
+//  first), what VoiceOver reads, no pulse with Reduce Motion, that it lays out at the notch's width with zero,
+//  one or two choices, and that a message too long for one line wraps to a second instead of losing its end.
 //
 
 import AppKit
@@ -96,12 +96,10 @@ final class ComposerGateLineTests: XCTestCase {
     // MARK: - Layout
 
     func testLaysOutAtItsHeightWithZeroOneAndTwoChoices() async throws {
-        let long = String(repeating: "Sending is paused until the license check finishes. ", count: 4)
         let gates = [
             gate([buy, enter(isPrimary: false)]),
             gate([buy]),
             gate([], message: "Activating your license…"),
-            gate([buy, enter(isPrimary: false)], message: long),
         ]
         for (index, value) in gates.enumerated() {
             var chosen: [String] = []
@@ -111,6 +109,43 @@ final class ComposerGateLineTests: XCTestCase {
             XCTAssertTrue(chosen.isEmpty, "laying out never picks a choice")
         }
     }
+
+    /// At the panel's 548 pt, "Otto needs to check your license before it can send." beside Check Now and Enter
+    /// License used to lose "…send.", the part that says what is paused. It now wraps to a second line; a message
+    /// longer than two lines is capped there.
+    func testAMessageTooLongForOneLineWrapsInsteadOfLosingItsEnd() {
+        let checkNow = ComposerGate.Choice(title: "Check Now", action: .gate("check-now"), isPrimary: true)
+        let wordy = String(repeating: "Otto needs to check your license before it can send. ", count: 3)
+            + "The end of this sentence says what is paused."
+        let check = gate([checkNow, enter(isPrimary: false)], message: wordy)
+        let wrapped = height(of: ComposerGateLine(gate: check, attention: 0) { _ in }, atWidth: 548)
+        XCTAssertGreaterThan(wrapped, ComposerGateLine.height + 4, "the message wraps")
+        XCTAssertLessThanOrEqual(wrapped, ComposerGateLine.maxHeight + 0.5, "at most two lines")
+
+        let long = String(repeating: "Sending is paused until the license check finishes. ", count: 6)
+        let capped = ComposerGateLine(gate: gate([buy, enter(isPrimary: false)], message: long), attention: 0) { _ in }
+        XCTAssertLessThanOrEqual(height(of: capped, atWidth: 540), ComposerGateLine.maxHeight + 0.5)
+
+        let short = ComposerGateLine(gate: gate([buy, enter(isPrimary: false)]), attention: 0) { _ in }
+        XCTAssertEqual(height(of: short, atWidth: 548), ComposerGateLine.height, accuracy: 0.5, "one line stays 30 pt")
+    }
+
+    #if OTTO_LICENSING
+    /// The trial and removal gates the license engine raises fit one line beside their choices at the panel's
+    /// width (check-required, which needs a license record to build, is the fixture above).
+    func testTheTrialGatesFitOneLineAtThePanelWidth() {
+        let removal = LicenseRemoval(at: Date(), reason: .revoked)
+        for (removed, activity) in [(nil, LicenseActivity.idle), (removal, .idle), (nil, .activating)] {
+            guard let value = LicenseCopy.gate(status: .trialEnded(endedAt: Date()), removal: removed,
+                                               activity: activity, configuration: .preview) else {
+                XCTFail("a trial-ended gate")
+                continue
+            }
+            XCTAssertEqual(height(of: ComposerGateLine(gate: value, attention: 0) { _ in }, atWidth: 548),
+                           ComposerGateLine.height, accuracy: 0.5, value.id)
+        }
+    }
+    #endif
 
     func testAttentionBumpsKeepTheLineInPlace() async throws {
         let value = gate([buy, enter(isPrimary: false)])
@@ -131,6 +166,11 @@ final class ComposerGateLineTests: XCTestCase {
 
     // MARK: - Helpers
 
+    /// The line's height when laid out at `width` (`fittingSize` measures at the ideal, unwrapped width).
+    private func height(of line: ComposerGateLine, atWidth width: CGFloat) -> CGFloat {
+        NSHostingController(rootView: line).sizeThatFits(in: CGSize(width: width, height: 10_000)).height
+    }
+
     private func host<V: View>(_ view: V, width: CGFloat) async throws -> NSHostingView<V> {
         let host = NSHostingView(rootView: view)
         let window = makeWindow(host, width: width)
@@ -143,7 +183,7 @@ final class ComposerGateLineTests: XCTestCase {
     }
 
     private func makeWindow(_ host: NSView, width: CGFloat) -> NSWindow {
-        let size = NSSize(width: width, height: ComposerGateLine.height)
+        let size = NSSize(width: width, height: ComposerGateLine.maxHeight)
         host.frame = NSRect(origin: .zero, size: size)
         let window = NSWindow(contentRect: NSRect(x: -10_000, y: -10_000, width: size.width, height: size.height),
                               styleMask: [.borderless], backing: .buffered, defer: false)

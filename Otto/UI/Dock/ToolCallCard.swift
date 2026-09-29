@@ -132,7 +132,7 @@ struct ToolCallCard: View, Equatable {
             row
             if isExpanded, Self.hasDetails(call) {
                 details
-                    .transition(.opacity.combined(with: .move(edge: .top)))
+                    .transition(.reducible(.opacity.combined(with: .move(edge: .top)), reduceMotion: reduceMotion))
             }
         }
         .animation(Theme.Motion.content, value: call.status)

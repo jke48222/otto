@@ -3,9 +3,10 @@
 //  Otto
 //
 //  The composer well: a multi-line prompt field (or, while Otto listens, the live transcript over it), the mic,
-//  the "+" attach menu and the off-white send / stop button. It glows while the keyboard goes to it and dims
-//  while an approval waits in the dock. While sending is paused (§14.10.1) the send button is disabled and the
-//  text stays editable. Esc belongs to the panel's key monitor, never to the field.
+//  the "+" attach menu and the off-white send / stop button. It glows while the keyboard goes to it and its
+//  chrome dims while an approval waits in the dock (its text never does). While sending is paused (§14.10.1)
+//  the send button is disabled and the text stays editable. Esc belongs to the panel's key monitor, never to
+//  the field; ⇧↩ inserts a new line.
 //
 
 import AppKit
@@ -32,8 +33,11 @@ struct ComposerView: View {
     /// Inset of the send button from the well's trailing and bottom edges.
     private static let trailingInset: CGFloat = 10
     private static let verticalInset: CGFloat = (minHeight - sendSize) / 2
-    /// The whole well while an approval waits in the dock: still usable for a draft, but clearly not the focus.
+    /// The well's chrome (slab, mic, +, send) while an approval waits in the dock: still usable for a draft, but
+    /// clearly not the focus. The text and its placeholder ("Waiting for your OK…") are never dimmed, so they
+    /// keep AA contrast; the dimmer slab behind them only raises it.
     private static let dimmedOpacity: Double = 0.55
+    private var chromeOpacity: Double { viewModel.needsAttention ? Self.dimmedOpacity : 1 }
     /// Between the mic and the +, and from the + to send.
     private static let accessorySpacing: CGFloat = 8
     private static let sendSpacing: CGFloat = 12
@@ -51,7 +55,7 @@ struct ComposerView: View {
                 TextField(
                     placeholder,
                     text: $viewModel.composerText,
-                    prompt: Text(placeholder).foregroundStyle(Theme.rgb(0x76767B)),
+                    prompt: Text(placeholder).foregroundStyle(Theme.placeholder),
                     axis: .vertical
                 )
                 .textFieldStyle(.plain)
@@ -60,6 +64,11 @@ struct ComposerView: View {
                 .tint(Theme.sendFill)
                 .lineLimit(1...6)
                 .focused($isFieldFocused)
+                // The field editor treats ⇧↩ as a submit; only ⌥↩ inserts a line. Take ⇧↩ before it does, so it
+                // inserts a new line as the ⌘/ sheet promises (interaction.md §4.5). Return alone still sends.
+                .onKeyPress(.return, phases: .down) { press in
+                    Self.insertsNewline(for: press.modifiers) && insertNewlineInField() ? .handled : .ignored
+                }
                 .onSubmit(submit)
                 .opacity(isVoiceActive ? 0 : 1)
                 .allowsHitTesting(!isVoiceActive)
@@ -97,25 +106,47 @@ struct ComposerView: View {
             // Sit on the send button's vertical center (the row is bottom-aligned).
             .padding(.bottom, (Self.sendSize - Self.attachSize) / 2)
             .padding(.leading, 8)
+            .opacity(chromeOpacity)
 
             SendButton(viewModel: viewModel)
                 .padding(.leading, Self.sendSpacing)
+                .opacity(chromeOpacity)
         }
         .padding(.leading, 18)
         .padding(.trailing, Self.trailingInset)
         .padding(.vertical, Self.verticalInset)
         .frame(minHeight: Self.minHeight)
-        .clay(cornerRadius: Self.cornerRadius)
+        .background {
+            ClaySurface(shape: RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous))
+                .opacity(chromeOpacity)
+        }
         .overlay { FocusGlow(isVisible: showsFocusGlow) }
         .contentShape(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous))
         .onTapGesture { isFieldFocused = true }
-        .opacity(viewModel.needsAttention ? Self.dimmedOpacity : 1)
         .animation(.easeOut(duration: 0.2), value: viewModel.needsAttention)
         .onChange(of: viewModel.focusRequest) { requestFocus() }
         .onAppear {
             if viewModel.isEngaged { requestFocus() }
         }
         .onDisappear { focusTask?.cancel() }
+    }
+
+    /// ⇧↩ (and ⌥↩, which the field editor already handles the same way) insert a new line; ↩ alone sends and the
+    /// ⌘ chords belong to the panel's key map.
+    static func insertsNewline(for modifiers: EventModifiers) -> Bool {
+        let chord = modifiers.intersection([.shift, .option, .command, .control])
+        return chord == .shift || chord == .option
+    }
+
+    /// Inserts a line break at the selection through the field editor, so undo and the binding both see it. Does
+    /// nothing (returns false) while an input method is composing, which owns Return, or while the field isn't
+    /// the first responder.
+    private func insertNewlineInField() -> Bool {
+        guard !isVoiceActive,
+              let textView = NSApp.keyWindow?.firstResponder as? NSTextView,
+              textView.isEditable, !textView.hasMarkedText() else { return false }
+        textView.insertNewlineIgnoringFieldEditor(nil)
+        return true
     }
 
     /// Return in the field sends; while Otto listens it finishes and sends what was said instead.

@@ -73,13 +73,13 @@ private struct SettingsHistorySection: View {
                     : "\(newer) conversations were saved by a newer version of Otto and are hidden.")
             }
             if let error = history?.lastSaveError {
-                SettingsCaption(error, color: .red)
+                SettingsCaption(error, color: SettingsTone.error)
             }
             if fileVault == .off {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Label("FileVault is off, so your history isn't encrypted on disk.", systemImage: "exclamationmark.triangle")
                         .font(.caption)
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(SettingsTone.warning)
                     Spacer(minLength: 8)
                     if let url = SettingsLinks.fileVault {
                         Button("Open FileVault Settings…") { openExternal(url) }
@@ -256,7 +256,7 @@ private struct SettingsPermissionsSection: View {
             }
             if resetFailed {
                 SettingsCaption("macOS didn't reset Otto's permissions. You can switch them off in System Settings → "
-                                + "Privacy & Security.", color: .red)
+                                + "Privacy & Security.", color: SettingsTone.error)
             }
         } header: {
             Text("Permissions")

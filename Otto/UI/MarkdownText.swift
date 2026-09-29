@@ -706,6 +706,39 @@ final class MarkdownCache {
     /// The healed tail of the streaming reply. It changes on every delta, so it gets one slot that
     /// is overwritten rather than an entry in `inlineCache`.
     private var tailSlot: (source: String, codeSize: CGFloat, strongSize: CGFloat?, value: AttributedString)?
+    /// Incremental styling of the streaming tail block (see `streamingInline`). One slot, like `tailSlot`.
+    private var streamingSlot: StreamingInline?
+
+    /// The styled tail of a streaming reply, split in two: the settled prefix (whole lines or sentences whose
+    /// inline syntax is all closed, styled once) and the unsettled rest (healed and styled on every delta).
+    ///
+    /// The settled prefix has a firm part and, after it, an optional provisional part: chunks that leave an emphasis
+    /// or strikethrough run open ("takes ~5 minutes", "2*3") that later text could still close. A provisional chunk
+    /// styles the same on its own as it does followed by any text without one of its open delimiter characters, so it
+    /// stays settled until such a character arrives; then the settled prefix falls back to the firm part.
+    private struct StreamingInline {
+        var codeSize: CGFloat
+        var strongSize: CGFloat?
+        /// The latest source seen; the next one must extend it for the slot to be reused.
+        var source: String
+        var value: AttributedString
+        /// UTF-8 length of the settled prefix of `source` (just after a line break or a sentence's space).
+        var settledLength = 0
+        var settledStyled = AttributedString()
+        /// UTF-8 length up to which settling was last tried and refused (an open construct spans it).
+        var attemptedLength = 0
+        /// The part of the settled prefix no later text can change (`settledLength` when nothing is provisional).
+        var firmLength = 0
+        var firmStyled = AttributedString()
+        /// Delimiter bytes (`*`, `_`, `~`) left open by the provisional chunks; empty = nothing provisional.
+        var openDelimiters: Set<UInt8> = []
+        /// UTF-8 length of `source` already checked for `openDelimiters`.
+        var checkedLength = 0
+    }
+
+    /// How much newly completed text a streaming block collects before its lines are settled. Settling styles
+    /// that stretch once; below it, re-styling the few unsettled lines on every delta costs less than trying.
+    static let settleChunkLength = 1024
 
     private static let maxStreams = 4
 
@@ -744,6 +777,225 @@ final class MarkdownCache {
         let value = Self.styledInline(source, codeSize: codeSize, strongSize: strongSize)
         inlineCache.setObject(InlineBox(value), forKey: key, cost: source.utf8.count)
         return value
+    }
+
+    /// The healed, styled tail block of a streaming reply (what `inline(healStreamingTail(source), …,
+    /// cacheable: false)` returns), without re-styling the whole block on every delta: completed lines whose
+    /// inline syntax is all closed are styled once and kept, so each delta heals and styles only the lines
+    /// after them. A long block (a log or a poem is one paragraph) otherwise costs O(n) per delta.
+    func streamingInline(_ source: String, codeSize: CGFloat, strongSize: CGFloat? = nil) -> AttributedString {
+        var slot: StreamingInline
+        // Reuse the slot only for the same block grown further: a new block (or a retry) starts over, so it never
+        // inherits another block's settled prefix or its refused attempts.
+        if let existing = streamingSlot, existing.codeSize == codeSize, existing.strongSize == strongSize,
+           Self.sharePrefix(source, existing.source, length: existing.source.utf8.count) {
+            if existing.source.utf8.count == source.utf8.count { return existing.value }
+            slot = existing
+        } else {
+            slot = StreamingInline(codeSize: codeSize, strongSize: strongSize, source: source, value: AttributedString())
+        }
+        let utf8 = source.utf8
+        if !slot.openDelimiters.isEmpty {
+            // A character that could close a provisional chunk's open run arrived: only the firm part stays.
+            let from = utf8.index(utf8.startIndex, offsetBy: max(slot.checkedLength, slot.settledLength))
+            if utf8[from...].contains(where: slot.openDelimiters.contains) {
+                slot.settledLength = slot.firmLength
+                slot.settledStyled = slot.firmStyled
+                slot.openDelimiters = []
+                slot.attemptedLength = slot.firmLength
+            }
+        }
+        slot.checkedLength = utf8.count
+        var settledEnd = utf8.index(utf8.startIndex, offsetBy: slot.settledLength)
+        if let candidate = Self.lastSettleCandidate(in: utf8[settledEnd...]) {
+            let candidateLength = utf8.distance(from: utf8.startIndex, to: candidate)
+            if candidateLength - max(slot.settledLength, slot.attemptedLength) >= Self.settleChunkLength {
+                let raw = source[settledEnd..<candidate]
+                if settle(raw, upTo: candidate, in: source, slot: &slot) {
+                    settledEnd = candidate
+                } else {
+                    slot.attemptedLength = candidateLength
+                }
+            }
+        }
+        let rest = MarkdownParser.healStreamingTail(String(source[settledEnd...]))
+        let restStyled = Self.styledInline(rest, codeSize: codeSize, strongSize: strongSize)
+        slot.value = slot.settledLength == 0 ? restStyled : slot.settledStyled + restStyled
+        slot.source = source
+        streamingSlot = slot
+        return slot.value
+    }
+
+    /// Settles `raw` (the text from the settled prefix up to `candidate`) firmly when nothing in it is open, or
+    /// provisionally when only emphasis or strikethrough runs are and no text after it holds their characters yet.
+    private func settle(_ raw: Substring, upTo candidate: String.Index, in source: String,
+                        slot: inout StreamingInline) -> Bool {
+        // Escapes draw literals whose source neighbors differ; and the healer must leave the chunk as it is (no odd
+        // `**` or open code span for it to close at the end of the whole text).
+        guard !Self.hasEscapes(raw), MarkdownParser.healStreamingTail(String(raw)) == String(raw) else { return false }
+        let chunk = Self.styledInline(String(raw), codeSize: slot.codeSize, strongSize: slot.strongSize)
+        guard let open = Self.openDelimiters(in: chunk) else { return false }
+        let openBytes = slot.openDelimiters.union(open.map { UInt8(ascii: $0.unicodeScalars.first!) })
+        guard Self.closesNothing(after: raw, styled: chunk, except: openBytes, codeSize: slot.codeSize,
+                                 strongSize: slot.strongSize) else { return false }
+        let length = source.utf8.distance(from: source.utf8.startIndex, to: candidate)
+        if openBytes.isEmpty {
+            slot.firmStyled += chunk
+            slot.firmLength = length
+        } else {
+            // Nothing after it may close its open runs yet.
+            guard !source.utf8[candidate...].contains(where: openBytes.contains) else { return false }
+            slot.openDelimiters = openBytes
+        }
+        slot.settledStyled += chunk
+        slot.settledLength = length
+        return true
+    }
+
+    /// The latest point in `text` that settling may end at: just after a line break, after the space that follows
+    /// a sentence's period (a paragraph can be one long line), or after an ideographic full stop, exclamation or
+    /// question mark (CJK text has no spaces). The text after it starts fresh, after whitespace or punctuation,
+    /// as it would on its own.
+    private static func lastSettleCandidate(in text: Substring.UTF8View) -> String.Index? {
+        var index = text.endIndex
+        while index > text.startIndex {
+            let previous = text.index(before: index)
+            let byte = text[previous]
+            if byte == UInt8(ascii: "\n") { return index }
+            if byte == UInt8(ascii: " "), previous > text.startIndex,
+               text[text.index(before: previous)] == UInt8(ascii: "."), index < text.endIndex {
+                return index
+            }
+            if Self.endsCJKSentence(text, at: index) { return index }
+            index = previous
+        }
+        return nil
+    }
+
+    /// Whether the three UTF-8 bytes before `index` are "。" (E3 80 82), "！" (EF BC 81) or "？" (EF BC 9F).
+    private static func endsCJKSentence(_ text: Substring.UTF8View, at index: String.Index) -> Bool {
+        guard text.distance(from: text.startIndex, to: index) >= 3 else { return false }
+        let third = text.index(before: index)
+        let second = text.index(before: third)
+        let first = text.index(before: second)
+        switch (text[first], text[second], text[third]) {
+        case (0xE3, 0x80, 0x82), (0xEF, 0xBC, 0x81), (0xEF, 0xBC, 0x9F): return true
+        default: return false
+        }
+    }
+
+    /// UTF-8 length of the settled prefix of the streaming tail (tests).
+    var settledStreamingLength: Int { streamingSlot?.settledLength ?? 0 }
+
+    /// Whether nothing in styled inline text can still pair with text that follows it, so text before a line break
+    /// that passes styles the same on its own as it does followed by anything (see `openDelimiters(in:)`).
+    static func isSettledInline(_ styled: AttributedString) -> Bool {
+        openDelimiters(in: styled)?.isEmpty == true
+    }
+
+    /// What in styled inline text could still pair with text that follows it. Later text can only close what is
+    /// still open, so only literal openers matter (code spans excluded). nil: a backtick run (a code span) or a `[`
+    /// (a link) is open, or a `]` is followed by `(` or `[`. Otherwise the characters of the `*`, `_` and `~` runs
+    /// that are not followed by whitespace (a run followed by whitespace can't open emphasis; an `_` between letters
+    /// or digits can't either); empty when there are none. A `[` closed by a later literal `]` (a citation like "[1]")
+    /// can't become a link any more. Unmatched closers are harmless. Callers also rule out escapes and character
+    /// references (`hasEscapes`), whose literals have other neighbors in the source.
+    static func openDelimiters(in styled: AttributedString) -> Set<Character>? {
+        var characters: [Character] = []
+        var inCode: [Bool] = []
+        var inLink: [Bool] = []
+        for run in styled.runs {
+            let isCode = run.inlinePresentationIntent?.contains(.code) == true
+            let isLink = run.link != nil
+            for character in styled[run.range].characters {
+                characters.append(character)
+                inCode.append(isCode)
+                inLink.append(isLink)
+            }
+        }
+        var open: Set<Character> = []
+        var openBrackets = 0
+        var index = 0
+        while index < characters.count {
+            let character = characters[index]
+            guard !inCode[index] else {
+                index += 1
+                continue
+            }
+            switch character {
+            case "`":
+                return nil
+            case "[" where !inLink[index]:
+                openBrackets += 1
+                index += 1
+            case "]" where !inLink[index]:
+                if openBrackets > 0 {
+                    openBrackets -= 1
+                    let next = index + 1 < characters.count ? characters[index + 1] : nil
+                    if next == "(" || next == "[" { return nil }
+                }
+                index += 1
+            case "*", "_", "~":
+                var runEnd = index + 1
+                while runEnd < characters.count, characters[runEnd] == character, !inCode[runEnd] { runEnd += 1 }
+                // A neighbor inside a code span stood next to a backtick in the source, never whitespace.
+                let before = index > 0 && !inCode[index - 1] ? characters[index - 1] : nil
+                let after = runEnd < characters.count && !inCode[runEnd] ? characters[runEnd] : nil
+                let followedBySpace = runEnd == characters.count || after?.isWhitespace == true
+                let intraword = character == "_" && (before.map { $0.isLetter || $0.isNumber } ?? false)
+                    && (after.map { $0.isLetter || $0.isNumber } ?? false)
+                if !followedBySpace && !intraword { open.insert(character) }
+                index = runEnd
+            default:
+                index += 1
+            }
+        }
+        return openBrackets == 0 ? open : nil
+    }
+
+    /// Closers of every kind and length, one per word: emphasis and strikethrough runs, then a link's end.
+    private static let closerProbeWords = ["x***", "x**", "x*", "x___", "x__", "x_", "x~~", "x~", "x](u)"]
+
+    /// The check behind `openDelimiters(in:)`'s reading of the rendered text: `raw` followed by a line of closers
+    /// styles as the two styled apart, so no opener in `raw` (one whose source neighbors the rendered text hides,
+    /// such as `**[](url)`) pairs with later text. Closers made of `except` bytes are left out of the line: the
+    /// caller already knows those runs are open.
+    private static func closesNothing(after raw: Substring, styled: AttributedString, except: Set<UInt8> = [],
+                                      codeSize: CGFloat, strongSize: CGFloat?) -> Bool {
+        let words = closerProbeWords.filter { word in !word.utf8.dropFirst().contains(where: except.contains) }
+        let probe = words.joined(separator: " ")
+        let probeStyled = styledInline(probe, codeSize: codeSize, strongSize: strongSize)
+        return styledInline(String(raw) + probe, codeSize: codeSize, strongSize: strongSize) == styled + probeStyled
+    }
+
+    /// Whether `text` holds a backslash escape of punctuation or a character reference (`&#42;`, `&ast;`). Either
+    /// draws a literal character whose neighbors in the source differ from those `isSettledInline` sees, so a
+    /// chunk holding one is never settled (it stays in the part re-styled on each delta).
+    static func hasEscapes(_ text: Substring) -> Bool {
+        let bytes = Array(text.utf8)
+        for (index, byte) in bytes.enumerated() {
+            if byte == UInt8(ascii: "\\"), index + 1 < bytes.count, Self.isASCIIPunctuation(bytes[index + 1]) {
+                return true
+            }
+            if byte == UInt8(ascii: "&") {
+                var cursor = index + 1
+                while cursor < bytes.count, cursor - index <= 32,
+                      bytes[cursor] == UInt8(ascii: "#") || Self.isASCIIAlphanumeric(bytes[cursor]) {
+                    cursor += 1
+                }
+                if cursor > index + 1, cursor < bytes.count, bytes[cursor] == UInt8(ascii: ";") { return true }
+            }
+        }
+        return false
+    }
+
+    private static func isASCIIPunctuation(_ byte: UInt8) -> Bool {
+        (0x21...0x2F).contains(byte) || (0x3A...0x40).contains(byte) || (0x5B...0x60).contains(byte)
+            || (0x7B...0x7E).contains(byte)
+    }
+
+    private static func isASCIIAlphanumeric(_ byte: UInt8) -> Bool {
+        (0x30...0x39).contains(byte) || (0x41...0x5A).contains(byte) || (0x61...0x7A).contains(byte)
     }
 
     // MARK: Streaming
@@ -1000,7 +1252,8 @@ private struct MarkdownBlockView: View, Equatable {
     }
 }
 
-/// One run of inline Markdown. When `showsCaret`, heals partial syntax and appends a blinking caret.
+/// One run of inline Markdown. When `showsCaret`, heals partial syntax and appends a blinking caret (styling only
+/// the lines of the block that are still settling; see `MarkdownCache.streamingInline`).
 private struct InlineMarkdownText: View, Equatable {
     let source: String
     let font: Font
@@ -1013,12 +1266,7 @@ private struct InlineMarkdownText: View, Equatable {
 
     var body: some View {
         if showsCaret {
-            let healed = MarkdownCache.shared.inline(
-                MarkdownParser.healStreamingTail(source),
-                codeSize: codeSize,
-                strongSize: strongSize,
-                cacheable: false
-            )
+            let healed = MarkdownCache.shared.streamingInline(source, codeSize: codeSize, strongSize: strongSize)
             TimelineView(.animation(minimumInterval: 0.5)) { context in
                 let visible = Int(context.date.timeIntervalSinceReferenceDate * 2).isMultiple(of: 2)
                 styled(healed + Self.caret(visible: visible))

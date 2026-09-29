@@ -95,6 +95,7 @@ struct FlowLayout: Layout {
 
 struct ContextChipsView: View {
     let viewModel: NotchViewModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(viewModel: NotchViewModel) {
         self.viewModel = viewModel
@@ -183,9 +184,9 @@ struct ContextChipsView: View {
                 guard let newest = new.last, !old.contains(newest) else { return }
                 reveal(.attachment(newest), with: proxy)
             }
-            .onChange(of: viewModel.pendingAttachmentLoads) { old, new in
-                guard new > old else { return }
-                reveal(.pending(new - 1), with: proxy)
+            .onChange(of: viewModel.pendingAttachmentLoadIDs) { old, new in
+                guard let newest = new.last, !old.contains(newest) else { return }
+                reveal(.pending(newest), with: proxy)
             }
             .onChange(of: viewModel.suggestedTab?.id) { _, new in
                 guard new != nil else { return }
@@ -237,7 +238,7 @@ struct ContextChipsView: View {
                     onRemove: { viewModel.removeAttachment(id: attachment.id) }
                 )
                 .id(ChipAnchor.attachment(attachment.id))
-                .transition(.scale(scale: 0.85).combined(with: .opacity))
+                .transition(.reducible(.scale(scale: 0.85).combined(with: .opacity), reduceMotion: reduceMotion))
             }
             if let suggestion = viewModel.suggestedTab {
                 GhostChip(
@@ -263,9 +264,9 @@ struct ContextChipsView: View {
                 .id(ChipAnchor.window)
                 .transition(.opacity)
             }
-            ForEach(0..<max(0, viewModel.pendingAttachmentLoads), id: \.self) { index in
-                PendingChip()
-                    .id(ChipAnchor.pending(index))
+            ForEach(viewModel.pendingAttachmentLoadIDs, id: \.self) { id in
+                PendingChip(onRemove: { viewModel.dismissPendingAttachmentLoad(id: id) })
+                    .id(ChipAnchor.pending(id))
                     .transition(.opacity)
             }
         }
@@ -316,7 +317,7 @@ private enum ChipAnchor: Hashable {
     case attachment(UUID)
     case suggestion
     case window
-    case pending(Int)
+    case pending(UUID)
 }
 
 // MARK: - Chips
@@ -439,6 +440,7 @@ private struct AttachmentChip: View {
     let onRemove: () -> Void
 
     @State private var isHovering = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// The hover ✕ of an older chip, shown over the end of its name.
     private var showsHoverRemove: Bool { !alwaysShowsRemove && isHovering }
@@ -473,7 +475,7 @@ private struct AttachmentChip: View {
                 }
             if alwaysShowsRemove {
                 ChipRemoveButton(label: removeLabel, action: onRemove)
-                    .transition(.opacity.combined(with: .scale(scale: 0.6)))
+                    .transition(.reducible(.opacity.combined(with: .scale(scale: 0.6)), reduceMotion: reduceMotion))
                     .padding(.leading, -2)
             }
         }
@@ -521,7 +523,14 @@ private struct AttachmentChip: View {
 }
 
 /// Placeholder shown while an attachment is loading.
+/// Hovering shows a ✕ over its trailing end (like an older chip's), which gives up a load that stalls.
 private struct PendingChip: View {
+    let onRemove: () -> Void
+
+    @State private var isHovering = false
+
+    static let removeLabel = "Stop loading this item"
+
     var body: some View {
         HStack(spacing: ContextChipsView.iconGap) {
             RoundedRectangle(cornerRadius: 4, style: .continuous)
@@ -530,13 +539,28 @@ private struct PendingChip: View {
             RoundedRectangle(cornerRadius: 3, style: .continuous)
                 .fill(Color.white.opacity(0.1))
                 .frame(width: 74, height: 9)
+                .opacity(isHovering ? 0.4 : 1)
         }
         .shimmer()
         .padding(.horizontal, ContextChipsView.plainChipPadding)
+        .overlay(alignment: .trailing) {
+            ChipRemoveButton(label: Self.removeLabel, action: onRemove)
+                .padding(.trailing, 4)
+                .opacity(isHovering ? 1 : 0)
+                .scaleEffect(isHovering ? 1 : 0.6)
+                .allowsHitTesting(isHovering)
+        }
         .frame(height: ContextChipsView.chipHeight)
         .background {
-            Capsule().fill(Theme.chipFill)
+            Capsule().fill(isHovering ? Theme.chipLiftedFill : Theme.chipFill)
         }
+        .contentShape(Capsule())
+        .onHover { hovering in
+            withAnimation(.easeOut(duration: 0.14)) { isHovering = hovering }
+        }
+        .help("Loading… Click ✕ to stop loading this item")
+        .accessibilityElement(children: .combine)
         .accessibilityLabel("Loading attachment")
+        .accessibilityAction(named: Self.removeLabel, onRemove)
     }
 }

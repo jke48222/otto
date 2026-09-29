@@ -108,6 +108,7 @@ final class ShortcutSheetTests: XCTestCase {
 
     func testChordsMatchTheKeyMap() {
         let sections = ShortcutSheet.sections(settings: makeSettings(), availableRoutes: allRoutes)
+        XCTAssertEqual(row("conversation.newLine", in: sections)?.chords, [["⇧", "↩"], ["⌥", "↩"]])
         XCTAssertEqual(row("conversation.stop", in: sections)?.chords, [["⌘", "."]])
         XCTAssertEqual(row("conversation.regenerate", in: sections)?.chords, [["⌘", "R"]])
         XCTAssertEqual(row("conversation.copyLast", in: sections)?.chords, [["⌘", "⇧", "C"]])
@@ -120,6 +121,24 @@ final class ShortcutSheetTests: XCTestCase {
         XCTAssertEqual(row("actions.insert", in: sections)?.chords, [["⌘", "↩"]])
         XCTAssertEqual(row("actions.insertPlain", in: sections)?.chords, [["⌥", "⌘", "↩"]])
         XCTAssertEqual(row("glance.usage", in: sections)?.chords, [["⌥", "⌘", "U"]])
+    }
+
+    /// The composer takes ⇧↩ (and ⌥↩) as a new line; ↩ alone sends and the ⌘ chords stay with the key map.
+    func testComposerNewLineChords() {
+        XCTAssertTrue(ComposerView.insertsNewline(for: .shift))
+        XCTAssertTrue(ComposerView.insertsNewline(for: .option))
+        XCTAssertTrue(ComposerView.insertsNewline(for: [.shift, .capsLock]))
+        XCTAssertFalse(ComposerView.insertsNewline(for: []))
+        XCTAssertFalse(ComposerView.insertsNewline(for: .command))
+        XCTAssertFalse(ComposerView.insertsNewline(for: [.shift, .command]))
+        XCTAssertFalse(ComposerView.insertsNewline(for: [.option, .command]))
+        // No key-map row claims ⇧↩, so the panel's monitor lets it reach the composer.
+        var context = NotchKeyContext()
+        context.isEngaged = true
+        context.composerIsFirstResponder = true
+        context.composerHasText = true
+        XCTAssertNil(NotchKeyCommands.command(keyCode: UInt16(kVK_Return), characters: "\r", flags: .shift,
+                                              context: context))
     }
 
     // MARK: Global shortcut and voice hold

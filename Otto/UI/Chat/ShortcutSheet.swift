@@ -68,7 +68,7 @@ enum ShortcutSheet {
     private static func conversation(settings: AppSettings) -> Section {
         var rows: [Row] = [
             Row(id: "conversation.send", title: "Send", chords: [["↩"]]),
-            Row(id: "conversation.newLine", title: "New line", chords: [["⇧", "↩"]]),
+            Row(id: "conversation.newLine", title: "New line", chords: [["⇧", "↩"], ["⌥", "↩"]]),
             Row(id: "conversation.stop", title: "Stop the reply", chords: [["⌘", "."]]),
         ]
         if speaksReplies(settings) {

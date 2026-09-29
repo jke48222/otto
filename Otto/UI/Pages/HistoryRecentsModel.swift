@@ -98,11 +98,15 @@ enum HistoryRecentsLayout {
         case undo(title: String)
         case streamingWarning
         case hints
+        /// Nothing to open or delete (no conversations, no matches, history off, loading): only "esc Back".
+        case backHint
     }
 
-    /// The Undo bar wins while a delete can still be undone; a streaming reply replaces the key hints.
-    static func footer(pendingDeletionTitle: String?, isStreaming: Bool) -> Footer {
+    /// The Undo bar wins while a delete can still be undone; with no row to open or delete only Back is offered;
+    /// a streaming reply replaces the key hints.
+    static func footer(pendingDeletionTitle: String?, isStreaming: Bool, hasSelectableRow: Bool = true) -> Footer {
         if let pendingDeletionTitle { return .undo(title: pendingDeletionTitle) }
+        guard hasSelectableRow else { return .backHint }
         return isStreaming ? .streamingWarning : .hints
     }
 }
@@ -117,6 +121,8 @@ enum HistoryRecentsText {
     static let undoShortcut = "⌘Z"
     static let streamingWarning = "Opening another conversation stops the current reply."
     static let hints: [(key: String, label: String)] = [("↩", "Open"), ("⌘⌫", "Delete"), ("esc", "Back")]
+    /// The hints when there is nothing to open or delete.
+    static let backHints: [(key: String, label: String)] = [("esc", "Back")]
 
     static let noConversationsTitle = "No conversations yet"
     static let noConversationsBody = "Your chats with Otto will show up here."
@@ -158,17 +164,33 @@ enum HistoryRecentsText {
     /// The title with its query matches in bold. A title carrying hidden, control or bidi characters, or one longer
     /// than the page ever draws, loses the bolding and is shown cleaned (the match ranges point into the raw text).
     static func styledTitle(of row: RecentsRow) -> AttributedString {
-        let raw = row.title
-        guard !row.titleMatches.isEmpty,
+        bolding(row.titleMatches, in: row.title, maxLength: maxTitleLength) ?? AttributedString(title(of: row))
+    }
+
+    /// The detail with the query's words in bold (history.md §3: "…the actor hops back after every **await**,
+    /// so…"). The snippet comes from the same search, so the words are found with its matcher (case and accent
+    /// insensitive). Same fallback as the title: hidden, control or bidi characters, or an over-long detail,
+    /// show the cleaned text without bolding. Without a query the detail is the plain preview.
+    static func styledDetail(of row: RecentsRow, query: String) -> AttributedString {
+        let words = HistorySearch.tokens(query)
+        guard !words.isEmpty else { return AttributedString(detail(of: row)) }
+        let matches = HistorySearch.titleRanges(of: words, in: row.detail)
+        return bolding(matches, in: row.detail, maxLength: maxDetailLength) ?? AttributedString(detail(of: row))
+    }
+
+    /// `raw` with `matches` marked strongly emphasized, or nil when there is nothing to bold or `raw` can't be
+    /// shown as is (the match ranges point into the raw text, which cleaning would shift).
+    private static func bolding(_ matches: [Range<String.Index>], in raw: String, maxLength: Int) -> AttributedString? {
+        guard !matches.isEmpty,
               !DisplayText.containsHiddenOrBidi(raw),
               !raw.contains(where: { $0.isNewline }),
-              raw.count <= maxTitleLength
+              raw.count <= maxLength
         else {
-            return AttributedString(title(of: row))
+            return nil
         }
         var result = AttributedString()
         var cursor = raw.startIndex
-        for match in row.titleMatches
+        for match in matches
         where match.lowerBound >= cursor && match.upperBound <= raw.endIndex && !match.isEmpty {
             if cursor < match.lowerBound {
                 result += AttributedString(String(raw[cursor..<match.lowerBound]))
@@ -184,7 +206,7 @@ enum HistoryRecentsText {
         return result
     }
 
-    /// The bold stretches of `styledTitle(of:)`, in order (tests).
+    /// The bold stretches of `styledTitle(of:)` or `styledDetail(of:query:)`, in order (tests).
     static func boldRuns(in text: AttributedString) -> [String] {
         text.runs.compactMap { run in
             run.inlinePresentationIntent == .stronglyEmphasized ? String(text[run.range].characters) : nil

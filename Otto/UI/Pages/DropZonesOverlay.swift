@@ -55,7 +55,9 @@ struct DropZonesOverlay: View {
         }
         .padding(8)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(backdrop.fill(Theme.panel.opacity(0.9)))
+        // Opaque: the inactive well has no fill and is dimmed, so a see-through backdrop let the composer's
+        // placeholder or reply text show under the wells' titles.
+        .background(backdrop.fill(Theme.panel))
         .animation(Theme.Motion.hover, value: session.zone)
         .allowsHitTesting(false)
         .accessibilityElement(children: .contain)

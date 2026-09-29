@@ -12,16 +12,40 @@ import AppKit
 import SwiftUI
 
 struct ApprovalBodyView: View {
+    /// How a script's code box takes its height on the card.
+    enum CodeBoxSizing: Equatable, Sendable {
+        /// The box is the card's only scroller: it takes the height left under the compact rows above it
+        /// (up to `AppleScriptCodeView.maxHeight`) and scrolls inside. `onCodeCramped` fires when that leaves
+        /// less than `AppleScriptCodeView.minimumFlexHeight` for a script that doesn't fit.
+        case fillsCard
+        /// The box shows every row and the card's body scrolls instead (still one scroller).
+        case fullHeight
+        /// The box scrolls inside its own 168 pt cap (hosting outside a card).
+        case ownCap
+    }
+
     private let approvalBody: ApprovalBody
     @Binding private var options: ApprovalOptions
+    private let codeSizing: CodeBoxSizing
+    private let onCodeCramped: () -> Void
     private let onReviewed: () -> Void
 
     @State private var didReportReviewed = false
 
-    init(body: ApprovalBody, options: Binding<ApprovalOptions>, onReviewed: @escaping () -> Void = {}) {
+    init(body: ApprovalBody, options: Binding<ApprovalOptions>, codeSizing: CodeBoxSizing = .ownCap,
+         onCodeCramped: @escaping () -> Void = {}, onReviewed: @escaping () -> Void = {}) {
         approvalBody = body
         _options = options
+        self.codeSizing = codeSizing
+        self.onCodeCramped = onCodeCramped
         self.onReviewed = onReviewed
+    }
+
+    /// Bodies whose code box the card sizes itself (`CodeBoxSizing`) instead of nesting it in the card's scroll: a
+    /// script, whose exact code is the point of the card.
+    static func flexesCodeBox(_ body: ApprovalBody) -> Bool {
+        if case .appleScript = body { return true }
+        return false
     }
 
     /// Whether the body holds a scrolling box whose last row has to be seen before the body counts as
@@ -72,7 +96,7 @@ struct ApprovalBodyView: View {
         case .shortcut(let preview):
             ShortcutBody(preview: preview, onShown: reportReviewed)
         case .appleScript(let preview):
-            ScriptBody(preview: preview, onShown: reportReviewed)
+            ScriptBody(preview: preview, sizing: codeSizing, onCramped: onCodeCramped, onShown: reportReviewed)
         case .url(let preview):
             URLBody(preview: preview, onShown: reportReviewed)
         }
@@ -482,16 +506,32 @@ private struct ShortcutBody: View {
 // MARK: - AppleScript
 
 private struct ScriptBody: View {
+    /// A script this short leaves the card room for the whole access sentence, so only longer ones compact it.
+    static let fullAccessRowMaxLines = 3
+
+    static func compactsAccessRow(sizing: ApprovalBodyView.CodeBoxSizing, lineCount: Int) -> Bool {
+        sizing == .fillsCard && lineCount > fullAccessRowMaxLines
+    }
+
     let preview: AppleScriptPreview
+    let sizing: ApprovalBodyView.CodeBoxSizing
+    let onCramped: () -> Void
     let onShown: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        // On the card, the rows above the code stay compact and the code box takes the rest (§5.7): the purpose
+        // gives up its second line before the code gives up rows, and the access row keeps to one line.
+        let fillsCard = sizing == .fillsCard
+        VStack(alignment: .leading, spacing: fillsCard ? 8 : 10) {
             if !preview.purpose.isEmpty {
+                let purpose = "Otto says: “\(preview.purpose)”"
                 (Text("Otto says: ").font(Theme.font(11.5)).foregroundColor(Theme.textTertiary)
                     + Text("“\(preview.purpose)”").font(Theme.font(13).italic()).foregroundColor(Theme.textPrimary))
-                    .fixedSize(horizontal: false, vertical: true)
-                    .dockRecordsText("Otto says: “\(preview.purpose)”")
+                    .lineLimit(fillsCard ? 2 : nil)
+                    .truncationMode(.tail)
+                    .fixedSize(horizontal: false, vertical: !fillsCard)
+                    .help(purpose)
+                    .dockRecordsText(purpose)
             }
             if !preview.targets.isEmpty || !preview.capabilities.isEmpty {
                 FlowLayout(spacing: 6, lineSpacing: 6) {
@@ -506,8 +546,10 @@ private struct ScriptBody: View {
                     }
                 }
             }
-            ScriptInheritedAccessRow(access: preview.inheritedAccess)
-            AppleScriptCodeView(source: preview.source, onReviewed: onShown)
+            ScriptInheritedAccessRow(access: preview.inheritedAccess,
+                                     isCompact: Self.compactsAccessRow(sizing: sizing, lineCount: preview.lineCount))
+            AppleScriptCodeView(source: preview.source, sizing: sizing, onCramped: onCramped, onReviewed: onShown)
+                .layoutPriority(1)
         }
     }
 }

@@ -134,6 +134,22 @@ enum ShelfPageText {
     }
 }
 
+/// When the Shelf grid may hold the keyboard. Soft focus (the pointer resting on the notch, §4.4) and a Shelf drop
+/// (§4.7) make the panel key without engaging it; the grid's keys (⌫ removes and deletes Otto's own copies, ⌘C
+/// replaces the clipboard, Space opens Quick Look) must then stay with the user's app.
+enum ShelfPageFocus {
+    /// Whether a focus request (`vm.focusRequest`) gives the grid the keyboard.
+    static func takesFocus(onRequest requested: Bool, isEngaged: Bool) -> Bool {
+        requested && isEngaged
+    }
+
+    /// Whether a key press reaching the grid acts. The key that engages a soft-focused notch reaches the page too,
+    /// before the view sees the engagement; it only engages.
+    static func handlesKeys(isEngaged: Bool) -> Bool {
+        isEngaged
+    }
+}
+
 /// The two wells shown while files are dragged over the open notch: "Keep on Shelf" on the left, "Ask Otto"
 /// on the right. The well under the pointer brightens; the other dims with a dashed edge.
 enum ShelfDropWell {

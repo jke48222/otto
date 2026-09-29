@@ -41,6 +41,17 @@ struct MessageView: View, Equatable {
         self.isSendBlocked = viewModel.isSendBlocked
     }
 
+    /// Where a failed reply's "Open Settings" goes when the API key is missing or rejected: the key field is on
+    /// Models, not on whichever tab Settings showed last.
+    static let apiKeySettingsTab: SettingsTab = .models
+
+    /// A reply that failed because the conversation outgrew the context: Retry would fail the same way, so the
+    /// footer offers New Chat (⌘N) in its place.
+    static func offersNewChat(for state: MessageState) -> Bool {
+        guard case .failed(let copy) = state else { return false }
+        return copy == ChatSession.conversationTooLongDescription
+    }
+
     static func == (lhs: MessageView, rhs: MessageView) -> Bool {
         lhs.message == rhs.message && lhs.viewModel === rhs.viewModel && lhs.isLast == rhs.isLast
             && lhs.availableWidth == rhs.availableWidth && lhs.unavailableAttachmentIDs == rhs.unavailableAttachmentIDs
@@ -191,6 +202,7 @@ private struct MiniAttachmentChip: View {
 
 private struct AssistantMessageView: View {
     let message: ChatMessage
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let viewModel: NotchViewModel
     let isLast: Bool
     let versionInfo: VersionPager.Position?
@@ -295,7 +307,7 @@ private struct AssistantMessageView: View {
                                 .fill(Color.white.opacity(0.1))
                                 .frame(width: 2)
                         }
-                        .transition(.opacity.combined(with: .move(edge: .top)))
+                        .transition(.reducible(.opacity.combined(with: .move(edge: .top)), reduceMotion: reduceMotion))
                 }
             }
         }
@@ -426,11 +438,18 @@ private struct AssistantMessageView: View {
             HStack(spacing: 4) {
                 if !isStreaming {
                     if needsSettings {
+                        // The API key field is on Models, not whichever tab Settings last showed.
                         FooterButton(title: "Open Settings", symbol: "gearshape", isProminent: true) {
-                            viewModel.openSettings()
+                            viewModel.openSettings(tab: MessageView.apiKeySettingsTab)
                         }
                     }
-                    if canRetry {
+                    if MessageView.offersNewChat(for: message.state) {
+                        FooterButton(title: "New Chat", symbol: "square.and.pencil", isProminent: true) {
+                            viewModel.newChat()
+                        }
+                        .disabled(viewModel.chat.isStreaming)
+                        .help("New Chat (⌘N)")
+                    } else if canRetry {
                         FooterButton(title: "Retry", symbol: "arrow.clockwise", isProminent: !needsSettings) {
                             guard !viewModel.blockIfSendingPaused() else { return }
                             viewModel.chat.retry(messageID: message.id)
@@ -505,7 +524,7 @@ private struct AssistantMessageView: View {
                 onConfirm: { viewModel.confirmPendingInsert() },
                 onCancel: { viewModel.cancelPendingInsert() }
             )
-            .transition(InsertConfirmRow.transition)
+            .transition(InsertConfirmRow.transition(reduceMotion: reduceMotion))
         }
     }
 
@@ -551,6 +570,7 @@ private extension View {
 private struct ActivityRow: View {
     let activity: ToolActivity
     var wasInterrupted = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var symbol: String {
         switch activity.kind {
@@ -567,7 +587,7 @@ private struct ActivityRow: View {
                     Image(systemName: wasInterrupted ? "minus" : "checkmark")
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(Theme.textMuted)
-                        .transition(.scale.combined(with: .opacity))
+                        .transition(.reducible(.scale.combined(with: .opacity), reduceMotion: reduceMotion))
                 } else {
                     MiniSpinner(size: 10, lineWidth: 1.5)
                         .transition(.opacity)
