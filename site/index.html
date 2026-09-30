@@ -112,7 +112,7 @@
                  asked for less motion or less data. Without script.js, the native controls play it. -->
             <video class="promo" id="promo" muted loop playsinline controls preload="none"
                    poster="media/otto-promo-poster.jpg" width="1920" height="1080"
-                   aria-label="Otto opening from the MacBook notch, answering a question with web sources, then tucking away">
+                   aria-label="Otto opening from the MacBook notch, answering with web sources, adding a calendar event once it's approved, parking files on the Shelf and taking a spoken request">
               <source src="media/otto-promo-web-720.mp4" type="video/mp4" media="(max-width: 800px)">
               <source src="media/otto-promo-web.mp4" type="video/mp4">
             </video>
@@ -122,7 +122,7 @@
               <span class="visually-hidden" id="promo-toggle-label">Play video</span>
             </button>
           </div>
-          <figcaption class="visually-hidden">A 40-second tour of Otto.</figcaption>
+          <figcaption class="visually-hidden">A 50-second tour of Otto.</figcaption>
         </figure>
       </div>
     </section>
@@ -139,15 +139,15 @@
         <article class="pillar reveal">
           <div class="pillar__media">
             <img src="media/screens/glance.png" width="2080" height="1300" loading="lazy" decoding="async"
-                 alt="The MacBook notch with Otto tucked away inside it, a breathing orb and three equalizer bars showing a reply is still arriving">
+                 alt="The closed notch after a reply finished: the first line of the answer drops under the camera, shown magnified below">
           </div>
           <div class="pillar__copy">
             <p class="pillar__num" aria-hidden="true">01</p>
             <h3 class="h3">One glance away</h3>
-            <p>Rest your pointer on the notch or press <kbd>⌥</kbd><kbd>Space</kbd>. Otto springs open right below the camera, then tucks itself back into the notch when you move on. Still working on an answer? A soft glow on the notch lets you know.</p>
+            <p>Rest your pointer on the notch or press <kbd>⌥</kbd><kbd>Space</kbd>. Otto springs open right below the camera, then tucks itself back into the notch when you move on. Close it mid-answer and the reply keeps coming. When it's done, its first line drops under the camera.</p>
             <ul class="facts">
               <li>Opens on hover, click or <kbd>⌥</kbd><kbd>Space</kbd></li>
-              <li>Press <kbd>Esc</kbd> or click away to dismiss</li>
+              <li>Hover the preview to keep it, click it to open the answer</li>
               <li>No notch? Otto draws one at the top of any display</li>
             </ul>
           </div>
@@ -173,7 +173,7 @@
         <article class="pillar reveal">
           <div class="pillar__media">
             <img src="media/screens/answer.png" width="2080" height="1300" loading="lazy" decoding="async"
-                 alt="An answer in Otto with a collapsed thought process, a completed web search, a code block with a Copy button and source links">
+                 alt="An answer in Otto with the page read and web search it ran, three bullets and source links for each site it used">
           </div>
           <div class="pillar__copy">
             <p class="pillar__num" aria-hidden="true">03</p>
@@ -189,11 +189,79 @@
 
         <article class="pillar pillar--flip reveal">
           <div class="pillar__media">
-            <img src="media/screens/settings.png" width="2080" height="1300" loading="lazy" decoding="async"
-                 alt="Otto's Settings window with the API key field, model picker and web access options">
+            <img src="media/screens/actions.png" width="2080" height="1300" loading="lazy" decoding="async"
+                 alt="Otto asking before it adds an event: a card for Release notes review, Wednesday 10:00 to 10:30 AM on the Work calendar, with Don't add and Add Event buttons">
           </div>
           <div class="pillar__copy">
             <p class="pillar__num" aria-hidden="true">04</p>
+            <h3 class="h3">Acts with your OK</h3>
+            <p>Turn on actions and Claude can add calendar events and reminders, run your Shortcuts or open a link. Each one shows up first as a card with exactly what will be added or run, then waits for your click or <kbd>⌘</kbd><kbd>↩</kbd>.</p>
+            <ul class="facts">
+              <li>Off until you turn it on in Settings</li>
+              <li>Undo an added event or reminder for 10 minutes</li>
+              <li>A local log of what ran, without its contents</li>
+            </ul>
+          </div>
+        </article>
+
+        <article class="pillar reveal">
+          <div class="pillar__media">
+            <img src="media/screens/shelf.png" width="2080" height="1300" loading="lazy" decoding="async"
+                 alt="The Shelf under the notch with five files, two of them selected, and Ask Otto about 2 in its bar">
+          </div>
+          <div class="pillar__copy">
+            <p class="pillar__num" aria-hidden="true">05</p>
+            <h3 class="h3">Keeps files at hand</h3>
+            <p>Drop files on the left half of the notch to park them on the Shelf. Drag them out into any app, share them, or select a few and ask Otto about them.</p>
+            <ul class="facts">
+              <li><kbd>⌘</kbd><kbd>D</kbd> opens the Shelf</li>
+              <li>Keeps a link to each file, never moves the original</li>
+              <li>Up to 50 files</li>
+            </ul>
+          </div>
+        </article>
+
+        <article class="pillar pillar--flip reveal">
+          <div class="pillar__media">
+            <img src="media/screens/voice.png" width="2080" height="1300" loading="lazy" decoding="async"
+                 alt="Otto listening: the words Write a quick launch update for the team appear in the composer as they're spoken">
+          </div>
+          <div class="pillar__copy">
+            <p class="pillar__num" aria-hidden="true">06</p>
+            <h3 class="h3">Ask out loud</h3>
+            <p>Turn on Voice, then hold <kbd>⌥</kbd><kbd>Space</kbd> and talk. Your words appear in the composer as you speak, and letting go sends them.</p>
+            <ul class="facts">
+              <li>Speech turns into text on your Mac</li>
+              <li>Or click the mic to start and stop</li>
+              <li>Replies can be read aloud</li>
+            </ul>
+          </div>
+        </article>
+
+        <article class="pillar reveal">
+          <div class="pillar__media">
+            <img src="media/screens/recents.png" width="2080" height="1300" loading="lazy" decoding="async"
+                 alt="Recents under the notch: six past conversations grouped by day, with a search field">
+          </div>
+          <div class="pillar__copy">
+            <p class="pillar__num" aria-hidden="true">07</p>
+            <h3 class="h3">Picks up where you left off</h3>
+            <p>Conversations are saved on your Mac, and <kbd>⌘</kbd><kbd>Y</kbd> opens Recents. Come back after 15 minutes away and Otto starts a fresh chat with a chip to continue the last one.</p>
+            <ul class="facts">
+              <li>Kept for 30 days by default</li>
+              <li>Search, and undo a delete</li>
+              <li>Reopens where you were reading</li>
+            </ul>
+          </div>
+        </article>
+
+        <article class="pillar pillar--flip reveal">
+          <div class="pillar__media">
+            <img src="media/screens/settings.png" width="2080" height="1300" loading="lazy" decoding="async"
+                 alt="Otto Settings on the Models tab: the Anthropic API key saved in Keychain, the Claude models and the response style">
+          </div>
+          <div class="pillar__copy">
+            <p class="pillar__num" aria-hidden="true">08</p>
             <h3 class="h3">Your key, your Mac</h3>
             <p>Bring your own Anthropic API key. It lives in your macOS Keychain, nothing leaves your Mac until you press send, and there's no account to create and no telemetry to opt out of.</p>
             <ul class="facts">
@@ -272,7 +340,7 @@
           <p class="eyebrow">Privacy</p>
           <h2 id="privacy-title" class="h2">You decide what leaves your Mac.</h2>
           <!-- noncommercial:begin -->
-          <p class="section__sub">Otto has no servers of its own. It talks to exactly one place, Anthropic's API, and only when you ask it to.</p>
+          <p class="section__sub">Otto has no servers of its own. Your messages go to Anthropic's API, and only when you ask. Two opt-in features reach elsewhere: Apple's speech service, if you allow it for Voice, and Spotify's artwork servers for Now Playing.</p>
           <!-- noncommercial:end -->
           <!-- commercial:begin -->
           <p class="section__sub">Otto has no servers of its own. It sends your messages to Anthropic when you ask, and the signed app checks its license with Polar and looks for updates here. <a href="/privacy">Read the privacy policy.</a></p>
@@ -285,6 +353,7 @@
             <ul class="checklist">
               <li>Your API key, in the login Keychain and nowhere else on disk</li>
               <li>Your files, images and screenshots, until you press send</li>
+              <li>Your history, the Shelf and the actions log, in your user folder</li>
               <li>Your settings and custom instructions</li>
               <li>Everything about you: there's no account and no telemetry</li>
             </ul>
@@ -294,12 +363,13 @@
             <ul class="checklist">
               <li>Your message and the context chips you attached</li>
               <li>Web searches, which Anthropic runs for Claude while web access is on. You can turn it off in Settings.</li>
+              <li>With actions on, what a tool reads for Claude, such as your calendar events. Otto asks once before the first read.</li>
               <li>Nothing else. Usage is billed to your own Anthropic account.</li>
             </ul>
           </div>
         </div>
 
-        <p class="privacy__note reveal">Otto asks for permissions only when a feature needs them: Automation, per browser, to read the front tab's title and address; Screen Recording only if you use <b>Capture Screen Region</b>. It never needs Accessibility access.</p>
+        <p class="privacy__note reveal">Otto asks for a permission only when a feature needs it. Automation, per browser, reads the front tab's title and address. Screen Recording is only for capturing a region or a window, and Accessibility only for pasting an answer into another app or offering your selected text. Voice needs Microphone and Speech Recognition, and calendar and reminder actions need Calendars and Reminders.</p>
       </div>
     </section>
 
@@ -358,7 +428,11 @@
           </details>
           <details class="faq__item">
             <summary>What permissions does Otto ask for?</summary>
-            <div class="faq__body"><p>Only what a feature needs, the first time you use it. Automation access for each browser lets Otto read the current tab's title and address. Screen Recording is needed only for Capture Screen Region. Otto doesn't need Accessibility access: the shortcut and hover detection work without it.</p></div>
+            <div class="faq__body"><p>Only what a feature needs, the first time you use it, and the notch explains each one before macOS asks. Automation access for each browser lets Otto read the current tab's title and address. Screen Recording is for capturing a region or a window, Accessibility for pasting answers into other apps or offering your selected text, and Microphone and Speech Recognition for Voice. The shortcut and hover detection work without any of them.</p></div>
+          </details>
+          <details class="faq__item">
+            <summary>Can Otto change things on my Mac?</summary>
+            <div class="faq__body"><p>Only with actions on, and they're off until you turn them on in Settings. Adding an event or reminder, running a shortcut or script, and opening a link each show a card with exactly what will run and wait for your click or <kbd>⌘</kbd><kbd>↩</kbd>. Play, pause and skip run right away, reads ask once, and a shortcut you mark <b>Always allow</b> can skip its card. AppleScript has its own switch.</p></div>
           </details>
           <details class="faq__item">
             <summary>Another app already uses <kbd>⌥</kbd><kbd>Space</kbd>. What now?</summary>
