@@ -51,6 +51,10 @@ struct Options {
     var wait = 1800.0
     var attempts = 3
     var bitrate = 90_000_000
+    /// Mid-scene, a capture rate under this share of `fps` (over half a second) counts as a stalled stage.
+    /// A stage behind a full-screen Space drops to nearly 0; a busy moment (a long conversation laid out as
+    /// the notch opens) dips into the high 20s at 60 fps, which the 30 fps film and 22 fps GIF never show.
+    var stallRatio = 0.4
 
     static func parse(_ arguments: [String]) -> Options {
         var options = Options()
@@ -74,8 +78,9 @@ struct Options {
             case "--wait": options.wait = Double(next()) ?? options.wait
             case "--attempts": options.attempts = max(1, Int(next()) ?? options.attempts)
             case "--bitrate": options.bitrate = Int(next()) ?? options.bitrate
+            case "--stall-ratio": options.stallRatio = Double(next()) ?? options.stallRatio
             case "-h", "--help":
-                print("usage: record_promo --app <Otto binary> --scene <name> --out <file.mov> [--width px] [--height px] [--fps n] [--preroll s] [--tail s] [--wait s] [--attempts n]")
+                print("usage: record_promo --app <Otto binary> --scene <name> --out <file.mov> [--width px] [--height px] [--fps n] [--preroll s] [--tail s] [--wait s] [--attempts n] [--stall-ratio r]")
                 exit(0)
             default: fail("unknown argument \(arguments[index])")
             }
@@ -400,6 +405,8 @@ func recordTake(options: Options, outputURL: URL) async -> TakeResult {
     let doneURL = workURL.appendingPathComponent("done")
     let sceneDeadline = now() + options.timeout
     var stall: String?
+    var slowest = Double(options.fps)
+    let settleUntil = now() + 0.6
     while !FileManager.default.fileExists(atPath: doneURL.path) {
         if !app.isRunning {
             stall = "the stage quit before finishing"
@@ -411,8 +418,10 @@ func recordTake(options: Options, outputURL: URL) async -> TakeResult {
             fail("the scene didn't finish within \(Int(options.timeout)) s")
         }
         let rate = writer.captureRate(window: 0.5)
-        if rate < Double(options.fps) * 0.5 {
-            stall = "the stage stalled mid-scene (\(Int(rate)) fps)"
+        if now() > settleUntil { slowest = min(slowest, rate) }
+        if rate < Double(options.fps) * options.stallRatio {
+            let sceneTime = (writer.movieTime(atHostTime: now()) ?? goMovieTime) - goMovieTime
+            stall = "the stage stalled mid-scene (\(Int(rate)) fps at \(String(format: "%.1f", sceneTime)) s into the scene)"
             break
         }
         try? await Task.sleep(nanoseconds: 20_000_000)
@@ -438,6 +447,8 @@ func recordTake(options: Options, outputURL: URL) async -> TakeResult {
         "capturedFrames": writer.capturedFrameCount,
         "duration": Double(writer.writtenFrameCount) / Double(options.fps),
         "sceneStart": (goMovieTime * 1000).rounded() / 1000,
+        // QA: the lowest capture rate (frames per second over half a second) while the scene played.
+        "slowestCaptureRate": slowest.rounded(),
     ]
     let timelineURL = workURL.appendingPathComponent("timeline.json")
     if let data = try? Data(contentsOf: timelineURL),
