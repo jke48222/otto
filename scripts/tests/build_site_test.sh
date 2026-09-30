@@ -168,9 +168,11 @@ check "commerce.json, release.json, drafts and commercial pages never ship" \
 check "rollback deny grep is empty" deny_grep_empty "$out"
 check "rollback index.html equals the golden file" cmp -s "$GOLDEN" "$out/index.html"
 
-echo "== SITE_COMMERCIAL=1 with the committed placeholders"
+echo "== SITE_COMMERCIAL=1 with placeholder values"
+# A fixed all-placeholder commerce.json, so the check doesn't depend on which real values are committed.
+fixture_site "$WORK/site-placeholders" "$FIXTURES/commerce.placeholders.json"
 out="$WORK/placeholders"
-if build "$out" SITE_COMMERCIAL=1; then
+if build "$out" SITE_COMMERCIAL=1 SITE_DIR="$WORK/site-placeholders"; then
   fail "placeholder commerce.json fails the build"
 else
   pass "placeholder commerce.json fails the build"
