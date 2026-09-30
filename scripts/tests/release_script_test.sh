@@ -131,7 +131,8 @@ done < <(find "$repo/scripts" -name '*.sh' -type f; find "$fixtures/shims" "$fix
 
 # MARK: - release.sh usage
 
-make_mirror placeholder "$repo/Config/Commercial.xcconfig"
+# A fixed all-placeholder copy, so these checks don't depend on which real values are committed.
+make_mirror placeholder "$fixtures/Commercial.placeholders.xcconfig"
 placeholder="$scratch/placeholder"
 
 run "$placeholder" release.sh --

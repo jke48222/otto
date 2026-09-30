@@ -36,7 +36,9 @@ const SITE = join(ROOT, "site");
 const readJSON = (path) => JSON.parse(readFileSync(path, "utf8"));
 const completeCommerce = () => readJSON(join(FIXTURES, "commerce.complete.json"));
 const fixtureRelease = () => readJSON(join(FIXTURES, "release.json"));
-const committedCommerce = () => readJSON(join(SITE, "commerce.json"));
+// A fixed all-placeholder commerce.json, so these checks don't depend on which real values are committed.
+const PLACEHOLDER_COMMERCE = join(FIXTURES, "commerce.placeholders.json");
+const committedCommerce = () => readJSON(PLACEHOLDER_COMMERCE);
 
 const DURING_LAUNCH = new Date("2026-10-15T12:00:00Z");
 const AFTER_LAUNCH = new Date("2026-10-20T07:00:00Z");
@@ -240,7 +242,7 @@ describe("validateRelease", () => {
 
 describe("--check-commerce", () => {
   test("exits 1 on the committed placeholders, one line per field", () => {
-    const result = runCLI(["--check-commerce"]);
+    const result = runCLI(["--check-commerce", "--commerce", PLACEHOLDER_COMMERCE]);
     assert.equal(result.status, 1);
     const lines = result.stderr.trim().split("\n");
     assert.equal(lines.length, 13, result.stderr);

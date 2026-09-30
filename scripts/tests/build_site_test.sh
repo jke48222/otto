@@ -133,7 +133,7 @@ page_videos_hosted() {
   [[ -n "$refs" ]] || return 1
   ! grep -qE 'src="media/[^"]+\.(mp4|webm)"' "$1/index.html" || return 1
   while IFS= read -r ref; do
-    [[ "$ref" =~ ^https://[a-z0-9]+\.public\.blob\.vercel-storage\.com/film/[0-9]+\.[0-9]+\.[0-9]+/[a-z0-9-]+\.mp4$ ]] ||
+    [[ "$ref" =~ ^https://[a-z0-9]+\.public\.blob\.vercel-storage\.com/film/[0-9]+\.[0-9]+\.[0-9]+(-[a-z0-9]+)?/[a-z0-9-]+\.mp4$ ]] ||
       { echo "$ref is not a hosted film URL" >&2; return 1; }
   done <<< "$refs"
 }
