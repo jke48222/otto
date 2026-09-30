@@ -356,14 +356,14 @@ final class ShelfControllerTests: XCTestCase {
         let menu = try XCTUnwrap(controller.contextMenu(for: ids[2]))
         XCTAssertEqual(controller.selection, [ids[2]])
         XCTAssertEqual(menu.items.filter { !$0.isSeparatorItem }.map(\.title),
-                       ["Open", "Quick Look", "Reveal in Finder", "Copy", "Ask Otto", "Remove from Shelf"])
+                       ["Open", "Quick Look", "Reveal in Finder", "Copy", "Ask about it", "Remove from Shelf"])
 
         let anchored = try XCTUnwrap(controller.contextMenu(for: ids[2], anchor: NSView()))
         XCTAssertTrue(anchored.items.contains { $0.title == "Share…" })
 
         controller.selectAll()
         let plural = try XCTUnwrap(controller.contextMenu(for: ids[1]))
-        XCTAssertTrue(plural.items.contains { $0.title == "Ask Otto about 3" })
+        XCTAssertTrue(plural.items.contains { $0.title == "Ask about 3" })
 
         let remove = try XCTUnwrap(plural.items.first { $0.title == "Remove from Shelf" })
         let target = try XCTUnwrap(remove.target as? NSObject)

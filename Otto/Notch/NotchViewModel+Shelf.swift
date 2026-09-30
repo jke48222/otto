@@ -3,7 +3,7 @@
 //  Otto
 //
 //  Drop routing over the open notch (§4.7) and the Shelf page's hand-offs (§6.11): the left well keeps files on
-//  the Shelf without taking focus, the right well attaches them to the message, and "Ask Otto" on Shelf items
+//  the Shelf without taking focus, the right well attaches them to the message, and "Ask about" on Shelf items
 //  moves them into the composer.
 //
 
@@ -75,7 +75,7 @@ extension NotchViewModel {
 
     // MARK: - Shelf page
 
-    /// ⌘↩ / "Ask Otto" on the Shelf: the items' files go into the composer (through `shelf.onAskAbout`).
+    /// ⌘↩ / "Ask about" on the Shelf: the items' files go into the composer (through `shelf.onAskAbout`).
     func askAboutShelfItems(_ ids: Set<UUID>) {
         shelf.askAbout(ids)
     }

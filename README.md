@@ -118,11 +118,11 @@ added or run, and waits for your click or <kbd>⌘</kbd><kbd>↩</kbd>. The one 
 
 Drop files on the left half of the notch to park them on the Shelf, ready for later. Drag one into any app
 when you need it (it leaves the Shelf unless you turn on "Keep items after dragging them out"), share them,
-or select a few and ask Otto about them. The Shelf keeps a link to each file and never moves the original.
+or select a few and ask about them. The Shelf keeps a link to each file and never moves the original.
 <kbd>⌘</kbd><kbd>D</kbd> opens it.
 
 <p align="center">
-  <img src="docs/media/screens/shelf.png" width="820" alt="The Shelf under the notch with five files, two of them selected, and Ask Otto about 2 in its bar">
+  <img src="docs/media/screens/shelf.png" width="820" alt="The Shelf under the notch with five files, two of them selected, and Ask about 2 in its bar">
 </p>
 
 ### Ask out loud
@@ -174,7 +174,7 @@ turn them on, and anything that needs a macOS permission asks the first time you
 **Bring context in**
 
 - Drop or paste files, images, PDFs and documents, or attach the current browser tab.
-- **Ask about your selection.** Select text in any app and choose **Services → Ask Otto**, or turn on
+- **Ask about your selection.** Select text in any app and choose **Services → Send Selection to Otto**, or turn on
   **Offer selected text** and Otto offers it as a chip when you open the notch.
 - **Window chip.** Otto offers a picture of the window you were working in. Nothing is captured until you
   click the chip.
@@ -253,7 +253,7 @@ choose **Custom**, check **Releases** and click **Apply**.
 | **Keep it open** | Click into it or start typing. A notch opened by hovering closes when your pointer leaves; once you engage, it stays until you dismiss it. <kbd>⌘</kbd><kbd>P</kbd> pins it open while you work in another app. |
 | **Add context** | Drag files, images or links onto the notch (dragging onto the closed notch opens it), or paste with <kbd>⌘</kbd><kbd>V</kbd>. Drop on the left half to keep files on the Shelf instead. |
 | **Use the + menu** | **Attach Files…**, **Capture Screen Region**, **Paste from Clipboard**, **Attach Selection from ‹App›**, **Attach ‹App› Window**, and **Attach Current Tab** when you're in a browser. |
-| **Ask from another app** | Select text or files, then choose **Services → Ask Otto**, **Ask Otto About Files** or **Add to Otto Shelf** from the app's menu or the right-click menu. |
+| **Ask from another app** | Select text or files, then choose **Services → Send Selection to Otto**, **Send Files to Otto** or **Add to Otto Shelf** from the app's menu or the right-click menu. |
 | **Ask about a web page** | In Safari or a Chromium-based browser, Otto shows the current tab as a dashed chip. Click it to attach the page. |
 | **Send / stop** | Press <kbd>Return</kbd> or click ↑. While a reply streams, the same button stops it, and so does <kbd>⌘</kbd><kbd>.</kbd>. |
 | **Talk** | Hold your shortcut or the mic button, speak, and let go. Or click the mic, speak, and click again. |
@@ -315,7 +315,7 @@ when you're done.
 | Permission | What Otto uses it for | When you'll see it |
 | --- | --- | --- |
 | **Automation** (per app) | Reads the **title and address** of your front browser tab so Otto can offer it as a chip. With Now Playing on, sends play, pause and skip to Music or Spotify when you press those buttons. With Actions on, lets an AppleScript you approved control the apps it names. | The first time you open Otto by click or shortcut with Safari, Chrome, Arc, Brave, Edge, Vivaldi or Opera in front; the first time you press a media control; the first time an approved script targets an app. |
-| **Accessibility** | Presses <kbd>⌘</kbd><kbd>V</kbd> for you when you paste an answer into another app, and reads the text you've selected when **Offer selected text** is on. Never in the background, never in password fields. | The first time you paste an answer or turn on **Offer selected text**. **Services → Ask Otto** works without it. |
+| **Accessibility** | Presses <kbd>⌘</kbd><kbd>V</kbd> for you when you paste an answer into another app, and reads the text you've selected when **Offer selected text** is on. Never in the background, never in password fields. | The first time you paste an answer or turn on **Offer selected text**. **Services → Send Selection to Otto** works without it. |
 | **Screen & System Audio Recording** | **Capture Screen Region**, and the picture behind the window chip. Only when you click. | The first time you use either. macOS needs Otto to reopen after you turn it on, and Otto offers **Quit & Reopen Otto**. On macOS 15 and later, macOS may ask you to confirm again from time to time. |
 | **Microphone** and **Speech Recognition** | Voice mode. Otto listens only while you hold the shortcut or the mic, and turns speech into text on your Mac. | When you turn on Voice. |
 | **Calendars** | The next-meeting chip, and calendar actions. | When you turn on **Show my next event**, or the first time Claude reads or adds an event. |

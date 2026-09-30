@@ -991,7 +991,7 @@ final class SelfTest {
 
     // MARK: - v1.1: context in and out (§10.2 steps 14–18)
 
-    /// "Ask Otto" through the real Services provider, on a private pasteboard.
+    /// "Send Selection to Otto" through the real Services provider, on a private pasteboard.
     private func servicesAsk(_ vm: NotchViewModel, _ chat: ChatSession, _ controller: NotchWindowController) async {
         vm.close(.user)
         vm.newChat()

@@ -42,12 +42,12 @@ targets:
         NSRemindersFullAccessUsageDescription: "With Actions on, Otto reads your reminders when you ask about them and adds reminders you approve."
         NSRemindersUsageDescription: "With Actions on, Otto reads your reminders when you ask about them and adds reminders you approve."
         NSServices:
-          - NSMenuItem: { default: "Ask Otto" }
+          - NSMenuItem: { default: "Send Selection to Otto" }
             NSMessage: askOtto
             NSPortName: Otto
             NSSendTypes: [public.utf8-plain-text, public.rtf]
             NSRequiredContext: {}
-          - NSMenuItem: { default: "Ask Otto About Files" }
+          - NSMenuItem: { default: "Send Files to Otto" }
             NSMessage: askOttoAboutFiles
             NSPortName: Otto
             NSSendFileTypes: [public.text, public.image, com.adobe.pdf, org.openxmlformats.wordprocessingml.document, com.microsoft.word.doc, org.oasis-open.opendocument.text, com.apple.webarchive]

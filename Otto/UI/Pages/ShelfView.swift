@@ -2,7 +2,7 @@
 //  ShelfView.swift
 //  Otto
 //
-//  The Shelf page of the open notch: a five-column grid of kept files, an action bar (Ask Otto, Share,
+//  The Shelf page of the open notch: a five-column grid of kept files, an action bar (Ask about, Share,
 //  Reveal in Finder, Remove) and the empty state. SwiftUI draws the tiles; each tile's clicks, drags and
 //  context menu go through ShelfController's AppKit hit area. Page keys (arrows, Space, Return, ⌫, ⌘A, ⌘C,
 //  ⌥⌘R) are handled here while the grid has keyboard focus, and the grid takes focus only while the notch is
@@ -29,7 +29,7 @@ struct ShelfView: View {
     ///   - isEngaged: the user clicked into or typed into the notch (`vm.isEngaged`). Soft focus is not engagement:
     ///     until it is true the grid neither takes the keyboard nor acts on a key (⌫ would delete Otto's copies,
     ///     ⌘C would replace the user's clipboard).
-    ///   - onAskAbout: Ask Otto (button and ⌘↩ are the owner's); nil asks `controller` directly.
+    ///   - onAskAbout: Ask about (button and ⌘↩ are the owner's); nil asks `controller` directly.
     ///   - onFocusChange: the grid gained or lost keyboard focus.
     init(
         controller: ShelfController,

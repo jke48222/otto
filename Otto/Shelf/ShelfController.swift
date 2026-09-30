@@ -3,7 +3,7 @@
 //  Otto
 //
 //  Everything the Shelf page does with its items: selection (click, ⌘-click, ⇧-click ranges, arrow keys
-//  over the 5-column grid), open, reveal, copy, remove, share, Quick Look, paste, Ask Otto, and drags out
+//  over the 5-column grid), open, reveal, copy, remove, share, Quick Look, paste, Ask about, and drags out
 //  to other apps. It also owns the states that keep the notch open (a drag in flight, the share picker,
 //  Quick Look, the 1.5 s after a Shelf drop); the view model reads them through `onHoldsChanged`.
 //
@@ -256,7 +256,7 @@ import os
         quickLook.show(urls: urls)
     }
 
-    /// ⌘↩ / "Ask Otto": hands the resolved URLs to the view model (which skips folders and attaches files).
+    /// ⌘↩ / "Ask about": hands the resolved URLs to the view model (which skips folders and attaches files).
     func askAbout(_ ids: Set<UUID>) {
         let urls = resolvedURLs(for: ids)
         guard !urls.isEmpty else { return }
@@ -413,7 +413,7 @@ import os
             })
         }
         menu.addItem(.separator())
-        let askTitle = count > 1 ? "Ask Otto about \(count)" : "Ask Otto"
+        let askTitle = count > 1 ? "Ask about \(count)" : "Ask about it"
         menu.addItem(action(askTitle, key: "\r", modifiers: [.command]) { [weak self] in self?.askAbout(targets) })
         menu.addItem(.separator())
         menu.addItem(action("Remove from Shelf", key: "\u{8}", modifiers: []) { [weak self] in

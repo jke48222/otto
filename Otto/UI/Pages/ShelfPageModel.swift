@@ -104,9 +104,9 @@ enum ShelfPageText {
         selectedCount > 0 ? selectedCount : itemCount
     }
 
-    /// "Ask Otto", or "Ask Otto about 3".
+    /// "Ask about it", or "Ask about 3".
     static func askLabel(targetCount: Int) -> String {
-        targetCount > 1 ? "Ask Otto about \(targetCount)" : "Ask Otto"
+        targetCount > 1 ? "Ask about \(targetCount)" : "Ask about it"
     }
 
     static func shareHelp(targetCount: Int) -> String {
@@ -179,7 +179,7 @@ enum ShelfPageFocus {
     }
 }
 
-/// The two wells shown while files are dragged over the open notch: "Keep on Shelf" on the left, "Ask Otto"
+/// The two wells shown while files are dragged over the open notch: "Keep on Shelf" on the left, "Ask about it"
 /// on the right. The well under the pointer brightens; the other dims with a dashed edge.
 enum ShelfDropWell {
     /// How a well draws (context-io.md §5.1). `DropWellView` applies `opacity` to the idle well's chrome (its
@@ -202,7 +202,7 @@ enum ShelfDropWell {
                                      strokeOpacity: 0.45, strokeWidth: 1)
 
     static let shelfTitle = "Keep on Shelf"
-    static let askTitle = "Ask Otto"
+    static let askTitle = "Ask about it"
     static let askSubtitle = "Attach to your message"
     static let shelfFullSubtitle = "Shelf is full"
     static let noRoomSubtitle = "No room for more attachments"

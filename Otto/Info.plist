@@ -44,7 +44,7 @@
 			<key>NSMenuItem</key>
 			<dict>
 				<key>default</key>
-				<string>Ask Otto</string>
+				<string>Send Selection to Otto</string>
 			</dict>
 			<key>NSMessage</key>
 			<string>askOtto</string>
@@ -62,7 +62,7 @@
 			<key>NSMenuItem</key>
 			<dict>
 				<key>default</key>
-				<string>Ask Otto About Files</string>
+				<string>Send Files to Otto</string>
 			</dict>
 			<key>NSMessage</key>
 			<string>askOttoAboutFiles</string>

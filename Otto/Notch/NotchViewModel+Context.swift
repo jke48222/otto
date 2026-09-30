@@ -14,17 +14,17 @@ import os
 extension NotchViewModel: ServicesHandling {
     // MARK: - Services (§6.8, §4.7)
 
-    /// "Ask Otto": opens focused on Chat with a "Selection from ‹App›" chip; Replace can put the answer back over
+    /// "Send Selection to Otto": opens focused on Chat with a "Selection from ‹App›" chip; Replace can put the answer back over
     /// that selection. Empty text never reaches here (the service reports it); text over the limit is refused.
     func askAbout(serviceText: String, app: AppRef?) async {
         guard serviceText.contains(where: { !$0.isWhitespace && $0 != "\0" }) else { return }
         openForServices(app: app, route: .chat, focus: true)
         let snapshot = await serviceSnapshot(serviceText, app: app)
         attachSelection(snapshot)
-        Self.contextLogger.info("Ask Otto attached \(snapshot.wordCount, privacy: .public) words")
+        Self.contextLogger.info("Send Selection to Otto attached \(snapshot.wordCount, privacy: .public) words")
     }
 
-    /// "Ask Otto About Files": opens focused on Chat and attaches the files (the picker's limits apply).
+    /// "Send Files to Otto": opens focused on Chat and attaches the files (the picker's limits apply).
     func askAbout(fileURLs: [URL], app: AppRef?) {
         guard !fileURLs.isEmpty else { return }
         openForServices(app: app, route: .chat, focus: true)

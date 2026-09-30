@@ -85,7 +85,7 @@ extension NotchViewModel {
     // MARK: - Composer
 
     /// Listening → "Listening…"; approval pending → "Waiting for your OK…"; a selection chip over an empty composer →
-    /// "Ask about your selection…"; else "Ask Otto anything…".
+    /// "Ask about your selection…"; else "Ask anything…".
     var composerPlaceholder: String {
         if voice.isListening { return "Listening…" }
         if chat.pendingApproval != nil { return "Waiting for your OK…" }
@@ -93,7 +93,7 @@ extension NotchViewModel {
         if hasSelection, composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return "Ask about your selection…"
         }
-        return "Ask Otto anything…"
+        return "Ask anything…"
     }
 
     // MARK: - Regenerate and model

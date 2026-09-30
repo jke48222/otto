@@ -343,8 +343,8 @@ final class PagesComponentsTests: XCTestCase {
         XCTAssertEqual(ShelfPageText.targetCount(itemCount: 5, selectedCount: 0), 5)
         XCTAssertEqual(ShelfPageText.targetCount(itemCount: 5, selectedCount: 3), 3)
 
-        XCTAssertEqual(ShelfPageText.askLabel(targetCount: 1), "Ask Otto")
-        XCTAssertEqual(ShelfPageText.askLabel(targetCount: 3), "Ask Otto about 3")
+        XCTAssertEqual(ShelfPageText.askLabel(targetCount: 1), "Ask about it")
+        XCTAssertEqual(ShelfPageText.askLabel(targetCount: 3), "Ask about 3")
         XCTAssertEqual(ShelfPageText.shareHelp(targetCount: 1), "Share")
         XCTAssertEqual(ShelfPageText.shareHelp(targetCount: 4), "Share 4 items")
         XCTAssertEqual(ShelfPageText.removeHelp(targetCount: 1), "Remove from Shelf")

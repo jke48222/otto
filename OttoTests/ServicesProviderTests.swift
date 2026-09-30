@@ -53,7 +53,7 @@ final class ServicesProviderTests: XCTestCase {
         }
     }
 
-    // MARK: Ask Otto
+    // MARK: Send Selection to Otto
 
     func testAskOttoPassesTheTextAndTheRequestingApp() async {
         pasteboard.clearContents()
