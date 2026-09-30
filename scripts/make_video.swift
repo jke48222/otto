@@ -1008,11 +1008,13 @@ let dropFraming = 2.0
 let streamFraming = (zoom: 1.35, top: 70.0, cx: 1476.0)
 let earsFraming = (zoom: 2.5, top: 16.0)
 let reopenFraming = (zoom: 1.5, top: 20.0)
-/// Settings (settings take at 5.0 s): the first model row, prices included, ends at master y 875
-/// and the window's title bar starts at y 205. At 1.745 top 156 the row ends at 784 px, 34 px clear
-/// of the plate, the key and Keychain rows read above it, and the menu bar (y 90–154) is wholly out
-/// of frame, so no word in it is cut.
-let settingsFraming = (zoom: 1.745, top: 156.0)
+/// Settings (settings take at 5.0 s): the window runs from master y 202 (title bar) to 1284, with
+/// the last model price line (Haiku 4.5) ending at y 1051 and Response style's helper line at 1248.
+/// The frosted plate lets whatever sits under it show through, so the whole window goes above it:
+/// at 1.12 top 160 the window spans film y 29–787, 31 px clear of the 818 px plate top, with every
+/// model price at y 626 or above and Response style whole. The menu bar (y 90–154) is wholly out
+/// of frame, so no word in it is cut, and the desktop icons (x 2632–2832) stay whole on the right.
+let settingsFraming = (zoom: 1.12, top: 160.0)
 /// The armed calendar card (act take at approval-armed, 5.95 s): its lower edge sits at master
 /// y 1041 and the prompt bubble's top at y 431. At 1.6 the camera maps master pixels 1:1 to film
 /// pixels, so top 260 puts the card's edge at 781 px, 37 px above the 818 px plate top, with the
@@ -1061,9 +1063,11 @@ let storyKeys = [
     key(close2 + 0.05, streamFraming.zoom, streamFraming.top, cx: streamFraming.cx),
     key(close2 + 0.85, earsFraming.zoom, earsFraming.top),
 ]
-/// Story runs from under the title card to just after the pointer lands on the preview.
+/// Story runs from under the title card until the preview's hover brighten (Theme.Motion.hover, a
+/// 0.3 s spring) has settled after the pointer lands on it, so the frames either side of the matched
+/// cut are the same picture.
 let clipA = Clip(take: story, source: storySource, outStart: footageIn,
-                 outEnd: footageIn + (pointerOnPreview + 0.1) - (story.sceneStart + 0.05),
+                 outEnd: footageIn + (pointerOnPreview + 0.35) - (story.sceneStart + 0.05),
                  srcStart: story.sceneStart + 0.05, keys: storyKeys, collapses: storyCollapses)
 
 // Act: picks up on story's last framing (the matched cut), follows the card, then tucks away.
@@ -1088,7 +1092,9 @@ let actKeys = [
     key(actClose + 0.45, reopenFraming.zoom, reopenFraming.top),
 ]
 let clipB: Clip = {
-    let srcStart = actTake.sceneStart + 0.05
+    // Act opens on the same held picture story ends on, so it joins just before its click (keeping
+    // the click's sound, 0.18 s early, inside the clip) rather than repeating the still frames.
+    let srcStart = actClick - 0.2
     let srcEnd = actCollapses[0].start + collapseDuration + cutAfterCollapse
     return Clip(take: actTake, source: actSource, outStart: clipA.outEnd, outEnd: clipA.outEnd + (srcEnd - srcStart),
                 srcStart: srcStart, keys: actKeys, collapses: actCollapses)
@@ -1181,7 +1187,9 @@ let captions: [Caption] = [
     Caption(start: ft(actTake, approvalShown - 0.3), end: ft(actTake, actClose - 0.2), image: captionPlate("Acts with your OK", [
         [.text("It shows exactly what it will add, then waits for your click.")],
     ])),
-    Caption(start: ft(shelfTake, shelfDragStart + 0.2), end: ft(shelfTake, shelfFold - 0.05), image: captionPlate("Keeps files at hand", [
+    // Keyed 0.3 s before the drag starts, as the pointer heads for the files, so the stretch with no
+    // plate after "Acts with your OK" stays under 1.5 s.
+    Caption(start: ft(shelfTake, shelfDragStart - 0.3), end: ft(shelfTake, shelfFold - 0.05), image: captionPlate("Keeps files at hand", [
         [.text("Drop files on the left side of the notch to park them.")],
     ])),
     Caption(start: ft(shelfTake, voiceStart + 0.15), end: ft(shelfTake, shelfClose - 0.2), image: captionPlate("Ask out loud", [
