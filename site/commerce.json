@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "siteHost": "JALEN_MUST_SET_SITE_HOST",
-  "downloadsHost": "JALEN_MUST_SET_BLOB_HOST",
+  "downloadsHost": "hbf1i2zuh6iqdyiw.public.blob.vercel-storage.com",
   "seller": {
     "legalName": "JALEN_MUST_SET_LEGAL_NAME",
     "supportEmail": "JALEN_MUST_SET_SUPPORT_EMAIL",
