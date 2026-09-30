@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "version": "1.1.0",
+  "build": "2",
+  "dmgURL": "https://hbf1i2zuh6iqdyiw.public.blob.vercel-storage.com/releases/Otto-1.1.0.dmg",
+  "sha256": "ac8725b7187bd4e0a2d7779ca84770aa60fa5f10325ad9f3bce125c5d4a564af",
+  "bytes": 13658016,
+  "minimumSystemVersion": "14.0",
+  "releasedAt": "2026-09-30"
+}

@@ -1,0 +1,84 @@
+<?xml version="1.0" standalone="yes"?><!-- sparkle-sign-warning:
+IMPORTANT: This file was signed by Sparkle. Any modifications to this file requires re-signing this file with generate_appcast or sign_update! The signed signature will be embedded at the end of this file.
+--><rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+    <channel>
+        <title>Otto</title>
+        <item>
+            <title>1.1.0</title>
+            <pubDate>Wed, 30 Sep 2026 02:10:19 -0400</pubDate>
+            <link>https://ottonotch.com/</link>
+            <sparkle:version>2</sparkle:version>
+            <sparkle:shortVersionString>1.1.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <description><![CDATA[<p>The first tagged source release, and the build the signed app ships from. It includes everything in the 1.0.0 notes below, which were prepared but never tagged. Otto's source code is MIT licensed; the signed, notarized app is a one-time purchase.</p>
+<h3>Added</h3>
+<ul>
+<li><strong>Actions.</strong> With <strong>Settings → Actions</strong> on, Claude can read and add calendar events and reminders, list and run your Shortcuts, play, pause and skip in Music and Spotify, and open web links. AppleScript is a separate opt-in. Every change shows a card with exactly what will run (the full script, the event, the link) and runs only after you press <kbd>⌘</kbd><kbd>↩</kbd> on this Mac's keyboard or click, once the card has been on screen long enough to read. Reads ask once. Added events and reminders have Undo for 10 minutes. &quot;Always allow&quot; is offered for a named shortcut only. A <strong>How Otto asks</strong> setting chooses between <strong>Safer</strong> (the default) and <strong>Fewer prompts</strong>.</li>
+<li><strong>Activity log</strong> of every action Otto ran, blocked or skipped, with titles and hosts but no inputs or outputs, in <strong>Settings → Actions → Activity Log…</strong>.</li>
+<li><strong>Permissions in one place.</strong> Otto explains each macOS permission in the notch before macOS asks, folds the notch out of the way while a macOS dialog or System Settings is open, and comes back when you're done. <strong>Settings → Privacy</strong> lists every permission with its status.</li>
+<li><strong>Ask about your selection</strong> through <strong>Services → Send Selection to Otto</strong>, or an optional chip that offers the text you've selected when you open the notch. <strong>Send Files to Otto</strong> and <strong>Add to Otto Shelf</strong> are in the Services menu too.</li>
+<li><strong>Paste the answer back.</strong> <kbd>⌘</kbd><kbd>↩</kbd> pastes the last answer into the app you came from, or replaces the text you asked about; <kbd>⌥</kbd><kbd>⌘</kbd><kbd>↩</kbd> pastes plain text. Otto asks before a multi-line paste into a terminal and puts your clipboard back afterwards.</li>
+<li><strong>Window chip.</strong> Otto offers a picture of the window you were working in; nothing is captured until you click it.</li>
+<li><strong>File Shelf.</strong> Drop files on the left half of the notch to keep them, then drag them out, share them, Quick Look them or ask about them. <kbd>⌘</kbd><kbd>D</kbd>.</li>
+<li><strong>History.</strong> Conversations are saved on your Mac (30 days by default), with Recents (<kbd>⌘</kbd><kbd>Y</kbd>), search, delete with undo, a Continue chip after an idle fresh start, and your reading position kept when you come back.</li>
+<li><strong>Voice.</strong> Hold your shortcut or the mic button to talk, or click to start and stop. Speech is turned into text on your Mac; replies can be read aloud.</li>
+<li><strong>Glanceable closed notch.</strong> Ears show whether Otto is thinking, searching or writing, waiting for your OK, or waiting on System Settings, and a finished reply drops a one-line preview under the camera. Hover the preview to keep it on screen, or click it to open that answer. Notifications for replies and approvals are optional.</li>
+<li><strong>Now Playing</strong> strip and closed-notch artwork for Music and Spotify, with play, pause and skip.</li>
+<li><strong>Next-meeting chip</strong> with the time until it starts and <kbd>⌥</kbd><kbd>⌘</kbd><kbd>J</kbd> to join.</li>
+<li><strong>Cost and usage.</strong> Each reply's estimated cost on hover, and totals by day, month and model in <strong>Settings → Models</strong>.</li>
+<li><strong>Keyboard essentials.</strong> <kbd>⌘</kbd><kbd>.</kbd> stops, <kbd>⌘</kbd><kbd>R</kbd> regenerates (with versions to flip between), <kbd>↑</kbd> edits and resends your last message, <kbd>⌘</kbd><kbd>⇧</kbd><kbd>C</kbd> copies the last reply, <kbd>⌘</kbd><kbd>1</kbd> to <kbd>⌘</kbd><kbd>3</kbd> switch models, and <kbd>⌘</kbd><kbd>/</kbd> lists every shortcut.</li>
+<li><strong>Type after hovering.</strong> Rest the pointer on the open notch and type; move away and the keyboard goes back to your app.</li>
+<li><strong>Pin open</strong> (<kbd>⌘</kbd><kbd>P</kbd>) and <strong>tall reading mode</strong> (<kbd>⌘</kbd><kbd>⇧</kbd><kbd>↑</kbd>).</li>
+<li><strong>Custom global shortcut</strong>, a switch to turn off hover-to-open, and a one-time note when another notch app is running.</li>
+<li><strong>The signed app:</strong> a 14-day trial, license keys from Polar, Settings → License, and updates through Sparkle. The code also supports Gumroad keys and a Setapp build; neither is offered in 1.1.0.</li>
+<li>License checks and Sparkle compile only into the signed builds. The source build is unchanged and still uses only Apple frameworks.</li>
+</ul>
+<h3>Changed</h3>
+<ul>
+<li><strong>Settings</strong> is a tabbed window (General, Notch, Models, Context, Actions, Voice, Privacy) that opens on the Space you're on, over full-screen apps, without switching Spaces.</li>
+<li>The header shows a model menu, and the ⋮ menu adds Recent Conversations, Shelf, Regenerate, Pin Open, Tall Reading Mode, Keyboard Shortcuts and a usage summary for today and this month. The menu bar icon adds <strong>Recent Conversations…</strong> and <strong>Shelf…</strong>.</li>
+<li>Accessibility is still never needed to open Otto or chat. It's asked for only when you first paste an answer into another app or turn on <strong>Offer selected text</strong>.</li>
+<li>Only one copy of Otto runs at a time. A second copy hands over to the one already running.</li>
+</ul>
+<h3>Security</h3>
+<ul>
+<li>Approval cards accept only hardware input pressed after the card armed, counted from when the card was actually on screen. Input posted by other apps, auto-repeat and a key held down from an earlier action are ignored.</li>
+<li>AppleScript is read with a real lexer. Scripts that ask for administrator privileges, build code at run time, use raw Apple event codes or AppleScriptObjC, ask for hidden text, run browser JavaScript or hide content with invisible characters or long lines are blocked. The card lists the access a script inherits from Otto.</li>
+<li>Links open only over http and https in your default browser, and never to local network addresses, however the address is written.</li>
+<li>Web search and page reading are capped at 10 each per reply, and pause for the rest of a reply once the chat holds both private data and fresh web content.</li>
+<li>Otto's data folder refuses symlinks and folders it doesn't own, is readable only by you, keeps Spotlight out with <code>.noindex</code> folder names, and is excluded from Time Machine. Files are written with mode 0600.</li>
+<li>Notifications on the lock screen say only &quot;Tap to open Otto.&quot; A password copied from a password manager is cleared after a paste instead of being put back. Browser tab titles can no longer close the block that wraps them in the prompt.</li>
+</ul>
+<h3>Release gate</h3>
+<p>Results of the v1.1 release gate are recorded here before <code>v1.1.0</code> is tagged: one line per check, pass or fail, with the macOS version and build number it ran on.</p>
+<p>Automated checks, macOS 27.0 (26A5378j), Otto 1.1.0 (2):</p>
+<ul>
+<li>Full test suite: 1,873 tests, 0 failures, 2 opt-in tests skipped. Pass.</li>
+<li>Self-test while signed in at the Mac: 33 of 33 steps, no checks skipped. Pass.</li>
+<li>Gate H1, input provenance (Debug build, 2026-09-27): hardware click and ⌘↩ carry pid 0, the System Events ⌘↩ doesn't. Pass.</li>
+<li>Signed paid build: notarized and stapled, Gatekeeper reports &quot;Notarized Developer ID&quot;, and the disk image smoke test launches the app. Pass.</li>
+<li>Polar production and sandbox license API with real keys: activate, validate, deactivate, activate again, a fourth Mac refused, a wrong benefit refused. Pass.</li>
+<li>The app's Polar sandbox round trip (<code>OTTO_POLAR_SANDBOX_TESTS=1</code>): activate, validate, deactivate. Pass.</li>
+</ul>
+<p>Manual checks on the signed, notarized Otto 1.1.0 (2) from <code>dist/paid/Otto-1.1.0.dmg</code>, macOS 27.0 (26A5378j), run by Jalen on 2026-09-30:</p>
+<ul>
+<li>Installs from the disk image and opens from Applications. Pass.</li>
+<li>Settings → License shows &quot;Free trial: 14 days left&quot; on a fresh install. Pass.</li>
+<li>A license key activates to Licensed, and Deactivate This Mac… returns to the trial. Pass.</li>
+<li>The Calendars permission alert is fully visible and clickable above the open notch. Pass.</li>
+<li>A ⌘↩ posted by System Events doesn't approve an action card. Pass.</li>
+<li>⌘↩ held down from before a card appears doesn't approve it. Pass.</li>
+<li>⌘↩ on an armed card adds the event to Calendar, and Undo removes it. Pass.</li>
+<li>System Settings opened from Otto's Settings comes up above it, clear of the notch. Pass.</li>
+<li>Typing with the pointer parked on the notch stays in the editor. Pass.</li>
+<li>Hover-open typing lands in Otto, and moving away returns the caret to the editor. Pass.</li>
+</ul>
+<p>The remaining release-gate checks in docs/RELEASING.md (voice, Services, the window chip, the Shelf and Spotlight, notifications, other notch apps) were not run by hand for 1.1.0; the self-test and unit tests cover their logic.</p>
+]]></description>
+            <enclosure url="https://hbf1i2zuh6iqdyiw.public.blob.vercel-storage.com/releases/Otto-1.1.0.dmg" length="13658016" type="application/octet-stream" sparkle:edSignature="HPynP2xg8J2PSUMP11CSZ9Fhrar8poTFRb+wcpiuybGeWsSVegPXsR6AT/bgRwgEE3VdQdV0j0PAhyFV3/MRAA=="></enclosure>
+        </item>
+    </channel>
+</rss><!-- sparkle-signatures:
+edSignature: dOC8pQiNk6LvipxIV+vs0MTYBYNH+3WtPklSJwUAx3O5ZtDoPFvTtI1fz0yeSu/gZY4QN7nNtIdcwo9LKo+sBw==
+length: 10518
+-->
