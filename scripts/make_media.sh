@@ -4,20 +4,23 @@
 #
 #   scripts/make_media.sh                  # stills + raw footage
 #   scripts/make_media.sh --stills-only
-#   scripts/make_media.sh --footage-only [--scenes "story hero settings"]
+#   scripts/make_media.sh --footage-only [--scenes "story act shelf-voice settings hero"]
 #   scripts/make_media.sh --raw-dir /path/to/raw
 #
 # Stills (rendered off screen, no permissions needed) go straight into docs/media:
-#   docs/media/screens/{ask,context,answer,glance,settings}.png   2080×1300 RGB, quantized (≤ 700 KB)
-#   docs/media/social-preview.png                                1280×640 RGB
+#   docs/media/screens/{ask,context,answer,actions,glance,settings,shelf,voice,recents}.png
+#                                                                2080×1300 RGB, quantized (≤ 700 KB)
+#   docs/media/social-preview.png                                1280×640 RGB (< 1 MB)
 #   docs/media/icon.png                                          512×512
 #   <raw>/poster-stage.png                                       3072×1728, the poster's plate (make_video.sh)
 #
-# The screens are squeezed with pngquant + oxipng when installed (brew install pngquant oxipng).
+# The screens are squeezed with pngquant + oxipng when installed (brew install pngquant oxipng), and
+# the run fails if a screen ends up over 700 KB or the social preview over 1 MB.
 #
 # Raw footage goes to --raw-dir (default: build/media-raw), one clip per scene. The film needs
-# story, hero and settings (the default); closed, hover-open, context, screenshot, draft and glance
-# are extra takes. Footage is recorded from a Release build, which keeps every frame on time:
+# story, act, shelf-voice and settings. The README loop needs hero. The default records all five.
+# Closed, hover-open, context, screenshot, draft and glance are extra takes. Footage is recorded
+# from a Release build, which keeps every frame on time:
 #   <scene>.mov        master, 3072×1728 (the 1536×864 pt stage at 2×), 60 fps CFR, H.264
 #   <scene>.json       timeline sidecar: scene start + key moments in movie time
 #   <scene>-1080p.mp4  1920×1080 60 fps H.264 (yuv420p, BT.709, +faststart) proxy for editing
@@ -36,7 +39,7 @@ RELEASE_BINARY="$ROOT/build/Build/Products/Release/Otto.app/Contents/MacOS/Otto"
 RECORDER="$ROOT/build/record_promo"
 MEDIA="$ROOT/docs/media"
 RAW="$ROOT/build/media-raw"
-SCENES="story hero settings"
+SCENES="story act shelf-voice settings hero"
 DO_STILLS=1
 DO_FOOTAGE=1
 
@@ -46,7 +49,7 @@ while [[ $# -gt 0 ]]; do
     --footage-only) DO_STILLS=0 ;;
     --raw-dir) RAW="$2"; shift ;;
     --scenes) SCENES="$2"; shift ;;
-    -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,33p' "$0"; exit 0 ;;
     *) echo "error: unknown option $1" >&2; exit 1 ;;
   esac
   shift
@@ -68,6 +71,20 @@ if [[ "$DO_STILLS" == "1" ]]; then
   if command -v oxipng >/dev/null 2>&1; then
     oxipng --quiet -o 4 --strip safe "$STAGING"/screens/*.png "$STAGING/social-preview.png"
   fi
+  over=0
+  for png in "$STAGING"/screens/*.png; do
+    bytes=$(stat -f %z "$png")
+    if (( bytes > 700 * 1024 )); then
+      echo "error: $(basename "$png") is $((bytes / 1024)) KB, over the 700 KB budget" >&2
+      over=1
+    fi
+  done
+  bytes=$(stat -f %z "$STAGING/social-preview.png")
+  if (( bytes >= 1024 * 1024 )); then
+    echo "error: social-preview.png is $((bytes / 1024)) KB, over the 1 MB budget" >&2
+    over=1
+  fi
+  [[ "$over" == "0" ]] || exit 1
   cp "$STAGING"/screens/*.png "$MEDIA/screens/"
   cp "$STAGING/social-preview.png" "$STAGING/icon.png" "$MEDIA/"
   mkdir -p "$RAW"
