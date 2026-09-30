@@ -107,8 +107,11 @@ sponsors_only_add_sponsor_lines() {
 echo "== SITE_COMMERCIAL=0 SITE_SPONSORS=0, no node on PATH"
 out="$WORK/flag0"
 check "flag-0 build succeeds without node" build "$out" SITE_COMMERCIAL=0 SITE_SPONSORS=0 PATH="$NO_NODE_BIN"
-check "flag-0 output holds exactly index.html, styles.css, script.js" \
-  test "$(top_files "$out")" == "$(printf 'index.html\nscript.js\nstyles.css')"
+# The update feed ships whenever site/appcast.xml exists, whatever the flag: sold copies keep updating.
+expected_flag0="$(printf 'index.html\nscript.js\nstyles.css')"
+[[ -f "$ROOT/site/appcast.xml" ]] && expected_flag0="$(printf 'appcast.xml\nindex.html\nscript.js\nstyles.css')"
+check "flag-0 output holds exactly index.html, styles.css, script.js (and appcast.xml once published)" \
+  test "$(top_files "$out")" == "$expected_flag0"
 check "flag-0 media/ is docs/media/" same_media "$out"
 check "flag-0 index.html is byte-identical to the golden file" cmp -s "$GOLDEN" "$out/index.html"
 check "flag-0 pages keep no block markers" no_markers "$out"
