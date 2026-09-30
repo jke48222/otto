@@ -17,6 +17,8 @@
 #   docs/media/icon.png                       app icon for the title/end cards and the poster
 #
 # Outputs:
+#   The three .mp4 files stay out of git (.gitignore); scripts/upload_film.sh <version> puts them in the
+#   downloads Blob store, and the README and site link to film/<version>/ there.
 #   docs/media/otto-promo.mp4         1920×1080, ~52 s (the cut follows the takes' marks), 30 fps CFR,
 #                                     H.264 High yuv420p BT.709, AAC 48 kHz stereo at -16 LUFS,
 #                                     +faststart, ≤ 25 MB

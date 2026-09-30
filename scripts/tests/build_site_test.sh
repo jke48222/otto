@@ -72,7 +72,7 @@ fixture_site() {
 # Lists OUT's files outside media/, one per line, sorted.
 top_files() { (cd "$1" && find . -type f ! -path './media/*' | sed 's#^\./##' | sort); }
 
-same_media() { diff -r "$ROOT/docs/media" "$1/media" > /dev/null; }
+same_media() { diff -r -x '*.mp4' "$ROOT/docs/media" "$1/media" > /dev/null && [[ -z "$(find "$1/media" -name '*.mp4')" ]]; }
 no_markers() { ! grep -qE '<!-- [a-z]+:(begin|end) -->' "$1"/*.html; }
 deny_grep_empty() { [[ -z "$(grep -rIiE "$DENY" "$1"/*.html "$1"/*.css "$1"/*.js)" ]]; }
 log_has() { grep -qF -- "$2" "$1.log"; }
@@ -124,24 +124,22 @@ video_waits_for_script() {
   tag="$(video_tag "$1")" || return 1
   ! grep -qE '[[:space:]]autoplay([[:space:]=>]|$)' <<< "$tag" && grep -qF 'preload="none"' <<< "$tag"
 }
-video_has_narrow_source() { grep -qE '<source src="media/[^"]+\.mp4" type="video/mp4" media="\(max-width: [0-9]+px\)">' "$1/index.html"; }
-# Every video the page references is at most 8 MB and, where ffprobe exists, has no audio track.
-page_videos_light_and_silent() {
-  local ref size refs
-  refs="$(grep -oE 'media/[A-Za-z0-9_./-]+\.(mp4|webm)' "$1/index.html" | sort -u)"
+video_has_narrow_source() { grep -qE '<source src="https://[a-z0-9]+\.public\.blob\.vercel-storage\.com/film/[^"]+\.mp4" type="video/mp4" media="\(max-width: [0-9]+px\)">' "$1/index.html"; }
+# Every video the page plays comes from the downloads Blob store under film/<version>/, and none from media/.
+# Their size and silence are checked before upload (scripts/upload_film.sh), since the files aren't in git.
+page_videos_hosted() {
+  local refs
+  refs="$(grep -oE '<source src="[^"]+\.(mp4|webm)"' "$1/index.html" | sed -E 's/<source src="([^"]+)"/\1/' | sort -u)"
   [[ -n "$refs" ]] || return 1
+  ! grep -qE 'src="media/[^"]+\.(mp4|webm)"' "$1/index.html" || return 1
   while IFS= read -r ref; do
-    size=$(stat -f %z "$1/$ref" 2>/dev/null || stat -c %s "$1/$ref") || return 1
-    (( size <= 8000000 )) || { echo "$ref is $size bytes" >&2; return 1; }
-    if command -v ffprobe >/dev/null 2>&1; then
-      [[ -z "$(ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 "$1/$ref")" ]] ||
-        { echo "$ref has an audio track" >&2; return 1; }
-    fi
+    [[ "$ref" =~ ^https://[a-z0-9]+\.public\.blob\.vercel-storage\.com/film/[0-9]+\.[0-9]+\.[0-9]+/[a-z0-9-]+\.mp4$ ]] ||
+      { echo "$ref is not a hosted film URL" >&2; return 1; }
   done <<< "$refs"
 }
 check "the promo video waits for script.js and preloads nothing" video_waits_for_script "$out"
 check "the promo video offers narrow screens a lighter source" video_has_narrow_source "$out"
-check "every video the page plays is silent and at most 8 MB" page_videos_light_and_silent "$out"
+check "every video the page plays comes from the downloads store" page_videos_hosted "$out"
 
 echo "== defaults"
 out="$WORK/defaults"

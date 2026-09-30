@@ -134,6 +134,9 @@ if [[ -f "$SITE_DIR/appcast.xml" ]]; then
 fi
 
 cp -R "$ROOT/docs/media/." "$OUT/media/"
+# The film and its web cuts live in the downloads Blob store (scripts/upload_film.sh), never in git or the
+# site; drop any local copies make_video.sh left in docs/media.
+find "$OUT/media" -name '*.mp4' -delete
 find "$OUT" -name .DS_Store -delete
 
 # Fill in the absolute URLs. sed -i.bak works with both BSD (macOS) and GNU (Vercel) sed.

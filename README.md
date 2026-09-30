@@ -21,7 +21,7 @@
   &nbsp;·&nbsp;
   <a href="https://github.com/jke48222/otto/subscription"><strong>Signed app coming soon: watch releases</strong></a>
   &nbsp;·&nbsp;
-  <a href="docs/media/otto-promo.mp4">Watch the film</a>
+  <a href="https://hbf1i2zuh6iqdyiw.public.blob.vercel-storage.com/film/1.1.0/otto-promo.mp4">Watch the film</a>
 </p>
 
 <p align="center">
@@ -29,7 +29,7 @@
 </p>
 
 <p align="center">
-  <a href="docs/media/otto-promo.mp4">
+  <a href="https://hbf1i2zuh6iqdyiw.public.blob.vercel-storage.com/film/1.1.0/otto-promo.mp4">
     <img src="docs/media/otto-hero.gif" width="880" alt="Otto opening from the MacBook notch, answering with web sources, then tucking away and previewing the reply under the camera">
   </a>
   <br>

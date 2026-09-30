@@ -27,6 +27,9 @@ Config/Local.xcconfig
 # Release output (scripts/release.sh)
 dist/
 
+# The promo film and its web cuts: scripts/upload_film.sh puts them in the downloads Blob store
+docs/media/*.mp4
+
 # Build and scratch output (website build for Vercel, media pipeline, Python helpers, test results)
 _site/
 *.xcresult
