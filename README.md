@@ -116,9 +116,10 @@ added or run, and waits for your click or <kbd>⌘</kbd><kbd>↩</kbd>. The one 
 
 ### Keeps files at hand
 
-Drop files on the left half of the notch to park them on the Shelf, where they stay until you remove them.
-Drag them out into any app, share them, or select a few and ask Otto about them. The Shelf keeps a link to
-each file and never moves the original. <kbd>⌘</kbd><kbd>D</kbd> opens it.
+Drop files on the left half of the notch to park them on the Shelf, ready for later. Drag one into any app
+when you need it (it leaves the Shelf unless you turn on "Keep items after dragging them out"), share them,
+or select a few and ask Otto about them. The Shelf keeps a link to each file and never moves the original.
+<kbd>⌘</kbd><kbd>D</kbd> opens it.
 
 <p align="center">
   <img src="docs/media/screens/shelf.png" width="820" alt="The Shelf under the notch with five files, two of them selected, and Ask Otto about 2 in its bar">
@@ -141,7 +142,7 @@ grouped by day and searchable. Come back after 15 minutes away and Otto starts a
 continue the last one. Reopen a chat and you're back where you were reading.
 
 <p align="center">
-  <img src="docs/media/screens/recents.png" width="820" alt="Recents under the notch: six past conversations grouped by day, with a search field">
+  <img src="docs/media/screens/recents.png" width="820" alt="Recents under the notch: five past conversations grouped by day, with a search field">
 </p>
 
 ### Your key, your Mac
