@@ -12,7 +12,7 @@ body:
     attributes:
       label: What are you trying to do?
       description: Describe the problem or moment where Otto could help. The "why" matters more than the "how".
-      placeholder: When I'm reading a long email, I want to ask Otto about just the paragraph I selected…
+      placeholder: When I'm reading a long email, I want to ask about just the paragraph I selected…
     validations:
       required: true
   - type: textarea

@@ -25,9 +25,9 @@ MIT licensed; the signed, notarized app will be a one-time purchase.
 - **Permissions in one place.** Otto explains each macOS permission in the notch before macOS asks, folds
   the notch out of the way while a macOS dialog or System Settings is open, and comes back when you're done.
   **Settings → Privacy** lists every permission with its status.
-- **Ask about your selection** through **Services → Ask Otto**, or an optional chip that offers the text
-  you've selected when you open the notch. **Ask Otto About Files** and **Add to Otto Shelf** are in the
-  Services menu too.
+- **Ask about your selection** through **Services → Send Selection to Otto**, or an optional chip that offers
+  the text you've selected when you open the notch. **Send Files to Otto** and **Add to Otto Shelf** are in
+  the Services menu too.
 - **Paste the answer back.** <kbd>⌘</kbd><kbd>↩</kbd> pastes the last answer into the app you came from, or
   replaces the text you asked about; <kbd>⌥</kbd><kbd>⌘</kbd><kbd>↩</kbd> pastes plain text. Otto asks
   before a multi-line paste into a terminal and puts your clipboard back afterwards.

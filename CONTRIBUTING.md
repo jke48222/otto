@@ -52,9 +52,9 @@ that is macOS, not a bug in Otto.
 
 Never commit `Config/Local.xcconfig` or anything containing a team ID, certificate or API key.
 
-**Services.** Otto adds three items to the Services menu (**Ask Otto**, **Ask Otto About Files**, **Add to
-Otto Shelf**). macOS only picks up a new or changed Services entry after it rescans. For a build that isn't in
-/Applications, run:
+**Services.** Otto adds three items to the Services menu (**Send Selection to Otto**, **Send Files to Otto**,
+**Add to Otto Shelf**). macOS only picks up a new or changed Services entry after it rescans. For a build that
+isn't in /Applications, run:
 
 ```sh
 /System/Library/CoreServices/pbs -update

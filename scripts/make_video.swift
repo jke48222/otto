@@ -943,7 +943,7 @@ func withAlpha(_ image: CIImage, _ alpha: Double) -> CIImage {
 //
 //  • story: an establishing beat on the whole display → hover, Otto springs open (the camera holds
 //    still for it) and tucks away as the pointer leaves → three files are dragged onto the notch, the
-//    split wells show and the right "Ask Otto" well takes them → the open tab is clicked in and the
+//    split wells show and the right "Ask about it" well takes them → the open tab is clicked in and the
 //    question sent → thinking, a web search with sources, the answer streams → tucked away mid-answer
 //    (the orb and writing glyph carry on) → the reply's first line drops under the camera and the
 //    pointer rests on it, so the preview holds.

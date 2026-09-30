@@ -586,7 +586,7 @@ NotchRootView layout: the view fills the fixed window; the notch shape is pinned
      truncation `.middle`), hover-revealed remove button (×) (always visible for the most recently added chip, like the
      reference). Suggested tab chip: dashed 1 px stroke, 55 % opacity, leading "+", click → accept, the remove button →
      dismiss. Pending loads: shimmering placeholder chip.
-  4. Composer well (clay, corner 20, min height 50): multi-line `TextField("Ask Otto anything…", text:,
+  4. Composer well (clay, corner 20, min height 50): multi-line `TextField("Ask anything…", text:,
      axis: .vertical)`, `.textFieldStyle(.plain)`, 15 pt, lineLimit 1...6, `.focused` bound to a
      `@FocusState` that follows `vm.focusRequest`; `.onSubmit { vm.send() }`; `.onExitCommand { vm.close() }`.
      Trailing: `+` clay circle `Menu` (Attach Files…, Capture Screen Region, Paste from Clipboard,

@@ -16,8 +16,9 @@ Otto needs macOS 14 Sonoma or later and your own Anthropic API key.
 
 ## Buy a license
 
-Open **Settings → License → Buy a License…** in Otto, or the Buy link on Otto's site (`brew home --cask otto`
-opens it). A license is a one-time purchase for up to 3 Macs and includes every 1.x update.
+Open **Settings → License → Buy a License…** in Otto, or the Buy link on Otto's site
+(`brew home --cask jke48222/tap/otto` opens it). A license is a one-time purchase for up to 3 Macs and
+includes every 1.x update.
 
 ## Updates
 
@@ -31,8 +32,8 @@ brew upgrade --cask --greedy otto
 ## Uninstall
 
 ```sh
-brew uninstall --cask otto          # removes Otto.app
-brew uninstall --zap --cask otto    # also removes Otto's settings, history and caches
+brew uninstall --cask jke48222/tap/otto          # removes Otto.app
+brew uninstall --zap --cask jke48222/tap/otto    # also removes Otto's settings, history and caches
 ```
 
 Neither command touches the Keychain. Otto keeps its license and trial dates there, in items that Keychain

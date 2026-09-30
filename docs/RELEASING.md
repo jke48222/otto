@@ -650,7 +650,7 @@ With the notch open at its full height, and again in tall reading mode (<kbd>⌘
 
 | Check | Pass / fail | macOS build |
 | --- | --- | --- |
-| Select text in Notes → **Services → Ask Otto** → **Replace selection** (<kbd>⌘</kbd><kbd>↩</kbd>) replaces it in Notes. | | |
+| Select text in Notes → **Services → Send Selection to Otto** → **Replace selection** (<kbd>⌘</kbd><kbd>↩</kbd>) replaces it in Notes. | | |
 | Pasting a multi-line answer into Terminal asks first. | | |
 | An answer containing `ESC[201~` pastes as plain text, with the escape stripped. | | |
 | With the Dvorak layout active, the paste lands correctly. | | |
