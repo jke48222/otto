@@ -142,7 +142,7 @@ enum PromoContent {
 
         Two other design writers make the same case, so it's close to consensus.
         """,
-        tailPause: 0.9
+        tailPause: 0.6
     )
 
     /// The promo film's exchange: three dropped files and the open tab, one question about all of it.
@@ -174,7 +174,7 @@ enum PromoContent {
 
         Then take the article's advice: one digest to the team on launch day, not a steady drip.
         """,
-        pace: 1.4,
+        pace: 1.25,
         tailPause: 0.7
     )
 
@@ -239,14 +239,117 @@ enum PromoContent {
         leadPause: 0.4
     )
 
+    /// The voice beat's ask: a team update built from what the film has settled (the fix, Sam's review
+    /// tomorrow, the invoice). Plain `end_turn`, and no demo client phrase matches it.
+    static let launchUpdate = PromoConversation(
+        prompt: "Write a quick launch update for the team",
+        thinking: "A short update from what's settled: the fix, Sam's review tomorrow and the invoice.",
+        activities: [],
+        answer: """
+        Here's one you can paste:
+
+        **We're on track for Friday.** The sign-up fix ships with the launch, Sam reviews the release notes tomorrow at 10, and invoice #1042 gets paid Friday.
+
+        Thanks, everyone.
+        """,
+        pace: 1.1,
+        leadPause: 0.4
+    )
+
     /// Conversations that end in `end_turn` on their first response.
-    static let all = [summarize, friday, screenshot, draft]
+    static let all = [summarize, friday, screenshot, draft, launchUpdate]
     /// Conversations whose first response stops for a client tool call.
     static let actionTurns = [schedule]
 
     static func conversation(forPrompt prompt: String) -> PromoConversation {
         let normalized = prompt.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return (all + actionTurns).first { $0.prompt.lowercased() == normalized } ?? summarize
+    }
+
+    // MARK: Voice
+
+    /// What the scripted recognizer "hears" for `launchUpdate`: cumulative partials a word at a time,
+    /// a step every 0.14 s (about 1.8 s in all), with level-only steps between words so the waveform
+    /// keeps moving. The whole prompt is 40 characters, so the closed pill never head-truncates it.
+    static let voiceScript: [(delay: Duration, text: String, level: Float)] = {
+        let words = launchUpdate.prompt.split(separator: " ").map(String.init)
+        let wordLevels: [Float] = [0.55, 0.7, 0.45, 0.8, 0.6, 0.4, 0.5, 0.75]
+        let breathLevels: [Float] = [0.3, 0.42, 0.35, 0.5, 0.32]
+        var steps: [(delay: Duration, text: String, level: Float)] = []
+        var heard = ""
+        for (index, word) in words.enumerated() {
+            heard = heard.isEmpty ? word : heard + " " + word
+            steps.append((.milliseconds(140), heard, wordLevels[index % wordLevels.count]))
+            // A level-only step after most words: the same text, a softer level.
+            if index % 3 != 2, index < words.count - 1 {
+                steps.append((.milliseconds(140), heard, breathLevels[index % breathLevels.count]))
+            }
+        }
+        return steps
+    }()
+
+    // MARK: Fixture files
+
+    /// The five desktop files as real files (the Shelf needs files on disk): the names the desktop icons
+    /// show, with small made-up contents. The two images are only a PNG signature, as the snapshot
+    /// fixtures do; `PromoShelfThumbnailer` paints every tile, so their bytes are never rendered.
+    static let desktopFixtures: [(name: String, contents: Data)] = [
+        ("launch-plan.md", Data("# Launch plan\n\n- Landing page: final\n- Release notes: review (Sam)\n".utf8)),
+        ("screenshot.png", Data([0x89, 0x50, 0x4E, 0x47])),
+        ("invoice.pdf", Data("%PDF-1.4\n%promo\n".utf8)),
+        ("release-notes.md", Data("# Release notes\n\n- Sign-up works with pasted addresses\n- Calmer notifications\n".utf8)),
+        ("hero-draft.png", Data([0x89, 0x50, 0x4E, 0x47])),
+    ]
+
+    /// The two files the shelf-voice take parks on the Shelf (the desktop's last two icons).
+    static var shelfFixtures: [(name: String, contents: Data)] { Array(desktopFixtures.suffix(2)) }
+
+    /// Writes `fixtures` into `directory` and returns their URLs, in order.
+    static func writeFixtures(_ fixtures: [(name: String, contents: Data)], to directory: URL) throws -> [URL] {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return try fixtures.map { fixture in
+            let url = directory.appendingPathComponent(fixture.name)
+            try fixture.contents.write(to: url, options: .atomic)
+            return url
+        }
+    }
+
+    // MARK: Recents
+
+    /// Six past conversations from the film's world (recents.png), across Today, Yesterday and the
+    /// Previous 7 Days relative to `now`. The first is the current conversation.
+    static func recentSummaries(currentID: UUID, now: Date) -> [ConversationSummary] {
+        let rows: [(title: String, preview: String, question: String, hoursAgo: Double, messages: Int)] = [
+            ("What to fix before Friday", "Three things stand between you and a calm Friday launch.",
+             friday.prompt, 0.2, 2),
+            ("Summarize On Calm Software", "Interruptions are the real cost.",
+             summarize.prompt, 1.5, 2),
+            ("Why the sign-up button stays disabled", "The email field keeps a trailing space.",
+             "Why does Create Account stay disabled?", 20, 4),
+            ("Team update for launch day", "Launch is on track for Friday.",
+             "Draft a friendly update for the team", 26, 2),
+            ("Ideas for the hero image", "A calmer palette and more room for the headline.",
+             "How could the hero image feel calmer?", 72, 6),
+            ("Invoice #1042 questions", "It's due Friday, the same day you ship.",
+             "When is invoice #1042 due?", 120, 2),
+        ]
+        return rows.enumerated().map { index, row in
+            let updated = now.addingTimeInterval(-row.hoursAgo * 3_600)
+            return ConversationSummary(
+                id: index == 0 ? currentID : UUID(),
+                title: row.title,
+                preview: row.preview,
+                searchText: row.question + "\n" + row.preview,
+                createdAt: updated.addingTimeInterval(-600),
+                updatedAt: updated,
+                messageCount: row.messages,
+                attachmentCount: 0,
+                model: ModelOption.opus5.rawValue,
+                blobs: [:],
+                fileBytes: 4_096,
+                fileModifiedAt: updated
+            )
+        }
     }
 
     // MARK: Attachments
