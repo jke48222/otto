@@ -113,6 +113,24 @@ Automated checks, macOS 27.0 (26A5378j), Otto 1.1.0 (2):
 - The app's Polar sandbox round trip (`OTTO_POLAR_SANDBOX_TESTS=1`): activate, validate, deactivate.
   Pass.
 
+Manual checks on the signed, notarized Otto 1.1.0 (2) from `dist/paid/Otto-1.1.0.dmg`, macOS 27.0
+(26A5378j), run by Jalen on 2026-09-30:
+
+- Installs from the disk image and opens from Applications. Pass.
+- Settings → License shows "Free trial: 14 days left" on a fresh install. Pass.
+- A license key activates to Licensed, and Deactivate This Mac… returns to the trial. Pass.
+- The Calendars permission alert is fully visible and clickable above the open notch. Pass.
+- A ⌘↩ posted by System Events doesn't approve an action card. Pass.
+- ⌘↩ held down from before a card appears doesn't approve it. Pass.
+- ⌘↩ on an armed card adds the event to Calendar, and Undo removes it. Pass.
+- System Settings opened from Otto's Settings comes up above it, clear of the notch. Pass.
+- Typing with the pointer parked on the notch stays in the editor. Pass.
+- Hover-open typing lands in Otto, and moving away returns the caret to the editor. Pass.
+
+The remaining release-gate checks in docs/RELEASING.md (voice, Services, the window chip, the Shelf and
+Spotlight, notifications, other notch apps) were not run by hand for 1.1.0; the self-test and unit tests
+cover their logic.
+
 ## 1.0.0 (prepared, never tagged)
 
 ### Added
