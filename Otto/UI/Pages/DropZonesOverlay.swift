@@ -3,7 +3,7 @@
 //  Otto
 //
 //  Split drop wells over the open notch while files or images are dragged in: "Keep on Shelf" on the left,
-//  "Ask Otto" on the right. The well under the pointer lifts to the dock cards' clay and top-lit ring; the other
+//  "Ask about it" on the right. The well under the pointer lifts to the dock cards' clay and top-lit ring; the other
 //  sits back as a recessed well of the same clay, edged with the dimmed dashed ring of context-io.md §5.1. The two
 //  crossfade (text never dims with opacity); each subtitle says how the drop will land, in the error color when
 //  the shelf or the attachments are full. Drawing only: the drop delegate on the notch shape decides the zone and

@@ -72,7 +72,7 @@ struct SettingsContextPane: View {
             PermissionRow(permission: .accessibility)
             PermissionRow(permission: .screenRecording)
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                labeled("Services", "Ask Otto from any app: select text or files, then choose Services → Ask Otto.")
+                labeled("Services", "From any app, select text or files, then choose Services → Send Selection to Otto or Send Files to Otto.")
                 Spacer(minLength: 8)
                 if let url = SettingsLinks.keyboardSettings {
                     Button("Keyboard Shortcuts…") { openExternal(url) }

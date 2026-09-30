@@ -4,7 +4,7 @@
 //
 //  Drop routing over the notch shape (§4.7). While a drag is over the shape it keeps the view model's
 //  drop session current: how many items, whether they can go on the Shelf, and which well the pointer is
-//  over (left "Keep on Shelf", right "Ask Otto"). The drop itself goes to `NotchViewModel.performDrop`.
+//  over (left "Keep on Shelf", right "Ask about it"). The drop itself goes to `NotchViewModel.performDrop`.
 //  Otto's own drags out of the Shelf are refused so a tile can't land back on the notch it came from.
 //
 

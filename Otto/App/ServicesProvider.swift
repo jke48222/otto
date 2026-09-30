@@ -2,7 +2,7 @@
 //  ServicesProvider.swift
 //  Otto
 //
-//  The macOS Services entry points ("Ask Otto", "Ask Otto About Files", "Add to Otto Shelf"). Each handler
+//  The macOS Services entry points ("Send Selection to Otto", "Send Files to Otto", "Add to Otto Shelf"). Each handler
 //  reads the pasteboard it is handed, reports empty input through the service's error, and passes the rest
 //  to the view model without waiting on it.
 //
@@ -34,11 +34,11 @@ import os
     func askOtto(_ pasteboard: NSPasteboard, userData: String?, error: AutoreleasingUnsafeMutablePointer<NSString?>) {
         guard let text = Self.text(from: pasteboard), text.contains(where: { !$0.isWhitespace && $0 != "\0" }) else {
             error.pointee = Self.noTextError as NSString
-            Self.logger.info("Ask Otto received no text")
+            Self.logger.info("Send Selection to Otto received no text")
             return
         }
         let app = frontmostApp()
-        Self.logger.info("Ask Otto received \(text.count, privacy: .public) characters")
+        Self.logger.info("Send Selection to Otto received \(text.count, privacy: .public) characters")
         Task { [handler] in await handler.askAbout(serviceText: text, app: app) }
     }
 
@@ -52,7 +52,7 @@ import os
             return
         }
         let app = frontmostApp()
-        Self.logger.info("Ask Otto About Files received \(urls.count, privacy: .public) files")
+        Self.logger.info("Send Files to Otto received \(urls.count, privacy: .public) files")
         Task { [handler] in handler.askAbout(fileURLs: urls, app: app) }
     }
 
