@@ -218,6 +218,11 @@ struct NotchDebugSeed {
     private(set) var voiceReplyHold = false
     /// The app the user was in when the notch opened (never Otto): the paste target and the chip names.
     @ObservationIgnored private(set) var openContextApp: AppRef?
+    #if DEBUG || OTTO_TOOLS
+    /// Debug seam (the promo stage): the app `open()` records in place of the real frontmost app, so staged
+    /// footage never names or shows an app from the machine it was recorded on. nil: the real one, as shipped.
+    @ObservationIgnored var debugFrontmostApp: AppRef?
+    #endif
     private(set) var dropSession: DropSession?
     /// User messages that were asked by voice ("When I ask by voice" spoken replies).
     @ObservationIgnored var voiceTurnUserMessageIDs: Set<UUID> = []
@@ -387,7 +392,11 @@ struct NotchDebugSeed {
             let hasDraft = !composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 || !attachments.isEmpty || pendingAttachmentLoads > 0
             history.startFreshIfIdle(hasUnreadReply: hasUnreadReply, hasDraft: hasDraft)
+            #if DEBUG || OTTO_TOOLS
+            openContextApp = debugFrontmostApp ?? currentExternalApp.flatMap(AppRef.init)
+            #else
             openContextApp = currentExternalApp.flatMap(AppRef.init)
+            #endif
             openSerial += 1
             engagedThisOpen = false
         }

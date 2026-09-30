@@ -78,8 +78,8 @@ final class MockToolScriptTests: XCTestCase {
     }
 
     func testNoSelfTestOrPromoPromptTriggersATool() {
-        let prompts = selfTestPrompts + PromoContent.all.map(\.prompt)
-        XCTAssertGreaterThanOrEqual(prompts.count, 9)
+        let prompts = selfTestPrompts + (PromoContent.all + PromoContent.actionTurns).map(\.prompt)
+        XCTAssertGreaterThanOrEqual(prompts.count, 10)
         for prompt in prompts {
             XCTAssertNil(MockLLMClient.scriptedTool(forPrompt: prompt), prompt)
             let script = events(of: request([typed(prompt)]))
