@@ -17,19 +17,21 @@
 </p>
 
 <p align="center">
+  <a href="https://ottonotch.com/download"><strong>Download the 14-day trial</strong></a>
+  &nbsp;·&nbsp;
+  <a href="https://ottonotch.com/buy"><strong>Buy Otto, $19</strong></a>
+  &nbsp;·&nbsp;
   <a href="#build-from-source"><strong>Build from source (free)</strong></a>
   &nbsp;·&nbsp;
-  <a href="https://github.com/jke48222/otto/subscription"><strong>Signed app coming soon: watch releases</strong></a>
-  &nbsp;·&nbsp;
-  <a href="https://hbf1i2zuh6iqdyiw.public.blob.vercel-storage.com/film/1.1.0/otto-promo.mp4">Watch the film</a>
+  <a href="https://hbf1i2zuh6iqdyiw.public.blob.vercel-storage.com/film/1.1.0-launch/otto-promo.mp4">Watch the film</a>
 </p>
 
 <p align="center">
-  <sub>Source code free under the MIT license · signed app coming soon as a one-time purchase · macOS 14 Sonoma or later · uses the Claude API (bring your own Anthropic key)</sub>
+  <sub>Signed app $19 once, with a 14-day free trial · source code free under the MIT license · macOS 14 Sonoma or later · uses the Claude API (bring your own Anthropic key)</sub>
 </p>
 
 <p align="center">
-  <a href="https://hbf1i2zuh6iqdyiw.public.blob.vercel-storage.com/film/1.1.0/otto-promo.mp4">
+  <a href="https://hbf1i2zuh6iqdyiw.public.blob.vercel-storage.com/film/1.1.0-launch/otto-promo.mp4">
     <img src="docs/media/otto-hero.gif" width="880" alt="Otto opening from the MacBook notch, answering with web sources, then tucking away and previewing the reply under the camera">
   </a>
   <br>
@@ -58,7 +60,7 @@ the signed app adds Sparkle for updates. It talks to the Anthropic API directly 
 
 I kept leaving what I was doing to ask Claude a quick question, and the notch was the one part of the
 screen I never used. The hard part was making it open when you mean it and not when you're heading
-for a menu. The hover, click and drag logic became a small state machine with its own 44 unit tests,
+for a menu. The hover, click and drag logic became a small state machine with its own 51 unit tests,
 and a hover only counts once the pointer rests for 90 ms.
 
 ## Highlights
@@ -147,10 +149,11 @@ continue the last one. Reopen a chat and you're back where you were reading.
 
 ### Your key, your Mac
 
-Your API key lives in the macOS Keychain. Nothing leaves your Mac until you press send, and then it
-goes straight to Anthropic. History stays on your Mac. There's no account, no Otto server and no
-telemetry. The two opt-in exceptions, Apple's speech service and Spotify artwork, are listed under
-[Privacy & permissions](#privacy--permissions).
+Your API key lives in the macOS Keychain. Your messages leave your Mac only when you press send, and then
+they go straight to Anthropic. History stays on your Mac. There's no account, no Otto server and no
+telemetry. The signed app also checks its license with Polar and looks for updates, and two opt-in
+features use Apple's speech service and Spotify's artwork. [Privacy & permissions](#privacy--permissions)
+lists what each one sends.
 
 <p align="center">
   <img src="docs/media/screens/settings.png" width="820" alt="Otto Settings on the Models tab: the Anthropic API key saved in Keychain, the Claude models with their prices and the response style">
@@ -228,19 +231,31 @@ turn them on, and anything that needs a macOS permission asks the first time you
 
 ## Get started
 
-Today you build Otto from source. It's free and takes a few minutes.
+Otto needs macOS 14 Sonoma or later and an Anthropic API key. There are two ways to get it.
+
+**The signed app.** It's signed with a Developer ID and notarized by Apple, so it opens like any other Mac
+app.
+
+1. **Download** the 14-day trial from [ottonotch.com/download](https://ottonotch.com/download).
+2. **Open** the disk image and drag Otto to Applications.
+3. **Add your API key.** Settings opens on first launch. Create a key at
+   [console.anthropic.com/settings/keys](https://console.anthropic.com/settings/keys), paste it in and
+   click **Save**.
+4. **Hover the notch** and ask.
+
+Or install it with Homebrew: `brew install --cask jke48222/tap/otto`.
+
+The trial has every feature and needs no card. When it ends, sending a message needs a license:
+[buy one](https://ottonotch.com/buy) and paste the key from your receipt into **Settings → License**.
+Settings, Recents and demo mode keep working without one, and nothing on your Mac is deleted. The app
+installs its own updates through Sparkle.
+
+**Build from source (free).** No license and no trial. You need Xcode and XcodeGen.
 
 1. **Install** Xcode 16 or later from the App Store, then open it once.
 2. **Install** XcodeGen: `brew install xcodegen`.
 3. **Build and open** Otto with the commands in [Build from source](#build-from-source).
-4. **Add your API key.** Settings opens on first launch. Create a key at
-   [console.anthropic.com/settings/keys](https://console.anthropic.com/settings/keys), paste it in and
-   click **Save**.
-5. **Hover the notch** and ask.
-
-A signed and notarized build is coming soon as a one-time purchase, so you won't need Xcode. To hear
-when it ships, open the repo's [notification settings](https://github.com/jke48222/otto/subscription),
-choose **Custom**, check **Releases** and click **Apply**.
+4. **Add your API key** and **hover the notch**, as above.
 
 > [!TIP]
 > Otto has no Dock icon. It lives in the notch, with a small menu bar icon as a second way in.
@@ -333,26 +348,31 @@ Shortcuts need no permission, because the Shortcuts app runs each shortcut under
 > or hide text.
 
 **What leaves your Mac, and when.** Only when you press send, Otto sends your message, the items you
-attached, your custom instructions and the current conversation directly to `api.anthropic.com` over
-HTTPS. A suggested browser tab, selection or window isn't sent unless you attach it; for a tab, only its
-title and address go. When web search or fetch is on, Claude runs those searches on Anthropic's side, at
-most 10 searches and 10 page reads per reply. With Actions on, what a tool reads (for example your
-calendar events) goes to Claude as part of the conversation, and Otto asks once before the first read.
+attached, your custom instructions, the current conversation and today's date directly to
+`api.anthropic.com` over HTTPS. A suggested browser tab, selection or window isn't sent unless you attach
+it; for a tab, only its title and address go. When web search or fetch is on, Claude runs those searches
+on Anthropic's side, at most 10 searches and 10 page reads per reply. With Actions on, the request also
+carries your time zone and local time, what a tool reads (for example your calendar events) goes to Claude
+as part of the conversation, and Otto asks once before the first read.
 Voice is turned into text on your Mac unless you allow Apple's speech service in **Settings → Voice**; the
 audio is never stored and never sent to Anthropic. With Now Playing on, Otto downloads Spotify's album
 artwork from Spotify's image servers.
 
-**What stays.** Your API key is stored in your login Keychain and nowhere else. Otto has no analytics,
-no crash reporting, no account and no server of its own. How Anthropic handles API data is covered by
+**What stays.** Your API key is stored in your login Keychain and nowhere else. The signed app keeps its
+license key, activation ID and trial start date there too. Otto has no analytics, no crash reporting, no
+account and no server of its own. How Anthropic handles API data is covered by
 [Anthropic's privacy policy](https://www.anthropic.com/legal/privacy).
 
-**When the signed app ships**, it also talks to two more services. About once a day it checks your license
-with Polar (`api.polar.sh`): it sends the key, Otto's IDs at Polar and this Mac's activation ID, never your
-name, email, Mac name or a hardware ID. Polar records the time and count of each check with your purchase.
-Once a day it downloads the release list from Otto's site and gets updates from Vercel's file storage; that
-request carries Otto's version number and nothing that identifies you or your Mac. A build from source does
-none of this. Otto's website counts page views with cookie-free Vercel Web Analytics; the app itself has no
-analytics.
+**The signed app** also talks to two more services. It checks your license with Polar (`api.polar.sh`)
+about once a day, and when you activate, deactivate or click **Check Now**. Each request carries your
+license key and Otto's IDs at Polar, plus this Mac's activation ID once it has one. Activating also sends a
+label made of random characters, like "Mac 7F3A". Otto never sends your name, email, Mac name or a
+hardware ID. Polar records the time and count of each check, and the label, with your purchase. Once a day
+the app downloads the release list from `ottonotch.com/appcast.xml` and gets updates from Vercel's file
+storage; that request carries Otto's version number and nothing that identifies you or your Mac. You can
+turn automatic update checks off in **Settings → License**. A build from source does none of this. Otto's
+website counts page views with cookie-free Vercel Web Analytics; the app itself has no analytics. The
+[privacy policy](https://ottonotch.com/privacy) lists every request in full.
 
 **History and the activity log.** Otto keeps everything it saves in `~/Library/Application Support/Otto`,
 readable only by your user account and excluded from Time Machine. Each data folder's name ends in
@@ -390,8 +410,10 @@ set spend limits in the [Anthropic Console](https://console.anthropic.com).
 
 ## Limits and known issues
 
-- **No signed download yet.** For now you build Otto from source with Xcode. The signed, notarized app
-  is coming soon as a one-time purchase.
+- **The signed app has to reach Polar now and then.** It checks its license about once a day. After 30
+  days without a successful check, Settings shows the date sending will pause; after 44 days, sending
+  waits until a check succeeds. Settings, Recents and demo mode keep working, and a build from source has
+  no license check.
 - **Keychain prompts after rebuilds.** Source builds are ad hoc signed, so macOS asks again whether Otto
   may read its Keychain item after each rebuild. Click **Always Allow**, or sign with your own identity
   (see [Build from source](#build-from-source)).
@@ -434,9 +456,11 @@ It follows along when you plug displays in or out.
 <details>
 <summary><strong>How much does it cost?</strong></summary>
 
-The source code is free under the MIT license, and building it yourself costs nothing. The signed app
-will be a one-time purchase when it ships. Either way, you pay Anthropic for what you use, per token, on
-your own API account. Set a monthly spend limit in the Anthropic Console if you want a hard cap.
+The signed app is $19 once, for up to 3 Macs, with every 1.x update and a 14-day trial.
+Polar runs the checkout as the merchant of record, and you can get a full refund within 30 days. The source
+code is free under the MIT license, and building it yourself costs nothing. Either way, you pay Anthropic
+for what you use, per token, on your own API account. Set a monthly spend limit in the Anthropic Console if
+you want a hard cap.
 </details>
 
 <details>
@@ -452,15 +476,17 @@ what they send.
 <summary><strong>Why isn't Otto on the Mac App Store?</strong></summary>
 
 Mac App Store apps must run in Apple's App Sandbox, and Otto's notch panel, global shortcut and browser
-tab reading are built to run outside it. The signed app will be sold directly instead.
+tab reading are built to run outside it. The signed app is sold directly instead, at
+[ottonotch.com/buy](https://ottonotch.com/buy).
 </details>
 
 <details>
 <summary><strong>What happens to my data?</strong></summary>
 
-Nothing is sent anywhere until you press send, and then it goes straight to Anthropic's API. History,
-the Shelf, usage totals and the activity log stay in `~/Library/Application Support/Otto` on your Mac, and
-Otto has no telemetry. See [Privacy & permissions](#privacy--permissions).
+Your messages go nowhere until you press send, and then they go straight to Anthropic's API. The signed
+app also checks its license with Polar and looks for updates on Otto's site. History, the Shelf, usage
+totals and the activity log stay in `~/Library/Application Support/Otto` on your Mac, and Otto has no
+telemetry. See [Privacy & permissions](#privacy--permissions).
 </details>
 
 <details>
@@ -474,11 +500,22 @@ take a minute to create at [console.anthropic.com](https://console.anthropic.com
 <summary><strong>Can I try Otto without a key?</strong></summary>
 
 Yes. Demo mode plays a scripted, streamed reply (with thinking, a web search and sources) without
-touching the network. From your clone, run:
+touching the network. Quit Otto, then start the signed app in demo mode with:
 
 ```sh
-scripts/run.sh --demo --open
+open /Applications/Otto.app --args --demo --open
 ```
+
+From a clone, run `scripts/run.sh --demo --open`.
+</details>
+
+<details>
+<summary><strong>I built Otto from source. Can I switch to the signed app?</strong></summary>
+
+Yes. Quit the source build, then install the signed app. Both builds use the same bundle ID, Keychain item
+and Application Support folder, so your settings, history and API key carry over. macOS asks once whether
+the signed app may read your API key; click **Always Allow**. Accessibility and Screen Recording are tied
+to the app's signature, so you grant those again the first time you need them.
 </details>
 
 <details>
@@ -499,8 +536,10 @@ launchers register it in a way macOS can't detect. If that happens, pick a diffe
 <details>
 <summary><strong>How do I uninstall Otto?</strong></summary>
 
-1. In Settings, turn off **Launch at login**, then choose **Quit Otto** from the ⋮ menu or menu bar icon.
-2. Delete `Otto.app` (from Applications, or the `build/` folder of your clone).
+1. In Settings, turn off **Launch at login**. With the signed app, click **Deactivate This Mac…** in
+   **Settings → License** to free its seat. Then choose **Quit Otto** from the ⋮ menu or menu bar icon.
+2. Delete `Otto.app` (from Applications, or the `build/` folder of your clone). If you installed with
+   Homebrew, run `brew uninstall --cask jke48222/tap/otto` instead.
 3. Optional clean-up: in **Keychain Access**, delete the item named `com.jalenedusei.otto` (your API
    key), run `defaults delete com.jalenedusei.otto` to remove preferences, and delete
    `~/Library/Application Support/Otto` to remove your history, Shelf and activity log. The signed app
@@ -522,6 +561,9 @@ scripts/run.sh --open     # build, then launch with the notch open
 
 The app lands in `build/Build/Products/Debug/Otto.app`. Drag it to Applications if you want to keep it
 there. It was built on your Mac, so Gatekeeper opens it without a warning.
+
+Building from source is free and needs no license. The source build has no license check and no updater,
+so you update it with `git pull` and another `scripts/run.sh`.
 
 | Script | What it does |
 | --- | --- |
@@ -580,7 +622,7 @@ ANTHROPIC_API_KEY=sk-ant-… build/Build/Products/Debug/Otto.app/Contents/MacOS/
 
 Otto is an accessory app (no Dock icon) built with AppKit for the window and event plumbing and SwiftUI
 for everything you see. The source build uses only Apple frameworks. The signed app adds Sparkle for updates,
-and the Setapp build adds the Setapp Framework.
+and a Setapp build, which isn't offered in 1.1.0, adds the Setapp Framework.
 
 ```
 Otto/
@@ -598,7 +640,7 @@ Otto/
 ├── Media/        Now Playing and media controls
 ├── Shelf/        File Shelf store, thumbnails, drag and share
 ├── Usage/        pricing, usage ledger, cost labels
-├── Licensing/    paid build only: the trial, Polar and Gumroad license keys, their Keychain records
+├── Licensing/    paid build only: the trial, Polar license keys (Gumroad's are off in 1.1.0), Keychain records
 ├── Updates/      Sparkle updates in the paid build, Setapp's updater in the Setapp build
 ├── Setapp/       Setapp build only: usage events and release notes
 ├── UI/           SwiftUI views: notch, dock cards, pages, chat, glance, voice, Settings panes, theme
@@ -612,18 +654,16 @@ reading a selection do. `ChatSession` builds each request and streams `POST /v1/
 folded into text, thinking, tool calls and sources as it arrives. When Claude asks for a tool, the executor
 validates the input, shows the approval card, runs the tool and sends every result back in one message
 before the reply continues. Request bodies are encoded with sorted keys so the prompt prefix stays
-byte-stable for prompt caching. The suite has more than 1,700 unit tests, and the full design spec, with
+byte-stable for prompt caching. The suite has more than 1,800 unit tests, and the full design spec, with
 every module interface, is in [`docs/SPEC.md`](docs/SPEC.md).
 
 ## Roadmap
 
-Otto 1.1 shipped most of the old list: history, asking about your selection, pasting answers anywhere,
-voice, calendar and reminders, media controls, Shortcuts and AppleScript actions, the File Shelf and a
-custom shortcut. Still to come:
+Otto 1.1 shipped everything on the old list: the signed app, history, asking about your selection, pasting
+answers anywhere, voice, calendar and reminders, media controls, Shortcuts and AppleScript actions, the File
+Shelf and a custom shortcut.
 
-- **The signed app:** a notarized build sold as a one-time purchase.
-
-Have an idea? [Open a feature request](https://github.com/jke48222/otto/issues/new?template=feature_request.yml).
+Have an idea for what comes next? [Open a feature request](https://github.com/jke48222/otto/issues/new?template=feature_request.yml).
 
 ## Contributing
 
@@ -663,6 +703,7 @@ Otto's source code is released under the [MIT License](LICENSE). © 2026 Jalen E
 
 - The [Claude API](https://www.anthropic.com/api) from Anthropic, which writes the answers.
 - [XcodeGen](https://github.com/yonaskolb/XcodeGen), which keeps the Xcode project out of version control.
+- [Sparkle](https://sparkle-project.org), which updates the signed app.
 - [Shields.io](https://shields.io) for the badges, and the
   [Contributor Covenant](https://www.contributor-covenant.org) for the code of conduct.
 
