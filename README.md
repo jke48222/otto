@@ -347,12 +347,12 @@ no crash reporting, no account and no server of its own. How Anthropic handles A
 [Anthropic's privacy policy](https://www.anthropic.com/legal/privacy).
 
 **When the signed app ships**, it also talks to two more services. About once a day it checks your license
-with Polar (`api.polar.sh`, or `api.gumroad.com` for a key bought on Gumroad): it sends the key, Otto's IDs
-at Polar and this Mac's activation ID, never your name, email, Mac name or a hardware ID. Polar records the
-time and count of each check with your purchase. Once a day it downloads the release list from Otto's site
-and gets updates from Vercel's file storage; that request carries Otto's version number and nothing that
-identifies you or your Mac. The Setapp build tells Setapp when you use Otto and makes no license checks. A
-build from source does none of this.
+with Polar (`api.polar.sh`): it sends the key, Otto's IDs at Polar and this Mac's activation ID, never your
+name, email, Mac name or a hardware ID. Polar records the time and count of each check with your purchase.
+Once a day it downloads the release list from Otto's site and gets updates from Vercel's file storage; that
+request carries Otto's version number and nothing that identifies you or your Mac. A build from source does
+none of this. Otto's website counts page views with cookie-free Vercel Web Analytics; the app itself has no
+analytics.
 
 **History and the activity log.** Otto keeps everything it saves in `~/Library/Application Support/Otto`,
 readable only by your user account and excluded from Time Machine. Each data folder's name ends in

@@ -59,7 +59,7 @@ with its number. `Config/Commercial.xcconfig` and `site/commerce.json` hold the 
 | J15 | Create the public repo `jke48222/homebrew-tap` and push the first cask | `../homebrew-tap` |
 | J16 | A GitHub Sponsors profile | GitHub |
 | J17 | A USPTO search for "Otto" in class 9 before the first sale | the Terms, the README |
-| J18 | Decide on cookie-free Vercel Web Analytics (default: off) | the site and its privacy page |
+| J18 | Cookie-free Vercel Web Analytics: on since 2026-09-30 (enabled in the Vercel project; every page loads `/_vercel/insights/script.js`) | the site and its privacy page |
 | J19 | The launch window: start, end (the Polar discount's own end) and the time zone the site prints | `commerce.json` `launch.*` |
 | J20 | The Polar canary key (below) | your login Keychain |
 | J21 | The Gumroad canary key (below) | your login Keychain |
