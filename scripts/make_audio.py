@@ -4,12 +4,15 @@ third-party audio, so it is original and free to use under the repo's MIT licens
 
   python3 scripts/make_audio.py --cues build/promo-cues.json --out build/promo-audio.wav
 
-• Music bed: a slow, warm pad in D major (Dmaj9, Bm9, Gmaj7#11, A6sus, two bars each at 100 bpm),
-  a soft sub, and a sparse bell-like arpeggio that enters after the title card, all through a
-  small synthetic room reverb. It resolves on Dmaj9 under the end card.
+• Music bed: a slow, warm pad in D major (Dmaj9, Bm9, Gmaj7#11, A6sus, twice, two bars each), a
+  soft sub, and a sparse bell-like arpeggio that enters after the title card, all through a small
+  synthetic room reverb. The tempo is fitted to the cut: the eight chords fill the time before the
+  end card exactly (chord = end card / 8, about 82 bpm on the 1.1 film), so the last A6sus hands
+  over to the Dmaj9 resolve as the end card starts.
 • UI sounds, one per cue from scripts/make_video.swift (--cues): quiet ticks for clicks, a soft
   rising/falling breath for the notch opening/closing, a low tap for the drop, a two-note tick for
-  send, an airy swell for the Settings window.
+  send, a softer, lower rising two-tone breath as the listening pill grows, and an airy swell for
+  the Settings window.
 • Provenance: every sample is computed here from sine waves and seeded noise; nothing is read from
   disk but the cue list. The mix is deterministic (fixed seeds), so the same cut always gets the
   same track.
@@ -28,9 +31,9 @@ import wave
 import numpy as np
 
 SR = 48_000
-BPM = 100.0
-BAR = 60.0 / BPM * 4  # 2.4 s
-CHORD_LEN = BAR * 2   # 4.8 s
+# Each chord lasts two bars (eight beats). The chord length (and so the tempo) is fitted to the cut
+# in music(): CHORD_LEN = end card / len(PROGRESSION).
+BEATS_PER_CHORD = 8
 
 # Voicings (MIDI). Roots low, colour tones on top.
 CHORDS = {
@@ -121,20 +124,23 @@ def reverb(x, seconds=2.4, wet=0.28, seed=5):
     return (1 - wet) * x + wet * out
 
 
-def music(duration, resolve_at=31.7):
+def music(duration, resolve_at):
     n = int(duration * SR)
     buf = np.zeros((n, 2))
-    # Pad: each chord overlaps the next by a slow crossfade.
+    # The two-cycle progression fills the time before the end card exactly.
+    chord_len = resolve_at / len(PROGRESSION)
+    bpm = 60.0 * BEATS_PER_CHORD / chord_len
+    print(f"tempo: {bpm:.1f} bpm, {chord_len:.2f} s per chord, resolve at {resolve_at:.2f} s")
+    # Pad: each chord overlaps the next by a slow crossfade (the last one into the resolve).
     overlap = 1.6
     for i, name in enumerate(PROGRESSION):
-        start = i * CHORD_LEN
-        last = i == len(PROGRESSION) - 1
-        dur = (duration - start + 0.5) if last else CHORD_LEN + overlap
+        start = i * chord_len
+        dur = chord_len + overlap
         voices = CHORDS[name]
         chord = np.zeros((int(dur * SR), 2))
         for k, m in enumerate(voices):
             chord += pad_note(hz(m), dur, 4 + k, seed=100 * i + k) * (0.9 if k else 0.7)
-        env = adsr(len(chord), attack=1.4 if i else 0.4, release=overlap if not last else 2.5)
+        env = adsr(len(chord), attack=1.4 if i else 0.4, release=overlap)
         place(buf, chord * env[:, None] * 0.055, start - (0 if i == 0 else overlap / 2))
         # Sub: the root an octave down, round and quiet.
         root = hz(voices[0] - 12)
@@ -149,8 +155,9 @@ def music(duration, resolve_at=31.7):
         chord += pad_note(hz(m), dur, 5 + k, seed=900 + k)
     place(buf, chord * adsr(len(chord), 1.2, 2.0)[:, None] * 0.045, resolve_at)
 
-    # Arpeggio: sparse bell notes from the upper chord tones, entering after the title card.
-    step = 60.0 / BPM / 2  # eighth notes
+    # Arpeggio: sparse bell notes from the upper chord tones, entering after the title card; under
+    # the end card they follow the resolve.
+    step = 60.0 / bpm / 2  # eighth notes
     pattern = [0, None, 2, None, 4, 3, None, 1, 0, None, 3, None, 4, None, 2, None]
     r = rng(42)
     t = 2.4
@@ -158,8 +165,11 @@ def music(duration, resolve_at=31.7):
     while t < duration - 3.5:
         idx = pattern[k % len(pattern)]
         if idx is not None:
-            chord_i = min(int(t // CHORD_LEN), len(PROGRESSION) - 1)
-            upper = sorted(CHORDS[PROGRESSION[chord_i]])[1:]
+            if t >= resolve_at:
+                name = "Dmaj9"
+            else:
+                name = PROGRESSION[min(int(t // chord_len), len(PROGRESSION) - 1)]
+            upper = sorted(CHORDS[name])[1:]
             m = upper[idx % len(upper)] + 12
             vel = 0.5 + 0.5 * r.uniform()
             place(buf, bell(hz(m), 1.6, seed=k) * 0.028 * vel, t)
@@ -208,6 +218,16 @@ def ui_sound(kind, seed):
         t2 = np.clip(t - 0.07, 0, None)
         b = np.sin(2 * np.pi * 1760 * t2) * np.exp(-t2 / 0.05) * (t >= 0.07)
         return (0.45 * a + 0.5 * b) * 0.45
+    if kind == "listen":
+        # The listening pill: a soft two-tone breath rising a fourth, lower and quieter than the
+        # notch opening, with a little air.
+        n = int(0.42 * SR)
+        t = np.arange(n) / SR
+        a = np.sin(2 * np.pi * 294 * t) * np.minimum(1, t / 0.03) * np.exp(-t / 0.12)
+        t2 = np.clip(t - 0.11, 0, None)
+        b = np.sin(2 * np.pi * 392 * t2) * np.minimum(1, t2 / 0.03) * np.exp(-t2 / 0.14) * (t >= 0.11)
+        air = band_noise(n, 500, 3000, seed) * np.sin(np.pi * np.clip(t / 0.42, 0, 1)) ** 2 * 0.1
+        return (0.5 * a + 0.55 * b + air) * 0.32
     if kind == "window":
         n = int(0.45 * SR)
         t = np.arange(n) / SR
@@ -227,7 +247,7 @@ def main():
     duration = float(doc["duration"])
 
     # The end card's start (from the edit), where the music resolves.
-    mix = music(duration, resolve_at=float(doc.get("endCard", 31.7)))
+    mix = music(duration, resolve_at=float(doc["endCard"]))
     fx = np.zeros_like(mix)
     for i, cue in enumerate(doc["cues"]):
         mono = ui_sound(cue["kind"], seed=1000 + i)

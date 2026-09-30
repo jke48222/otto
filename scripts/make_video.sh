@@ -4,22 +4,26 @@
 #
 #   scripts/make_video.sh                         # raw footage from build/media-raw
 #   scripts/make_video.sh --raw-dir /path/to/raw  # e.g. wherever make_media.sh --raw-dir wrote it
-#   scripts/make_video.sh --crf 20                # lighter film
+#   scripts/make_video.sh --crf 21                # the film's x264 CRF (default 20)
+#   scripts/make_video.sh --web-crf 26            # the site's renditions' CRF (default 24, 26 if over budget)
+#   scripts/make_video.sh --gif-fps 20            # the README loop's frame rate (default 22)
 #   scripts/make_video.sh --web-only              # only re-derive the site's renditions from the film
 #
 # Inputs (recorded by scripts/make_media.sh):
-#   <raw>/{story,settings,hero}.mov + .json   3072×1728 60 fps masters and their timelines
+#   <raw>/{story,act,shelf-voice,settings}.mov + .json   the film's 3072×1728 60 fps masters and
+#                                                         their timelines
+#   <raw>/hero.mov + .json                    the README loop's master
 #   <raw>/poster-stage.png                    the poster's plate (make_media.sh stills)
 #   docs/media/icon.png                       app icon for the title/end cards and the poster
 #
 # Outputs:
-#   docs/media/otto-promo.mp4         1920×1080, ~40 s (the cut follows the takes' marks), 30 fps CFR,
+#   docs/media/otto-promo.mp4         1920×1080, ~52 s (the cut follows the takes' marks), 30 fps CFR,
 #                                     H.264 High yuv420p BT.709, AAC 48 kHz stereo at -16 LUFS,
 #                                     +faststart, ≤ 25 MB
 #   docs/media/otto-promo-poster.jpg  1920×1080 poster frame
-#   docs/media/otto-promo-web.mp4     the website's copy: 1920×1080 H.264, CRF 24, no audio track, ≤ 8 MB
+#   docs/media/otto-promo-web.mp4     the website's copy: 1920×1080 H.264, --web-crf, no audio track, ≤ 8 MB
 #   docs/media/otto-promo-web-720.mp4 the website's copy for narrow screens: 1280×720, no audio, ≤ 3.5 MB
-#   docs/media/otto-hero.gif          1280×1000, 25 fps, 13.6 s seamless loop, UI at 1:1 with the
+#   docs/media/otto-hero.gif          1280×1000, 22 fps, ~15.8 s seamless loop, UI at 1:1 with the
 #                                     2× master (body text ≈ 28 px), ≤ 8 MB
 #
 # The picture is composed by scripts/make_video.swift (Core Image + CoreText, piped to
@@ -29,16 +33,18 @@
 # Sound: the soundtrack is ORIGINAL and SYNTHESIZED. scripts/make_audio.py generates every sample
 # with numpy (additive pad voices, a sine sub, bell-like arpeggio notes, filtered-noise UI ticks and
 # a synthetic noise reverb): no samples, loops, stock or third-party music. It follows the edit's
-# sound cues (clicks, the notch opening and closing, the Settings window) and resolves under the end
-# card, fading in over the title card's first 0.5 s and out over the end card's last 1.5 s. It is
+# sound cues (clicks, the notch opening and closing, the drops, the sends, the listening pill, the
+# Settings window) and fits its tempo to the cut, so it resolves exactly as the end card starts,
+# fading in over the title card's first 0.5 s and out over the end card's last 1.5 s. It is
 # then loudness-normalized (two-pass loudnorm, -16 LUFS) and muxed.
 #
 # The website plays the film muted, so it gets its own silent, lighter renditions (the film itself,
 # with its soundtrack, is what the README links to). They are encoded from the silent picture, or with
 # --web-only from the film's picture track; site/index.html picks the 720p one below 800 px.
 #
-# The GIF is a 1:1 crop of the hero take, rendered by make_video.swift (with the film's collapse, and
-# the unread dot's ear retracting into the notch at the end so the last frame is the first frame),
+# The GIF is a 1:1 crop of the hero take, rendered by make_video.swift (with the film's collapse, the
+# reply preview's real 4 s, and the unread dot's ear retracting into the notch at the end so the last
+# frame is the first frame: a loop reset, not product behavior),
 # then a temporal denoise (so codec noise in the still wallpaper doesn't bloat every frame), ordered
 # dithering and a light gifsicle pass. Requires ffmpeg and gifsicle (brew install ffmpeg gifsicle)
 # and python3 with numpy.
@@ -49,7 +55,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RAW="$ROOT/build/media-raw"
 MEDIA="$ROOT/docs/media"
 FPS=30
-CRF=18
+CRF=20
+WEB_CRF=24
+GIF_FPS=22
 WEB_ONLY=0
 FFMPEG="$(command -v ffmpeg || echo /opt/homebrew/bin/ffmpeg)"
 
@@ -58,6 +66,8 @@ while [[ $# -gt 0 ]]; do
     --raw-dir) RAW="$2"; shift ;;
     --fps) FPS="$2"; shift ;;
     --crf) CRF="$2"; shift ;;
+    --web-crf) WEB_CRF="$2"; shift ;;
+    --gif-fps) GIF_FPS="$2"; shift ;;
     --web-only) WEB_ONLY=1 ;;
     -h|--help) sed -n '2,/^set -euo/{/^set -euo/d;p;}' "$0"; exit 0 ;;
     *) echo "error: unknown option $1" >&2; exit 1 ;;
@@ -73,13 +83,27 @@ check() { # file max_bytes
   if (( size > $2 )); then echo "  OVER BUDGET ($(python3 -c "print($2/1e6)") MB)"; exit 1; else echo; fi
 }
 
-# The site's renditions: video only (-an), +faststart, H.264 High so every browser plays them.
+# The site's renditions: video only (-an), +faststart, H.264 High so every browser plays them. Each
+# is encoded at --web-crf; one that comes out over its budget is encoded again at the fallback CRF
+# (26 by default), which the budget check then holds it to.
+WEB_FALLBACK_CRF=26
+encode_rendition() { # source output max_bytes [scale filter]
+  local crf="$WEB_CRF" vf=()
+  [[ -n "${4:-}" ]] && vf=(-vf "$4")
+  while true; do
+    "$FFMPEG" -v error -y -i "$1" -map 0:v:0 "${vf[@]}" -an -c:v libx264 -preset slow -crf "$crf" \
+      -profile:v high -pix_fmt yuv420p -color_primaries bt709 -color_trc bt709 -colorspace bt709 \
+      -movflags +faststart "$2"
+    local size; size=$(stat -f %z "$2" 2>/dev/null || stat -c %s "$2")
+    if (( size <= $3 )) || (( crf >= WEB_FALLBACK_CRF )); then break; fi
+    echo "  $(basename "$2") is over budget at CRF $crf; encoding it again at CRF $WEB_FALLBACK_CRF"
+    crf=$WEB_FALLBACK_CRF
+  done
+  echo "  $(basename "$2"): CRF $crf"
+}
 encode_web() { # source
-  local common=(-an -c:v libx264 -preset slow -crf 24 -profile:v high -pix_fmt yuv420p
-    -color_primaries bt709 -color_trc bt709 -colorspace bt709 -movflags +faststart)
-  "$FFMPEG" -v error -y -i "$1" -map 0:v:0 "${common[@]}" "$MEDIA/otto-promo-web.mp4"
-  "$FFMPEG" -v error -y -i "$1" -map 0:v:0 -vf "scale=1280:720:flags=lanczos" "${common[@]}" \
-    "$MEDIA/otto-promo-web-720.mp4"
+  encode_rendition "$1" "$MEDIA/otto-promo-web.mp4" 8000000
+  encode_rendition "$1" "$MEDIA/otto-promo-web-720.mp4" 3500000 "scale=1280:720:flags=lanczos"
 }
 check_web() {
   check "$MEDIA/otto-promo-web.mp4" 8000000
@@ -96,7 +120,7 @@ if [[ $WEB_ONLY == 1 ]]; then
   exit 0
 fi
 
-for clip in story settings hero; do
+for clip in story act shelf-voice settings hero; do
   [[ -f "$RAW/$clip.mov" && -f "$RAW/$clip.json" ]] || { echo "error: missing $RAW/$clip.mov/.json — run scripts/make_media.sh --footage-only first" >&2; exit 1; }
 done
 [[ -f "$RAW/poster-stage.png" ]] || { echo "error: missing $RAW/poster-stage.png — run scripts/make_media.sh --stills-only --raw-dir $RAW" >&2; exit 1; }
@@ -110,7 +134,7 @@ swiftc -O -suppress-warnings -o "$ROOT/build/make_video" "$ROOT/scripts/make_vid
 echo "==> Rendering the picture, the poster and the sound cues"
 "$ROOT/build/make_video" \
   --raw "$RAW" --icon "$MEDIA/icon.png" --ffmpeg "$FFMPEG" \
-  --fps "$FPS" --crf "$CRF" \
+  --fps "$FPS" --crf "$CRF" --gif-fps "$GIF_FPS" \
   --out "$WORK/picture.mp4" --poster "$MEDIA/otto-promo-poster.jpg" --cues "$WORK/cues.json" \
   --gif "$WORK/hero.mkv"
 
@@ -141,11 +165,12 @@ echo "==> Quantizing the README loop"
 # first frame again after it.
 FRAMES=$("${FFMPEG%ffmpeg}ffprobe" -v error -count_frames -select_streams v:0 \
   -show_entries stream=nb_read_frames -of csv=p=0 "$WORK/hero.mkv")
-HOLD=5
+# The held seam: 0.2 s of frames, as make_video.swift writes them.
+HOLD=$(python3 -c "print(int($GIF_FPS * 0.2 + 0.5))")
 "$FFMPEG" -v error -y -i "$WORK/hero.mkv" -filter_complex "
   [0:v]format=rgb24,hqdn3d=0:0:4:4,split[d1][d2];
   [d1]trim=end_frame=$((FRAMES - HOLD)),setpts=PTS-STARTPTS[body];
-  [d2]trim=end_frame=1,loop=loop=$((HOLD - 1)):size=1:start=0,setpts=N/25/TB[tail];
+  [d2]trim=end_frame=1,loop=loop=$((HOLD - 1)):size=1:start=0,setpts=N/$GIF_FPS/TB[tail];
   [body][tail]concat=n=2:v=1:a=0,split[a][b];
   [a]palettegen=max_colors=192:stats_mode=full[p];
   [b][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle" \

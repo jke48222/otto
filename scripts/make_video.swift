@@ -26,7 +26,7 @@
 //  • Output: raw BGRA frames are piped to ffmpeg/libx264 (High profile, yuv420p, BT.709, +faststart).
 //    `--cues` writes the sound cues (clicks, the notch opening and closing, where the end card
 //    starts) with their film times for scripts/make_audio.py. `--gif` writes the README loop's
-//    frames (a 1:1 crop of the hero take, 25 fps) losslessly for scripts/make_video.sh to quantize.
+//    frames (a 1:1 crop of the hero take, 22 fps by default) losslessly for scripts/make_video.sh to quantize.
 //
 //  Usage (see scripts/make_video.sh):
 //
@@ -34,7 +34,7 @@
 //    build/make_video --raw <raw dir> --icon docs/media/icon.png \
 //        --out /tmp/picture.mp4 --poster docs/media/otto-promo-poster.jpg --cues /tmp/cues.json \
 //        --gif /tmp/hero-frames.mkv \
-//        [--fps 30] [--crf 18] [--stills 1.0,5.5 --stills-dir /tmp/qa] [--gif-stills 0,12.5] [--no-video]
+//        [--fps 30] [--crf 20] [--gif-fps 22] [--stills 1.0,5.5 --stills-dir /tmp/qa] [--gif-stills 0,12.5] [--no-video]
 //
 
 import AppKit
@@ -53,8 +53,8 @@ struct Options {
     var cues = ""
     var gif = ""
     var fps = 30
-    var gifFPS = 25
-    var crf = 18
+    var gifFPS = 22
+    var crf = 20
     var preset = "slower"
     var ffmpeg = "/opt/homebrew/bin/ffmpeg"
     var stills: [Double] = []
@@ -79,8 +79,8 @@ struct Options {
             case "--cues": o.cues = value()
             case "--gif": o.gif = value()
             case "--fps": o.fps = Int(value()) ?? 30
-            case "--gif-fps": o.gifFPS = Int(value()) ?? 25
-            case "--crf": o.crf = Int(value()) ?? 18
+            case "--gif-fps": o.gifFPS = Int(value()) ?? 22
+            case "--crf": o.crf = Int(value()) ?? 20
             case "--preset": o.preset = value()
             case "--ffmpeg": o.ffmpeg = value()
             case "--stills": o.stills = value().split(separator: ",").compactMap { Double($0) }
@@ -716,6 +716,33 @@ struct Pixels {
     }
 }
 
+/// The closed states a collapse can land on, sized as the app sizes them. This mirrors
+/// `ClosedNotchLayout.make` (Otto/Glance/ClosedGlance.swift) for the stage's 190×32 pt notch
+/// (`PromoLayout.video.notchSize`) at 2×: plain is the notch itself; with ears (a phase glyph or the
+/// unread dot) it grows `NotchMetrics.activityEarWidth` (34 pt) on each side. No collapse in the edit
+/// lands on a hover, drop or listening-pill state, so their growth never applies here. `NotchShape`
+/// spends `closedTopRadius` (6 pt) on each side on the flares into the screen edge, so the body the
+/// drawn collapse shrinks into (like the open panel it starts from, measured below its flares) is
+/// the layout width less 2 × 6 pt.
+enum ClosedShape: String {
+    case plain, ears
+
+    static let notchPt = CGSize(width: 190, height: 32)
+    static let activityEarWidthPt = 34.0
+    static let closedTopRadiusPt = 6.0
+    static let closedBottomRadiusPt = 12.0
+
+    /// `ClosedNotchLayout.make(...).size`, in master pixels.
+    var sizePx: CGSize {
+        let w = ClosedShape.notchPt.width + (self == .ears ? 2 * ClosedShape.activityEarWidthPt : 0)
+        return CGSize(width: w * 2, height: ClosedShape.notchPt.height * 2)
+    }
+    /// The shape's body below its top flares, in master pixels.
+    var bodyPx: CGSize {
+        CGSize(width: sizePx.width - 2 * ClosedShape.closedTopRadiusPt * 2, height: sizePx.height)
+    }
+}
+
 /// The notch tucking away, as the edit shows it: the last clean frame of the open panel shrinks
 /// into the closed notch while its content fades, over the live frames after the real collapse.
 struct Collapse {
@@ -725,15 +752,15 @@ struct Collapse {
     let panel: CGRect
     let closed: CGRect
     let openRadius: Double = 72
-    let closedRadius: Double = 24
+    let closedRadius: Double = ClosedShape.closedBottomRadiusPt * 2
     let fill: CIColor
     let duration: Double
     /// Source time at which the drawn collapse starts (just after `lastOpen`).
     let start: Double
 
     /// `source`: the take; `lastOpen`: source time of the last frame before the collapse starts;
-    /// `activity`: whether the closed notch shows its ears.
-    init(source: FrameSource, lastOpen: Double, activity: Bool, duration: Double = collapseDuration) {
+    /// `shape`: the closed state it lands on. `label` names it in the QA printout.
+    init(_ label: String, source: FrameSource, lastOpen: Double, shape: ClosedShape, duration: Double = collapseDuration) {
         start = lastOpen + 1.0 / 120
         let still = source.still(at: lastOpen)
         let px = Pixels(still)
@@ -758,8 +785,9 @@ struct Collapse {
         let halfW = notchX - Double(left)
         let top = screenTop
         panel = CGRect(x: notchX - halfW, y: masterH - Double(panelBottom), width: halfW * 2, height: Double(panelBottom) - top)
-        let closedW = (190.0 + (activity ? 68 : 0)) * 2
-        closed = CGRect(x: notchX - closedW / 2, y: masterH - top - 64, width: closedW, height: 64)
+        let closedSize = shape.bodyPx
+        let closedW = closedSize.width
+        closed = CGRect(x: notchX - closedW / 2, y: masterH - top - closedSize.height, width: closedW, height: closedSize.height)
         var sum = (0, 0, 0)
         for dy in 0..<5 { for dx in 0..<5 {
             let c = px.rgb(left + 8 + dx, probeY + dy)
@@ -769,7 +797,24 @@ struct Collapse {
         let full = CIImage(cgImage: still)
         panelImage = full.cropped(to: panel)
         self.duration = duration
-        print(String(format: "  collapse at %.2f s: panel %.0f×%.0f px (bottom y %d), closed %.0f px wide", lastOpen, panel.width, panel.height, panelBottom, closedW))
+        // QA: the real closed shape just after the drawn collapse lands, measured across the notch's
+        // middle row from the wallpaper side inward (the menu bar is tinted or light; Otto's shape
+        // is near-black and neutral).
+        let after = Pixels(source.still(at: start + duration + 0.05))
+        let row = Int(screenTop + closedSize.height / 2)
+        var edge = Int(notchX) - 700
+        var run = 0
+        while edge < Int(notchX) {
+            run = after.isPanel(edge, row) ? run + 1 : 0
+            if run >= 4 { edge -= 3; break }
+            edge += 1
+        }
+        let measured = 2 * (notchX - Double(edge))
+        print(String(format: "  collapse %@ at %.2f s: panel %.0f×%.0f px (bottom y %d) → %@, layout %.0f px, body %.0f px, measured %.0f px",
+                     label, lastOpen, panel.width, panel.height, panelBottom, shape.rawValue, shape.sizePx.width, closedW, measured))
+        if abs(measured - closedW) > 8 {
+            warn(String(format: "collapse %@ lands on %.0f px but the live notch measures %.0f px", label, closedW, measured))
+        }
     }
 
     /// The app's close spring (Theme.Motion.close: response 0.34, damping 0.9), as progress 0…1.
@@ -833,16 +878,15 @@ struct CamKey {
 }
 
 struct Clip {
+    let take: Take
     let source: FrameSource
     let outStart: Double
     let outEnd: Double
     let srcStart: Double
     let keys: [CamKey]
     var collapses: [Collapse] = []
-    /// A still frame (at `srcStart`) held for the clip's length.
-    var freeze = false
 
-    func srcTime(_ t: Double) -> Double { freeze ? srcStart : srcStart + (t - outStart) }
+    func srcTime(_ t: Double) -> Double { srcStart + (t - outStart) }
 
     func camera(_ s: Double) -> (zoom: Double, cx: Double, top: Double) {
         guard let first = keys.first, let last = keys.last else { return (1, masterW / 2, 0) }
@@ -895,128 +939,221 @@ func withAlpha(_ image: CIImage, _ alpha: Double) -> CIImage {
 
 // MARK: - The edit
 //
-// One continuous take ("story", see Otto/Debug/PromoStage.swift) carries the film: an establishing
-// beat on the whole display → hover, Otto springs open (the camera holds still for it), it tucks
-// away → three files are dragged onto the notch and the open tab is clicked in → the question typed
-// there is sent → thinking, a web search, the answer streams (a list with a Swift code block, then
-// sources) → tucked away as the last bullet lands, the ears carry on and light up when it's done →
-// a hover reopens the finished answer → it tucks away, and on that same framing the "settings" take
-// picks up (a matched cut), where the window scales in and Otto takes the menu bar.
+// Four takes carry the film (see Otto/Debug/PromoStage.swift), joined by hard, matched cuts:
 //
-// Every time below is a source time from the takes' own marks. Framing is in master pixels (the
-// notch hangs at x 1536, y 90). Wherever there is text to read the UI is at least 1.45× (answer
-// body ≈ 23 px at 1080p), the settings window 1.65× (helper text ≈ 22 px).
+//  • story: an establishing beat on the whole display → hover, Otto springs open (the camera holds
+//    still for it) and tucks away as the pointer leaves → three files are dragged onto the notch, the
+//    split wells show and the right "Ask Otto" well takes them → the open tab is clicked in and the
+//    question sent → thinking, a web search with sources, the answer streams → tucked away mid-answer
+//    (the orb and writing glyph carry on) → the reply's first line drops under the camera and the
+//    pointer rests on it, so the preview holds.
+//  • act, cut on that same closed notch and preview: a click opens the answer, a calendar request is
+//    typed and sent, the card rises and arms, Add Event is clicked, the row turns into Added with
+//    Undo, and a click outside tucks it away.
+//  • shelf-voice, cut on the plain closed notch: two files are dragged onto the left "Keep on Shelf"
+//    well and land as tiles, the notch folds, the listening pill builds the spoken prompt, and on
+//    release a paste-ready update streams under the act turn; a click outside tucks it away.
+//  • settings, cut on the plain closed notch again: the window scales in on the Models tab and Otto
+//    takes the menu bar. Then the end card.
+//
+// Every time below is a source time from the takes' own marks, so a re-recorded take re-cuts
+// itself. Framing is in master pixels (the notch hangs at x 1536, y 90). Measured framings (the
+// card, the voice answer) come from 1.1 renders of the act and shelf-voice takes, noted beside them.
 
 let story = Take("story")
+let actTake = Take("act")
+let shelfTake = Take("shelf-voice")
 let settingsTake = Take("settings")
 let storySource = FrameSource(rawDir.appendingPathComponent("story.mov"))
+let actSource = FrameSource(rawDir.appendingPathComponent("act.mov"))
+let shelfSource = FrameSource(rawDir.appendingPathComponent("shelf-voice.mov"))
 let settingsSource = FrameSource(rawDir.appendingPathComponent("settings.mov"))
 
 // Story marks.
-let hover1 = story.t("hover", 1), open1 = story.t("open", 1), close1 = story.t("close", 1)
-let dragStart = story.t("drag-start"), openDrag = story.t("open", 2)
+let hover1 = story.t("hover"), open1 = story.t("open", 1), close1 = story.t("close", note: "leave")
+let dragStart = story.t("drag-start"), openDrag = story.t("open", 2), dropZones = story.t("drop-zones")
 let send = story.t("send"), thinking = story.t("thinking")
-let close2 = story.t("close", 2), replyDone = story.t("reply-complete")
-let hover3 = story.t("hover", 2), open3 = story.t("open", 3), close3 = story.t("close", 3)
+let close2 = story.t("close", note: "click")
+let pointerOnPreview = story.t("pointer-on-preview")
+// Act marks.
+let actClick = actTake.t("click"), actOpen = actTake.t("open")
+let actTypeStart = actTake.t("type-start"), approvalShown = actTake.t("approval-shown")
+let actToolDone = actTake.t("tool-done"), actClose = actTake.t("close", note: "click")
+// Shelf-voice marks.
+let shelfDragStart = shelfTake.t("drag-start"), shelfOpenDrag = shelfTake.t("open", note: "drag")
+let shelfDropZones = shelfTake.t("drop-zones"), shelfFold = shelfTake.t("close", note: "fold")
+let voiceStart = shelfTake.t("voice-start"), voiceRelease = shelfTake.t("voice-release")
+let voiceOpen = shelfTake.t("open", note: "voice"), shelfClose = shelfTake.t("close", note: "click")
+// Settings marks.
 let settingsOpen = settingsTake.t("settings-open")
 
 /// A collapse is drawn from the last open frame, `collapseLead` before the close, over the live
 /// frames of the real one (nothing is skipped: the pointer and the camera carry straight on).
 let collapseLead = 0.03
 let collapseDuration = 0.42
+/// A matched cut lands this long after a collapse has finished drawing.
+let cutAfterCollapse = 0.12
 
 // Framings. Wherever the menu bar is in view, the zoom puts the frame's edges in the gaps between
 // its labels (1.35, 1.5, 1.745, ≥ 1.91 around the notch), so no word is cut.
 let wide = (zoom: 1.0, top: 0.0)
 let springHold = 1.5
 let settled = 1.745
-let streamFraming = (zoom: 1.35, top: 70.0)
+let dropWide = (zoom: 1.2, cx: 1700.0)
+let dropFraming = 2.0
+/// The whole open panel above the caption. At 1.35 the frame is 2276 master px wide; centered on
+/// the notch its right edge would slice the desktop icons' labels (x 2634–2830 in the masters), so it
+/// sits 60 px left: edges at x 338 and 2614 fall between Edit (348) and File (304) on the left and
+/// after the Wi-Fi glyph (2604) on the right, so no menu-bar word or icon label is cut.
+let streamFraming = (zoom: 1.35, top: 70.0, cx: 1476.0)
 let earsFraming = (zoom: 2.5, top: 16.0)
 let reopenFraming = (zoom: 1.5, top: 20.0)
-let settingsFraming = (zoom: 1.745, top: 40.0)
-let settingsLow = 170.0
-/// The unread dot holds a beat longer (a still frame: nothing on screen moves then), so the
-/// caption over the closed notch can be read.
-let dotHold = 1.1
+/// Settings (settings take at 5.0 s): the first model row, prices included, ends at master y 875
+/// and the window's title bar starts at y 205. At 1.745 top 156 the row ends at 784 px, 34 px clear
+/// of the plate, the key and Keychain rows read above it, and the menu bar (y 90–154) is wholly out
+/// of frame, so no word in it is cut.
+let settingsFraming = (zoom: 1.745, top: 156.0)
+/// The armed calendar card (act take at approval-armed, 5.95 s): its lower edge sits at master
+/// y 1041 and the prompt bubble's top at y 431. At 1.6 the camera maps master pixels 1:1 to film
+/// pixels, so top 260 puts the card's edge at 781 px, 37 px above the 818 px plate top, with the
+/// prompt, the streamed line and "Waiting for your OK" above it. The menu bar is out of frame.
+let cardFraming = (zoom: 1.6, top: 260.0)
+/// The wells (shelf-voice at zone-shelf, 3.3 s): labels at master y 595, so at 2.0 they sit at
+/// 744 px, clear of the plate, and both wells read as targets. The same push as story's drop.
+let wellsFraming = (zoom: dropFraming, top: 0.0)
+/// The voice answer (shelf-voice at reply-complete, 10.1 s): its last line ends at master y 870 and
+/// the panel at y 1038, so at the stream framing the whole panel (Added row, prompt, update) clears
+/// the plate (last line 675 px, panel 817 px) with the menu bar whole.
+let voiceAnswerFraming = streamFraming
+let pillFraming = earsFraming
 
 /// Film time at which the footage starts (under the title card's fade).
 let footageIn = 1.9
-let filmOffsetA = footageIn - (story.sceneStart + 0.05)
 
+func key(_ t: Double, _ zoom: Double, _ top: Double, cx: Double = notchX) -> CamKey {
+    CamKey(t: t, zoom: zoom, cx: cx, top: top)
+}
+
+// Story: the collapses, then its camera.
 let storyCollapses = [
-    Collapse(source: FrameSource(rawDir.appendingPathComponent("story.mov")), lastOpen: close1 - collapseLead, activity: false),
-    Collapse(source: FrameSource(rawDir.appendingPathComponent("story.mov")), lastOpen: close2 - collapseLead, activity: true),
-    Collapse(source: FrameSource(rawDir.appendingPathComponent("story.mov")), lastOpen: close3 - collapseLead, activity: false),
+    Collapse("story #1 (leave)", source: FrameSource(rawDir.appendingPathComponent("story.mov")), lastOpen: close1 - collapseLead, shape: .plain),
+    Collapse("story #2 (tuck)", source: FrameSource(rawDir.appendingPathComponent("story.mov")), lastOpen: close2 - collapseLead, shape: .ears),
 ]
-/// Film time at which the tuck-away (mid-answer) collapse starts.
-let tuck = storyCollapses[1].start + filmOffsetA
-/// The still frame: the unread dot is lit, before the pointer sets off for the notch again.
-let dotStill = replyDone + 0.45
-let holdIn = dotStill + filmOffsetA
-let filmOffsetB = filmOffsetA + dotHold
-/// The matched cut into Settings: just after the last collapse has landed.
-let cutSettings = storyCollapses[2].start + collapseDuration + 0.12 + filmOffsetB
-let settingsSrcIn = settingsTake.sceneStart + 0.05
-let filmOffsetD = cutSettings - settingsSrcIn
-let settingsOpenFilm = settingsOpen + filmOffsetD
-let endCardStart = settingsOpenFilm + 6.3
-let totalDuration = ((endCardStart + 5.6) * 30).rounded() / 30
-
 let storyKeys = [
     // Establishing: the whole display, bezel corners and menu bar included.
-    CamKey(t: story.sceneStart, zoom: wide.zoom, cx: notchX, top: wide.top),
-    CamKey(t: hover1 - 1.2, zoom: wide.zoom, cx: notchX, top: wide.top),
+    key(story.sceneStart, wide.zoom, wide.top),
+    key(hover1 - 1.2, wide.zoom, wide.top),
     // Push in as the pointer heads for the notch, and be still 0.3 s before it lands.
-    CamKey(t: hover1 - 0.3, zoom: springHold, cx: notchX, top: 0),
+    key(hover1 - 0.3, springHold, 0),
     // Hold while it springs open and settles, then a gentle push until it tucks away.
-    CamKey(t: open1 + 0.75, zoom: springHold, cx: notchX, top: 0),
-    CamKey(t: close1, zoom: settled, cx: notchX, top: 0),
+    key(open1 + 0.75, springHold, 0),
+    key(close1, settled, 0),
     // Widen to take in the files on the desktop and the notch.
-    CamKey(t: close1 + 0.15, zoom: settled, cx: notchX, top: 0),
-    CamKey(t: close1 + 0.9, zoom: 1.2, cx: 1700, top: 0),
-    // Carried up to the notch; push in as they drop and the chips land.
-    CamKey(t: openDrag - 0.15, zoom: 1.2, cx: 1700, top: 0),
-    CamKey(t: openDrag + 0.6, zoom: 2.0, cx: notchX, top: 0),
+    key(close1 + 0.15, settled, 0),
+    key(close1 + 0.9, dropWide.zoom, 0, cx: dropWide.cx),
+    // Carried up to the notch; push in on the wells as they show, and hold for the chips and tab.
+    key(openDrag - 0.15, dropWide.zoom, 0, cx: dropWide.cx),
+    key(dropZones + 0.5, dropFraming, 0),
     // Sent: ease out to the streaming framing, which holds the whole panel above the caption.
-    CamKey(t: send + 0.2, zoom: 2.0, cx: notchX, top: 0),
-    CamKey(t: send + 1.0, zoom: streamFraming.zoom, cx: notchX, top: streamFraming.top),
-    // Tucked away mid-answer: push in on the notch as it closes, so the ears read.
-    CamKey(t: close2 + 0.05, zoom: streamFraming.zoom, cx: notchX, top: streamFraming.top),
-    CamKey(t: close2 + 0.85, zoom: earsFraming.zoom, cx: notchX, top: earsFraming.top),
-    // Ease out before the hover lands, so the reopening is seen whole.
-    CamKey(t: hover3 - 0.85, zoom: earsFraming.zoom, cx: notchX, top: earsFraming.top),
-    CamKey(t: hover3 - 0.1, zoom: reopenFraming.zoom, cx: notchX, top: reopenFraming.top),
+    key(send + 0.2, dropFraming, 0),
+    key(send + 1.0, streamFraming.zoom, streamFraming.top, cx: streamFraming.cx),
+    // Tucked away mid-answer: push in on the notch as it closes, and hold through the cut.
+    key(close2 + 0.05, streamFraming.zoom, streamFraming.top, cx: streamFraming.cx),
+    key(close2 + 0.85, earsFraming.zoom, earsFraming.top),
 ]
+/// Story runs from under the title card to just after the pointer lands on the preview.
+let clipA = Clip(take: story, source: storySource, outStart: footageIn,
+                 outEnd: footageIn + (pointerOnPreview + 0.1) - (story.sceneStart + 0.05),
+                 srcStart: story.sceneStart + 0.05, keys: storyKeys, collapses: storyCollapses)
 
-let clipA = Clip(source: storySource, outStart: footageIn, outEnd: holdIn, srcStart: story.sceneStart + 0.05, keys: storyKeys, collapses: storyCollapses)
-let clipHold = Clip(source: storySource, outStart: holdIn, outEnd: holdIn + dotHold, srcStart: dotStill, keys: storyKeys, freeze: true)
-let clipB = Clip(source: storySource, outStart: holdIn + dotHold, outEnd: cutSettings, srcStart: dotStill, keys: storyKeys, collapses: storyCollapses)
+// Act: picks up on story's last framing (the matched cut), follows the card, then tucks away.
+let actCollapses = [
+    Collapse("act (tuck)", source: FrameSource(rawDir.appendingPathComponent("act.mov")), lastOpen: actClose - collapseLead, shape: .plain),
+]
+let actKeys = [
+    key(actTake.sceneStart, earsFraming.zoom, earsFraming.top),
+    // The click opens the answer: ease out so it is seen whole.
+    key(actClick - 0.05, earsFraming.zoom, earsFraming.top),
+    key(actOpen + 0.55, reopenFraming.zoom, reopenFraming.top),
+    // Typing (no plate): the panel as it grows.
+    key(actTypeStart, reopenFraming.zoom, reopenFraming.top),
+    key(actTypeStart + 0.7, streamFraming.zoom, streamFraming.top, cx: streamFraming.cx),
+    // The card rises: push in on it and hold through the click on Add Event.
+    key(approvalShown - 0.1, streamFraming.zoom, streamFraming.top, cx: streamFraming.cx),
+    key(approvalShown + 0.6, cardFraming.zoom, cardFraming.top),
+    key(actToolDone + 0.1, cardFraming.zoom, cardFraming.top),
+    key(actToolDone + 0.9, streamFraming.zoom, streamFraming.top, cx: streamFraming.cx),
+    // Tucked away: ease to the closed-notch framing under the collapse.
+    key(actClose - collapseLead, streamFraming.zoom, streamFraming.top, cx: streamFraming.cx),
+    key(actClose + 0.45, reopenFraming.zoom, reopenFraming.top),
+]
+let clipB: Clip = {
+    let srcStart = actTake.sceneStart + 0.05
+    let srcEnd = actCollapses[0].start + collapseDuration + cutAfterCollapse
+    return Clip(take: actTake, source: actSource, outStart: clipA.outEnd, outEnd: clipA.outEnd + (srcEnd - srcStart),
+                srcStart: srcStart, keys: actKeys, collapses: actCollapses)
+}()
 
-/// Settings, from the reopen framing (the matched cut), pushing in as the window scales in. The
-/// caption sits over the window's lower half while the key and Keychain rows read above it; then
-/// the camera tilts down over the whole window.
-let clipD = Clip(source: settingsSource, outStart: cutSettings, outEnd: endCardStart + 0.7, srcStart: settingsSrcIn, keys: [
-    CamKey(t: settingsOpen - 0.05, zoom: reopenFraming.zoom, cx: notchX, top: reopenFraming.top),
-    CamKey(t: settingsOpen + 0.55, zoom: settingsFraming.zoom, cx: notchX, top: settingsFraming.top),
-    CamKey(t: settingsOpen + 3.75, zoom: settingsFraming.zoom, cx: notchX, top: settingsFraming.top),
-    CamKey(t: settingsOpen + 4.85, zoom: settingsFraming.zoom, cx: notchX, top: settingsLow),
+// Shelf-voice: the same closed notch, then the Shelf drop, the fold, the pill and the voice answer.
+let shelfCollapses = [
+    Collapse("shelf-voice #1 (fold)", source: FrameSource(rawDir.appendingPathComponent("shelf-voice.mov")), lastOpen: shelfFold - collapseLead, shape: .plain),
+    Collapse("shelf-voice #2 (tuck)", source: FrameSource(rawDir.appendingPathComponent("shelf-voice.mov")), lastOpen: shelfClose - collapseLead, shape: .plain),
+]
+let shelfKeys = [
+    key(shelfTake.sceneStart, reopenFraming.zoom, reopenFraming.top),
+    // Widen to take in the two files on the desktop and the notch.
+    key(shelfTake.sceneStart + 0.1, reopenFraming.zoom, reopenFraming.top),
+    key(shelfDragStart - 0.1, dropWide.zoom, 0, cx: dropWide.cx),
+    // Carried up: push in on the wells, and hold through the drop, the tiles and the fold.
+    key(shelfOpenDrag - 0.15, dropWide.zoom, 0, cx: dropWide.cx),
+    key(shelfDropZones + 0.4, wellsFraming.zoom, wellsFraming.top),
+    // The listening pill grows: push in on the notch.
+    key(voiceStart - 0.4, wellsFraming.zoom, wellsFraming.top),
+    key(voiceStart + 0.2, pillFraming.zoom, pillFraming.top),
+    // Released and sent: ease out to the answer as the notch opens.
+    key(voiceRelease, pillFraming.zoom, pillFraming.top),
+    key(voiceOpen + 0.6, voiceAnswerFraming.zoom, voiceAnswerFraming.top, cx: voiceAnswerFraming.cx),
+    // Tucked away: ease to the closed-notch framing under the collapse.
+    key(shelfClose - collapseLead, voiceAnswerFraming.zoom, voiceAnswerFraming.top, cx: voiceAnswerFraming.cx),
+    key(shelfClose + 0.45, reopenFraming.zoom, reopenFraming.top),
+]
+let clipC: Clip = {
+    let srcStart = shelfTake.sceneStart + 0.05
+    let srcEnd = shelfCollapses[1].start + collapseDuration + cutAfterCollapse
+    return Clip(take: shelfTake, source: shelfSource, outStart: clipB.outEnd, outEnd: clipB.outEnd + (srcEnd - srcStart),
+                srcStart: srcStart, keys: shelfKeys, collapses: shelfCollapses)
+}()
+
+// Settings: from the closed-notch framing (the matched cut), pushing in and down with the window as
+// it scales in, then holding until the end card.
+let settingsSrcIn = settingsTake.sceneStart + 0.05
+let settingsOpenFilm = clipC.outEnd + (settingsOpen - settingsSrcIn)
+let endCardStart = settingsOpenFilm + 3.9
+let endCardLength = 4.2
+let totalDuration = ((endCardStart + endCardLength) * 30).rounded() / 30
+let clipD = Clip(take: settingsTake, source: settingsSource, outStart: clipC.outEnd, outEnd: endCardStart + 0.7, srcStart: settingsSrcIn, keys: [
+    key(settingsOpen - 0.05, reopenFraming.zoom, reopenFraming.top),
+    key(settingsOpen + 0.55, settingsFraming.zoom, settingsFraming.top),
 ])
 
-let clips = [clipA, clipHold, clipB, clipD]
+let clips = [clipA, clipB, clipC, clipD]
 
-/// Maps a story source time to film time (nil inside a collapse's skipped frames).
-func storyFilm(_ s: Double) -> Double? {
-    for clip in clips where clip.source === storySource && !clip.freeze {
+/// Maps a take's source time to film time (nil outside that take's clip).
+func film(_ take: Take, _ s: Double) -> Double? {
+    for clip in clips where clip.take.name == take.name {
         let t = clip.outStart + (s - clip.srcStart)
-        if t >= clip.outStart && t < clip.outEnd { return t }
+        if t >= clip.outStart - 1e-6 && t < clip.outEnd { return t }
     }
     return nil
 }
 
-func sf(_ s: Double) -> Double {
-    guard let t = storyFilm(s) else { fail("story time \(s) is not in the cut") }
+func ft(_ take: Take, _ s: Double) -> Double {
+    guard let t = film(take, s) else { fail("\(take.name) time \(String(format: "%.3f", s)) is not in the cut") }
     return t
 }
+
+/// Film time at which the tuck-away (mid-answer) collapse starts.
+let tuck = ft(story, storyCollapses[1].start)
 
 // MARK: - Captions
 
@@ -1026,27 +1163,32 @@ struct Caption {
     let image: CIImage
 }
 
-// Titles carry no trailing period; sublines are sentences.
+// The brief's exact text (production-brief.md §5). Titles carry no trailing period; each subline is
+// one sentence on one line, so every plate's top sits at 818 px.
 let captions: [Caption] = [
-    Caption(start: sf(open1 + 0.6), end: sf(dragStart + 0.15), image: captionPlate("One glance away", [
-        [.text("Hover the notch or press "), .key("⌥"), .text(" "), .key("Space"), .text(".")],
-        [.text("It springs open, then tucks itself away.")],
+    Caption(start: ft(story, hover1), end: ft(story, dragStart + 0.3), image: captionPlate("One glance away", [
+        [.text("Hover the notch or press "), .key("⌥"), .text(" "), .key("Space"), .text(" from any app.")],
     ])),
-    Caption(start: sf(dragStart + 0.55), end: sf(send - 0.2), image: captionPlate("Knows what you\u{2019}re looking at", [
-        [.text("Drop in files, images and PDFs.")],
-        [.text("One click adds the tab you\u{2019}re reading.")],
+    Caption(start: ft(story, dragStart + 0.55), end: ft(story, send - 0.2), image: captionPlate("Knows what you\u{2019}re looking at", [
+        [.text("Drop in files, then add the tab you\u{2019}re reading in one click.")],
     ])),
-    Caption(start: sf(thinking + 0.15), end: tuck - 0.02, image: captionPlate("Answers that stream in", [
-        [.text("Web search with sources, visible thinking,")],
-        [.text("clean Markdown and code with copy buttons.")],
+    Caption(start: ft(story, thinking + 0.15), end: tuck - 0.02, image: captionPlate("Answers that stream in", [
+        [.text("It searches the web and cites its sources as it writes.")],
     ])),
-    Caption(start: tuck + 0.3, end: sf(hover3 - 0.45), image: captionPlate("Keeps working while you do", [
-        [.text("Tuck it away mid-answer. The notch shows it\u{2019}s")],
-        [.text("working, then lights up when the reply is ready.")],
+    Caption(start: tuck + 0.3, end: ft(actTake, actOpen + 0.8), image: captionPlate("Keeps working while you do", [
+        [.text("Tuck it away mid-answer, and the notch previews the reply.")],
     ])),
-    Caption(start: settingsOpenFilm + 0.45, end: settingsOpenFilm + 3.7, image: captionPlate("Your key, your Mac", [
-        [.text("Your API key stays in Keychain. Nothing leaves")],
-        [.text("until you press send. No telemetry, no account.")],
+    Caption(start: ft(actTake, approvalShown - 0.3), end: ft(actTake, actClose - 0.2), image: captionPlate("Acts with your OK", [
+        [.text("It shows exactly what it will add, then waits for your click.")],
+    ])),
+    Caption(start: ft(shelfTake, shelfDragStart + 0.2), end: ft(shelfTake, shelfFold - 0.05), image: captionPlate("Keeps files at hand", [
+        [.text("Drop files on the left side of the notch to park them.")],
+    ])),
+    Caption(start: ft(shelfTake, voiceStart + 0.15), end: ft(shelfTake, shelfClose - 0.2), image: captionPlate("Ask out loud", [
+        [.text("Hold "), .key("⌥"), .text(" "), .key("Space"), .text(" and talk, then let go to send.")],
+    ])),
+    Caption(start: settingsOpenFilm + 0.45, end: endCardStart - 0.2, image: captionPlate("Your key, your Mac", [
+        [.text("Your key stays in Keychain, with no account or telemetry.")],
     ])),
 ]
 
@@ -1057,31 +1199,34 @@ let cards: [Card] = [
 
 let fadeFromBlack = 0.3
 
-/// Sound cues in film time (scripts/make_audio.py), from the takes' own marks: the notch opening and
-/// closing, pointer clicks (a click lands 0.18 s before the action it triggers), the drop, the send
-/// and the Settings window.
+/// Sound cues in film time (scripts/make_audio.py), from every clip's own marks: the notch opening
+/// and closing (a click outside lands 0.18 s before its close), the drag's press and the drop, the
+/// tab, the preview and Add Event clicks (0.18 s before the action they trigger), the send (0.18 s
+/// early for the button, on the mark for Return and voice), the listening pill and the Settings
+/// window. Marks outside a take's clip make no sound.
 let cues: [[String: Any]] = {
     var out: [[String: Any]] = []
-    func add(_ t: Double?, _ kind: String) {
-        if let t { out.append(["t": (t * 1000).rounded() / 1000, "kind": kind]) }
-    }
-    var closes = 0
-    for m in story.marks {
-        switch m.event {
-        case "open": add(storyFilm(m.t), "open")
-        case "close":
-            closes += 1
-            // Tucked away by a click outside (the first close is the pointer leaving).
-            if closes > 1 { add(storyFilm(m.t - 0.18), "click") }
-            add(storyFilm(m.t), "close")
-        case "drag-start": add(storyFilm(m.t - 0.1), "click")
-        case "drop": add(storyFilm(m.t), "drop")
-        case "tab-attached": add(storyFilm(m.t - 0.18), "click")
-        case "send": add(storyFilm(m.t - 0.18), "send")
-        default: break
+    for clip in clips {
+        let take = clip.take
+        func add(_ s: Double, _ kind: String) {
+            if let t = film(take, s) { out.append(["t": (t * 1000).rounded() / 1000, "kind": kind]) }
+        }
+        for m in take.marks {
+            switch m.event {
+            case "open": add(m.t, "open")
+            case "close":
+                if m.note == "click" { add(m.t - 0.18, "click") }
+                add(m.t, "close")
+            case "drag-start": add(m.t - 0.1, "click")
+            case "drop": add(m.t, "drop")
+            case "tab-attached", "click", "approve": add(m.t - 0.18, "click")
+            case "send": add(m.t - (m.note == "button" ? 0.18 : 0), "send")
+            case "voice-start": add(m.t, "listen")
+            case "settings-open": add(m.t, "window")
+            default: break
+            }
         }
     }
-    add(settingsOpenFilm, "window")
     return out.sorted { ($0["t"] as! Double) < ($1["t"] as! Double) }
 }()
 
@@ -1139,10 +1284,10 @@ func writeImage(_ image: CIImage, to path: String, jpeg: Bool, rect: CGRect = ou
 
 // MARK: - Poster
 
-/// The poster: the film's finished answer under the notch (rendered by `Otto --promo-stills` as
-/// poster-stage.png: no pointer, the reply with its code block, sources and Copy row), framed so the
-/// whole menu bar sits inside the frame (the crop edges fall in the bezel), with the tagline on a
-/// plate led by the app icon.
+/// The poster: the film's act beat under the notch (rendered by `Otto --promo-stills` as
+/// poster-stage.png: no pointer, the Friday answer above the calendar request and its armed card),
+/// framed so the whole menu bar sits inside the frame (the crop edges fall in the bezel), with the
+/// tagline on a plate led by the app icon.
 func posterImage() -> CIImage {
     let url = rawDir.appendingPathComponent("poster-stage.png")
     guard let src = CGImageSourceCreateWithURL(url as CFURL, nil),
@@ -1167,14 +1312,15 @@ let gifCrop = CGRect(x: 904, y: 40, width: 1280, height: 1000) // top-left origi
 
 func renderGIF() {
     let hero = Take("hero")
-    // From just before the pointer glides into the crop (it rests outside it) to the moment the
-    // unread dot's ear has retracted: ~13.4 s, plus the held seam frame.
+    // From just before the pointer glides into the crop (it rests outside it), through the reply
+    // preview's real 4 s, to the moment the unread dot's ear has retracted: ~15.6 s, plus the held
+    // seam frame. The dot's retract is the loop's reset (the take's own note), not product behavior.
     let gifStart = hero.t("pointer-to-notch") + 0.14
     let heroClose = hero.t("close")
     let gifEndSrc = hero.t("ears-retract") + 0.36
 
     let heroSource = FrameSource(rawDir.appendingPathComponent("hero.mov"))
-    let collapse = Collapse(source: FrameSource(rawDir.appendingPathComponent("hero.mov")), lastOpen: heroClose - collapseLead, activity: true)
+    let collapse = Collapse("hero (tuck)", source: FrameSource(rawDir.appendingPathComponent("hero.mov")), lastOpen: heroClose - collapseLead, shape: .ears)
     let liveLength = gifEndSrc - gifStart
     let fps = Double(options.gifFPS)
     let liveFrames = Int((liveLength * fps).rounded())
@@ -1234,9 +1380,16 @@ func renderGIF() {
 
 // MARK: - Run
 
-print(String(format: "cut: footage %.2f, tuck %.2f, dot hold %.2f, settings %.2f (window %.2f), end card %.2f, total %.2f s",
-             footageIn, tuck, holdIn, cutSettings, settingsOpenFilm, endCardStart, totalDuration))
-for c in captions { print(String(format: "  caption %.2f–%.2f", c.start, c.end)) }
+print(String(format: "cut: footage %.2f, tuck %.2f, act %.2f, shelf-voice %.2f, settings %.2f (window %.2f), end card %.2f, total %.2f s",
+             footageIn, tuck, clipB.outStart, clipC.outStart, clipD.outStart, settingsOpenFilm, endCardStart, totalDuration))
+for (i, clip) in clips.enumerated() {
+    print(String(format: "  clip %@ %@: film %.2f–%.2f (%.2f s), source %.2f–%.2f",
+                 ["A", "B", "C", "D"][i], clip.take.name, clip.outStart, clip.outEnd, clip.outEnd - clip.outStart,
+                 clip.srcStart, clip.srcTime(clip.outEnd)))
+    if clip.outEnd - clip.outStart < 1.5 { warn("clip \(clip.take.name) is under 1.5 s") }
+}
+print(String(format: "  end card %.2f–%.2f (%.2f s)", endCardStart, totalDuration, totalDuration - endCardStart))
+for c in captions { print(String(format: "  caption %.2f–%.2f (%.2f s)", c.start, c.end, c.end - c.start)) }
 
 if !options.stills.isEmpty {
     let dir = options.stillsDir.isEmpty ? "." : options.stillsDir
