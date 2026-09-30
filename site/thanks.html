@@ -15,6 +15,9 @@
   <link rel="stylesheet" href="styles.css">
   <script>document.documentElement.classList.add("js");</script>
   <script src="script.js" defer></script>
+  <!-- Vercel Web Analytics counts page views without cookies. beforeSend drops the query string and fragment from each address it sends. -->
+  <script>window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); }; window.va("beforeSend", function (event) { var url = new URL(event.url); url.search = ""; url.hash = ""; event.url = url.href; return event; });</script>
+  <script src="/_vercel/insights/script.js" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
@@ -41,7 +44,7 @@
       <div class="wrap hero__copy">
         <img class="hero__icon" src="media/icon.png" width="512" height="512" alt="" decoding="async">
         <h1 id="thanks-title" class="h2 reveal">Thanks for buying Otto.</h1>
-        <p class="lede reveal">Your license key is in the email from Polar and on your <a href="{{PORTAL_URL}}">Polar purchases page</a>.</p>
+        <p class="lede reveal">Your license key is in your <a href="{{PORTAL_URL}}">Polar customer portal</a>. Sign in with the email you used at checkout, and Polar emails you a one-time code. Polar's order confirmation email links to the portal too.</p>
       </div>
     </section>
 

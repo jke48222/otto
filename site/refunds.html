@@ -14,6 +14,9 @@
   <link rel="stylesheet" href="styles.css">
   <script>document.documentElement.classList.add("js");</script>
   <script src="script.js" defer></script>
+  <!-- Vercel Web Analytics counts page views without cookies. beforeSend drops the query string and fragment from each address it sends. -->
+  <script>window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); }; window.va("beforeSend", function (event) { var url = new URL(event.url); url.search = ""; url.hash = ""; event.url = url.href; return event; });</script>
+  <script src="/_vercel/insights/script.js" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
@@ -43,7 +46,7 @@
 
       <section class="doc__section" aria-labelledby="refunds-how">
         <h2 id="refunds-how" class="h4">How</h2>
-        <p>Email <a href="mailto:{{SUPPORT_EMAIL}}">{{SUPPORT_EMAIL}}</a> from the address you bought with, or reply to your Polar receipt, within {{REFUND_DAYS}} days of your purchase. I refund through Polar, usually within 2 business days. Your bank can take 5 to 10 more days to show it.</p>
+        <p>Email <a href="mailto:{{SUPPORT_EMAIL}}">{{SUPPORT_EMAIL}}</a> from the address you bought with, within {{REFUND_DAYS}} days of your purchase. I refund through Polar, usually within 2 business days. Your bank can take 5 to 10 more days to show it.</p>
       </section>
 
       <section class="doc__section" aria-labelledby="refunds-license">
@@ -51,14 +54,11 @@
         <p>A refund turns the license off. The app confirms it over two checks, usually within 2 days, and then asks for a license before it sends messages. Your settings, history and files stay on your Mac, and the source build stays free.</p>
       </section>
 
-      <section class="doc__section" aria-labelledby="refunds-stores">
-        <h2 id="refunds-stores" class="h4">Other stores</h2>
-        <p>Bought on Gumroad: the same {{REFUND_DAYS}} days, through Gumroad or by emailing me. Using Otto through Setapp: Setapp handles billing and refunds under its own policy.</p>
-      </section>
+      <!-- Other stores: 1.1.0 sells only through Polar (no Gumroad keys, no Setapp build). When those channels open, restore an "Other stores" section here. Gumroad's terms (section 7.1(a)) leave refunds to Gumroad's sole discretion, so don't promise the Polar refund window there; Setapp handles billing and refunds for Setapp members under its own policy. -->
 
       <section class="doc__section" aria-labelledby="refunds-chargebacks">
         <h2 id="refunds-chargebacks" class="h4">Chargebacks</h2>
-        <p>Polar can refund an order on its own within 60 days of purchase to prevent a chargeback. The license turns off then too.</p>
+        <p>Polar can refund an order on its own, at its discretion, within 60 days of purchase to prevent a chargeback. That refund can turn the license off too.</p>
       </section>
     </div>
   </main>

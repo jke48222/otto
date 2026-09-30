@@ -14,6 +14,9 @@
   <link rel="stylesheet" href="styles.css">
   <script>document.documentElement.classList.add("js");</script>
   <script src="script.js" defer></script>
+  <!-- Vercel Web Analytics counts page views without cookies. beforeSend drops the query string and fragment from each address it sends. -->
+  <script>window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); }; window.va("beforeSend", function (event) { var url = new URL(event.url); url.search = ""; url.hash = ""; event.url = url.href; return event; });</script>
+  <script src="/_vercel/insights/script.js" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
@@ -39,17 +42,20 @@
       <header class="doc__head">
         <h1 class="h2">Privacy policy</h1>
         <p class="doc__meta">Effective {{EFFECTIVE_DATE}}.</p>
-        <p class="doc__intro">Otto runs on your Mac. It has no account, no analytics and no server of its own. This page lists everything the signed app sends, where it goes, and what stays on your Mac.</p>
+        <p class="doc__intro">Otto runs on your Mac. The app has no account, no analytics and no server of its own. This page lists everything the signed app sends, where it goes, what stays on your Mac, and what this website records.</p>
       </header>
 
       <section class="doc__section" aria-labelledby="privacy-send">
         <h2 id="privacy-send" class="h4">When you send a message</h2>
-        <p>Otto sends your message, the items you attached, your custom instructions and the conversation so far to api.anthropic.com over HTTPS, with your own API key. Nothing goes to Anthropic before you press send. Anthropic's privacy policy covers that data.</p>
+        <p>Otto sends nothing to Anthropic until you press send. Then it sends a request to api.anthropic.com over HTTPS, with your own API key. The request carries your message, anything you attached (a file, an image, a screenshot, selected text, or a browser tab's title and address), your custom instructions, the conversation so far and today's date.</p>
+        <p>With Actions on, the request also carries your time zone and local time. While Claude answers, Otto sends back the result of each action that runs. That covers the calendar events and reminders it reads or adds, the names of your shortcuts and what a shortcut returns, what an AppleScript returns, and the track, artist and state of Music or Spotify. Anthropic's privacy policy covers all of this data.</p>
       </section>
 
       <section class="doc__section" aria-labelledby="privacy-checks">
         <h2 id="privacy-checks" class="h4">License checks</h2>
-        <p>About once a day, and when you activate or deactivate, the signed app contacts api.polar.sh. It sends your license key, Otto's organization and product IDs at Polar, and this Mac's activation ID. When you first activate, it also sends a label like "Mac 7F3A" made from random characters. Otto never sends your name, your email, your Mac's name or a hardware ID. For a key bought on Gumroad, Otto contacts api.gumroad.com with the key and Otto's product ID instead. Polar records the time and count of each check and the activation label, and links them to your purchase, so I can see when a license was last checked. I use this only for support.</p>
+        <p>About once a day, and when you activate, deactivate or click Check Now, the signed app contacts api.polar.sh. Every request carries your license key and Otto's organization ID at Polar. A check adds Otto's license benefit ID at Polar and this Mac's activation ID, and deactivating adds the activation ID. When you activate, the app also sends a label like "Mac 7F3A" made from random characters. Each request names the app and its version in its User-Agent header, such as Otto/1.1.0, and carries no cookies. Otto never sends your name, your email, your Mac's name or a hardware ID.</p>
+        <!-- Gumroad: 1.1.0 is built with OTTO_GUMROAD_PRODUCT_ID = none, so it never contacts Gumroad. When Gumroad keys are turned on, add here: "For a key bought on Gumroad, Otto contacts api.gumroad.com with the key and Otto's Gumroad product ID instead." and add Gumroad to "What every server sees". -->
+        <p>Polar's answer also includes the customer record that belongs to the key. Otto reads only what it needs to check the license (the key's status, seat limit and IDs) and never reads the customer record. Polar records the time and count of each check and the activation label, and links them to your purchase, so I can see when a license was last checked. I use this only for support.</p>
       </section>
 
       <section class="doc__section" aria-labelledby="privacy-updates">
@@ -62,34 +68,32 @@
         <p>If Now Playing is on and Spotify is playing, Otto loads the album art from Spotify's image server. Only if you turn on Apple's speech service in Settings, Voice, your recorded audio goes to Apple for transcription; otherwise speech is recognized on your Mac. Web search and web fetch run on Anthropic's servers, not on your Mac.</p>
       </section>
 
-      <section class="doc__section" aria-labelledby="privacy-setapp">
-        <h2 id="privacy-setapp" class="h4">Setapp</h2>
-        <p>If you use Otto through Setapp, the Setapp Framework tells Setapp when you use Otto, so Setapp can pay developers. Setapp's privacy policy covers that. The Setapp build makes no license checks and gets its updates from Setapp.</p>
-      </section>
+      <!-- Setapp: no Setapp build ships with 1.1.0. When one does, restore a "Setapp" section here: the Setapp Framework tells Setapp when you use Otto, so Setapp can pay developers, under Setapp's privacy policy; the Setapp build makes no license checks and gets its updates from Setapp. Add Setapp to "What every server sees" too. -->
 
       <section class="doc__section" aria-labelledby="privacy-servers">
         <h2 id="privacy-servers" class="h4">What every server sees</h2>
-        <p>Each of these servers sees your IP address, like any website you visit, and keeps logs under its own policy: Anthropic, Polar, Gumroad, Vercel, Setapp, Spotify's image server and, if you turn it on, Apple's speech service.</p>
+        <p>Each of these servers sees your IP address, like any website you visit, and keeps logs under its own policy: Anthropic, Polar, Vercel, Spotify's image server and, if you turn it on, Apple's speech service.</p>
       </section>
 
       <section class="doc__section" aria-labelledby="privacy-local">
         <h2 id="privacy-local" class="h4">What stays on your Mac</h2>
-        <p>Your API key, license key, activation ID and trial start date are in your login Keychain. Conversations, the File Shelf and usage totals are in your Library folder and never leave your Mac. You choose how long history is kept in Settings, Privacy.</p>
+        <p>Your API key, license key, activation ID and trial start date are in your login Keychain. Conversations, the File Shelf, the actions activity log and usage totals are in your Library folder. A conversation leaves your Mac only in the requests to Anthropic described above, after you press send, and a Shelf file only when you attach it. The activity log and usage totals never leave your Mac. You choose how long history is kept in Settings, Privacy.</p>
       </section>
 
       <section class="doc__section" aria-labelledby="privacy-buy">
         <h2 id="privacy-buy" class="h4">When you buy</h2>
-        <p>Polar runs the checkout. It collects your name, email, billing address and payment details under its privacy policy, and shares your name, email and order with me so I can help you and send refunds. I use your email only to reply to you. No newsletter unless you ask for one.</p>
+        <p>Polar runs the checkout as the merchant of record. It collects your name, email, billing address and payment details under its privacy policy. Polar records you as a customer of my Polar organization, and my Polar dashboard shows me your orders: your name and email, the billing name and address, the amount and tax, and your license key with its activations and checks. I use your email only to reply to you and to handle refunds. No newsletter unless you ask for one.</p>
       </section>
 
       <section class="doc__section" aria-labelledby="privacy-site">
         <h2 id="privacy-site" class="h4">This website</h2>
-        <p>{{SITE_HOST}} is hosted by Vercel. It sets no cookies and runs no analytics or trackers. Vercel keeps standard server logs.</p>
+        <p>{{SITE_HOST}} is hosted by Vercel, which keeps standard server logs. The site counts page views with Vercel Web Analytics. Its script sets no cookies. Instead, Vercel tells visitors apart by a hash made from each incoming request, and it discards each visitor session after 24 hours.</p>
+        <p>With each page view, Vercel stores the time, the page's address, the site that linked you here, your country, region and city, your operating system and browser with their versions, whether you're on a phone, tablet or computer, and the script's version. These pages remove anything after "?" or "#" in the address before it's sent. I see only totals. The Otto app has no analytics or telemetry.</p>
       </section>
 
       <section class="doc__section" aria-labelledby="privacy-rights">
         <h2 id="privacy-rights" class="h4">Your rights</h2>
-        <p>{{SELLER_LEGAL_NAME}} is responsible for the purchase details Polar shares with me. I keep them while you hold a license, and longer only where tax law requires it. You can ask me for a copy, a correction or deletion at <a href="mailto:{{SUPPORT_EMAIL}}">{{SUPPORT_EMAIL}}</a>, and you can complain to your data protection authority.</p>
+        <p>{{SELLER_LEGAL_NAME}} is responsible for the purchase details I can see in Polar. I keep them while you hold a license, and longer only where tax law requires it. You can ask me for a copy, a correction or deletion at <a href="mailto:{{SUPPORT_EMAIL}}">{{SUPPORT_EMAIL}}</a>, and you can complain to your data protection authority.</p>
       </section>
 
       <section class="doc__section" aria-labelledby="privacy-delete">

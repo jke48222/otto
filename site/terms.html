@@ -14,6 +14,9 @@
   <link rel="stylesheet" href="styles.css">
   <script>document.documentElement.classList.add("js");</script>
   <script src="script.js" defer></script>
+  <!-- Vercel Web Analytics counts page views without cookies. beforeSend drops the query string and fragment from each address it sends. -->
+  <script>window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); }; window.va("beforeSend", function (event) { var url = new URL(event.url); url.search = ""; url.hash = ""; event.url = url.href; return event; });</script>
+  <script src="/_vercel/insights/script.js" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
@@ -44,12 +47,13 @@
 
       <section class="doc__section" aria-labelledby="terms-seller">
         <h2 id="terms-seller" class="h4">Who sells Otto</h2>
-        <p>I'm {{SELLER_LEGAL_NAME}}, and I make Otto. Polar (polar.sh) is the merchant of record for purchases on this site: Polar sells you the license, takes the payment, sends the receipt and collects sales tax and VAT. Polar's terms also apply to the payment. Purchases on Gumroad are sold by Gumroad under its terms.</p>
+        <p>I'm {{SELLER_LEGAL_NAME}}, and I make Otto. Polar (polar.sh) is the merchant of record for purchases on this site: Polar sells you the license, takes the payment, sends the receipt and collects sales tax and VAT. Polar's terms also apply to the payment.</p>
+        <!-- Gumroad: 1.1.0 refuses Gumroad keys (OTTO_GUMROAD_PRODUCT_ID = none). When Gumroad sales open, add: "Purchases on Gumroad are sold by Gumroad under its terms." -->
       </section>
 
       <section class="doc__section" aria-labelledby="terms-get">
         <h2 id="terms-get" class="h4">What you get</h2>
-        <p>A license for the signed, notarized Otto app on up to {{SEATS}} Macs that you use. Every 1.x update. If there is ever a paid 2.0, your 1.x copy keeps working. Updates come from this site and install through the app.</p>
+        <p>A license for the signed, notarized Otto app on up to {{SEATS}} Macs that you use, and every 1.x update. Updates come from this site and install through the app. The signed app keeps sending messages only while Polar keeps confirming your license, as License checks below explains.</p>
       </section>
 
       <section class="doc__section" aria-labelledby="terms-trial">
@@ -69,12 +73,14 @@
 
       <section class="doc__section" aria-labelledby="terms-checks">
         <h2 id="terms-checks" class="h4">License checks</h2>
-        <p>The app checks your license with Polar about once a day, or with Gumroad for keys bought there. If it can't reach them, it keeps working for 30 days, then shows a note in Settings, then asks for a check after 14 more days. The <a href="/privacy">privacy policy</a> lists exactly what each check sends.</p>
+        <p>While Otto runs, it checks your license with Polar in the background at most once a day. A check that can't reach Polar changes nothing at first. After 30 days without a successful check, Settings shows the date sending will pause. After 44 days, sending a message waits until a check succeeds, and Check Now in Settings, License starts one. Each successful check restarts the count.</p>
+        <p>If Polar answers that it no longer accepts the license, for example after a refund, the app waits for the same answer at least 20 hours later, then removes the license from that Mac. Either way, the signed app would stop sending messages if Polar or my Polar account closed. Settings, Recents and demo mode keep working, and a build from the MIT source has no license check. The <a href="/privacy">privacy policy</a> lists exactly what each check sends.</p>
       </section>
 
       <section class="doc__section" aria-labelledby="terms-move">
         <h2 id="terms-move" class="h4">Moving to another Mac</h2>
-        <p>Deactivate Otto on the old Mac in Settings, License, to free its seat, or remove that Mac in your <a href="{{PORTAL_URL}}">Polar customer portal</a>. Gumroad keys can't free a seat from the app. Email me and I'll reset it.</p>
+        <p>Deactivate Otto on the old Mac in Settings, License, to free its seat, or remove that Mac in your <a href="{{PORTAL_URL}}">Polar customer portal</a>.</p>
+        <!-- Gumroad: when Gumroad keys are turned on, add: "Gumroad keys can't free a seat from the app. Email me and I'll reset it." -->
       </section>
 
       <section class="doc__section" aria-labelledby="terms-refunds">

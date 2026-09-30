@@ -26,6 +26,9 @@
   <link rel="stylesheet" href="styles.css">
   <script>document.documentElement.classList.add("js");</script>
   <script src="script.js" defer></script>
+  <!-- Vercel Web Analytics counts page views without cookies. beforeSend drops the query string and fragment from each address it sends. -->
+  <script>window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); }; window.va("beforeSend", function (event) { var url = new URL(event.url); url.search = ""; url.hash = ""; event.url = url.href; return event; });</script>
+  <script src="/_vercel/insights/script.js" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
@@ -121,7 +124,7 @@
           </details>
           <details class="faq__item">
             <summary>Do updates cost extra?</summary>
-            <div class="faq__body"><p>No. Every 1.x update is included. If there is ever a paid 2.0, your 1.x copy keeps working.</p></div>
+            <div class="faq__body"><p>No. Every 1.x update is included. The app confirms its license with Polar about once a day and keeps sending for 44 days without a successful check. The <a href="/terms">terms</a> have the details.</p></div>
           </details>
           <details class="faq__item">
             <summary>Is there a student discount?</summary>
