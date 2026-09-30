@@ -50,7 +50,7 @@
 
       <section class="doc__section" aria-labelledby="terms-get">
         <h2 id="terms-get" class="h4">What you get</h2>
-        <p>A license for the signed, notarized Otto app on up to {{SEATS}} Macs that you use. Every 1.x update. If there is ever a paid 2.0, your 1.x copy keeps working. Updates come from this site and install through the app.</p>
+        <p>A license for the signed, notarized Otto app on up to {{SEATS}} Macs that you use, and every 1.x update. Updates come from this site and install through the app. The signed app keeps sending messages only while Polar keeps confirming your license, as License checks below explains.</p>
       </section>
 
       <section class="doc__section" aria-labelledby="terms-trial">
@@ -70,7 +70,8 @@
 
       <section class="doc__section" aria-labelledby="terms-checks">
         <h2 id="terms-checks" class="h4">License checks</h2>
-        <p>The app checks your license with Polar about once a day. If it can't reach them, it keeps working for 30 days, then shows a note in Settings, then asks for a check after 14 more days. The <a href="/privacy">privacy policy</a> lists exactly what each check sends.</p>
+        <p>While Otto runs, it checks your license with Polar in the background at most once a day. A check that can't reach Polar changes nothing at first. After 30 days without a successful check, Settings shows the date sending will pause. After 44 days, sending a message waits until a check succeeds, and Check Now in Settings, License starts one. Each successful check restarts the count.</p>
+        <p>If Polar answers that it no longer accepts the license, for example after a refund, the app waits for the same answer at least 20 hours later, then removes the license from that Mac. Either way, the signed app would stop sending messages if Polar or my Polar account closed. Settings, Recents and demo mode keep working, and a build from the MIT source has no license check. The <a href="/privacy">privacy policy</a> lists exactly what each check sends.</p>
       </section>
 
       <section class="doc__section" aria-labelledby="terms-move">
