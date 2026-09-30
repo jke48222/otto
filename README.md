@@ -632,6 +632,8 @@ setup, project layout, conventions and the PR checklist. Please follow the
 [Code of Conduct](CODE_OF_CONDUCT.md), and report security issues privately as described in
 [SECURITY.md](SECURITY.md).
 
+If Otto saves you time, you can [sponsor its development on GitHub](https://github.com/sponsors/jke48222).
+
 ### Human QA
 
 Some things only a person on a real Mac can check: macOS permission dialogs, System Settings, real hardware
