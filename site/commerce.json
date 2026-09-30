@@ -10,7 +10,7 @@
   "price": {"usd": 19, "seats": 3, "trialDays": 14, "refundDays": 30, "studentDiscountPercent": 30, "minMacOS": "14"},
   "polar": {
     "checkoutURL": "JALEN_MUST_SET_POLAR_CHECKOUT_LINK",
-    "portalURL": "JALEN_MUST_SET_POLAR_PORTAL_URL"
+    "portalURL": "https://polar.sh/jalenedusei/portal"
   },
   "launch": {
     "usd": 14,
