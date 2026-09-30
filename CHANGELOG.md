@@ -60,10 +60,9 @@ notarized app is a one-time purchase.
   (<kbd>⌘</kbd><kbd>⇧</kbd><kbd>↑</kbd>).
 - **Custom global shortcut**, a switch to turn off hover-to-open, and a one-time note when another notch
   app is running.
-- **The signed app:** a 14-day trial, license keys from Polar and Gumroad, Settings → License, and updates
-  through Sparkle.
-- **A build for Setapp.**
-- License checks and Sparkle compile only into those builds. The source build is unchanged and still uses
+- **The signed app:** a 14-day trial, license keys from Polar, Settings → License, and updates through
+  Sparkle. The code also supports Gumroad keys and a Setapp build; neither is offered in 1.1.0.
+- License checks and Sparkle compile only into the signed builds. The source build is unchanged and still uses
   only Apple frameworks.
 
 ### Changed
