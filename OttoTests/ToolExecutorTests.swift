@@ -1124,8 +1124,8 @@ private enum ExecTranscript {
                               knownTools: Dictionary(knownTools.map { ($0.name, $0) },
                                                      uniquingKeysWith: { _, last in last }))
         let executor = executor
-        let store = store
-        return Task { try await executor.execute(round, store: store) }
+        let roundStore = store
+        return Task { try await executor.execute(round, store: roundStore) }
     }
 
     func start(_ calls: [(String, String, JSONValue)], tools: [any OttoTool],

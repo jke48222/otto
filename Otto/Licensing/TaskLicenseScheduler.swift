@@ -16,7 +16,7 @@ import Foundation
     func schedule(after delay: Duration, _ work: @escaping @MainActor () -> Void) -> LicenseScheduledWork {
         let task = Task { @MainActor in
             do {
-                try await Task.sleep(for: max(delay, .zero), clock: .continuous)
+                try await Task.sleep(for: max(delay, Duration.zero), clock: .continuous)
             } catch {
                 return  // cancelled
             }
