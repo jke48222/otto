@@ -92,17 +92,6 @@ block.
   <img src="docs/media/screens/answer.png" width="820" alt="Otto’s answer to “Summarize this in 3 bullets”: the page read and web search it ran, three bullets, and source pills for each site it used">
 </p>
 
-### Acts with your OK
-
-Actions are off until you turn them on in **Settings → Actions**. Then Claude can add calendar events and
-reminders, run your Shortcuts or open a link. Each one shows up first as a card with exactly what will be
-added or run, and waits for your click or <kbd>⌘</kbd><kbd>↩</kbd>. The one way past the card is
-**Always allow** on a shortcut you trust. An event or reminder Otto adds can be undone for 10 minutes.
-
-<p align="center">
-  <img src="docs/media/screens/actions.png" width="820" alt="Otto asking before it adds an event: a card for Release notes review, Wednesday 10:00 to 10:30 AM on the Work calendar, with Don't add and Add Event buttons">
-</p>
-
 ### Keeps working while you do
 
 Close Otto mid-answer and the reply keeps coming. The notch grows two small ears, a breathing orb and a
@@ -112,6 +101,17 @@ you've read it.
 
 <p align="center">
   <img src="docs/media/screens/glance.png" width="820" alt="The closed notch after a reply finished: the first line of the answer drops under the camera, shown magnified below">
+</p>
+
+### Acts with your OK
+
+Actions are off until you turn them on in **Settings → Actions**. Then Claude can add calendar events and
+reminders, run your Shortcuts or open a link. Each one shows up first as a card with exactly what will be
+added or run, and waits for your click or <kbd>⌘</kbd><kbd>↩</kbd>. The one way past the card is
+**Always allow** on a shortcut you trust. An event or reminder Otto adds can be undone for 10 minutes.
+
+<p align="center">
+  <img src="docs/media/screens/actions.png" width="820" alt="Otto asking before it adds an event: a card for Release notes review, Wednesday 10:00 to 10:30 AM on the Work calendar, with Don't add and Add Event buttons">
 </p>
 
 ### Keeps files at hand
@@ -152,7 +152,7 @@ telemetry. The two opt-in exceptions, Apple's speech service and Spotify artwork
 [Privacy & permissions](#privacy--permissions).
 
 <p align="center">
-  <img src="docs/media/screens/settings.png" width="560" alt="Otto Settings on the Models tab: the Anthropic API key saved in Keychain, the Claude models with their prices and the response style">
+  <img src="docs/media/screens/settings.png" width="820" alt="Otto Settings on the Models tab: the Anthropic API key saved in Keychain, the Claude models with their prices and the response style">
 </p>
 
 ## Features
