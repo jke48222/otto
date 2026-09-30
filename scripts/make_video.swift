@@ -61,6 +61,7 @@ struct Options {
     var gifStills: [Double] = []
     var stillsDir = ""
     var video = true
+    var endCard = "source"
 
     static func parse() -> Options {
         var o = Options()
@@ -87,6 +88,9 @@ struct Options {
             case "--gif-stills": o.gifStills = value().split(separator: ",").compactMap { Double($0) }
             case "--stills-dir": o.stillsDir = value()
             case "--no-video": o.video = false
+            case "--end-card":
+                o.endCard = value()
+                guard ["source", "launch"].contains(o.endCard) else { fail("--end-card must be source or launch") }
             default: fail("unknown option \(a)")
             }
         }
@@ -517,10 +521,12 @@ func endCard(start: Double, end: Double) -> Card {
         drawCentered(attributed("Hover the notch, ask anything, get back to work.", g, Ink.secondary), baselineY: 500, font: g)
     }
     let actions = makeLayer { ctx in
-        // The repo address on a pill with a drawn right arrow. There is no download yet: the signed
-        // build is not out, so the card points at the source and says the signed app is coming.
+        // An address on a pill with a drawn right arrow. Before the signed app is on sale (--end-card source)
+        // the card points at the source and says the signed app is coming; from launch (--end-card launch)
+        // it points at the site, where the trial and the purchase are.
+        let isLaunch = options.endCard == "launch"
         let lf = sans(28, .semibold)
-        let label = attributed("github.com/jke48222/otto", lf, Ink.buttonText, kern: -0.1)
+        let label = attributed(isLaunch ? "ottonotch.com" : "github.com/jke48222/otto", lf, Ink.buttonText, kern: -0.1)
         let lw = label.size().width
         let arrowW: CGFloat = 20
         let pillW = 34 + lw + 16 + arrowW + 32
@@ -552,7 +558,9 @@ func endCard(start: Double, end: Double) -> Card {
         ctx.strokePath()
 
         let g = sans(30, .medium)
-        drawCentered(attributed("Build it from source today. The signed app is coming soon.", g, Ink.primary.withAlphaComponent(0.9), kern: 0.1), baselineY: 276, font: g)
+        let line = isLaunch ? "Try it free for 14 days, then $19 once. Or build it from source."
+            : "Build it from source today. The signed app is coming soon."
+        drawCentered(attributed(line, g, Ink.primary.withAlphaComponent(0.9), kern: 0.1), baselineY: 276, font: g)
     }
     let fine = makeLayer { ctx in
         let f = sans(24, .regular)

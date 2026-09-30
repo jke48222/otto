@@ -8,6 +8,7 @@
 #   scripts/make_video.sh --web-crf 26            # the site's renditions' CRF (default 24, 26 if over budget)
 #   scripts/make_video.sh --gif-fps 20            # the README loop's frame rate (default 22)
 #   scripts/make_video.sh --web-only              # only re-derive the site's renditions from the film
+#   scripts/make_video.sh --end-card launch       # the end card points at the site's trial and price
 #
 # Inputs (recorded by scripts/make_media.sh):
 #   <raw>/{story,act,shelf-voice,settings}.mov + .json   the film's 3072×1728 60 fps masters and
@@ -61,6 +62,7 @@ CRF=20
 WEB_CRF=24
 GIF_FPS=22
 WEB_ONLY=0
+END_CARD=source
 FFMPEG="$(command -v ffmpeg || echo /opt/homebrew/bin/ffmpeg)"
 
 while [[ $# -gt 0 ]]; do
@@ -71,6 +73,7 @@ while [[ $# -gt 0 ]]; do
     --web-crf) WEB_CRF="$2"; shift ;;
     --gif-fps) GIF_FPS="$2"; shift ;;
     --web-only) WEB_ONLY=1 ;;
+    --end-card) END_CARD="$2"; shift ;;
     -h|--help) sed -n '2,/^set -euo/{/^set -euo/d;p;}' "$0"; exit 0 ;;
     *) echo "error: unknown option $1" >&2; exit 1 ;;
   esac
@@ -138,7 +141,7 @@ echo "==> Rendering the picture, the poster and the sound cues"
   --raw "$RAW" --icon "$MEDIA/icon.png" --ffmpeg "$FFMPEG" \
   --fps "$FPS" --crf "$CRF" --gif-fps "$GIF_FPS" \
   --out "$WORK/picture.mp4" --poster "$MEDIA/otto-promo-poster.jpg" --cues "$WORK/cues.json" \
-  --gif "$WORK/hero.mkv"
+  --gif "$WORK/hero.mkv" --end-card "$END_CARD"
 
 echo "==> Scoring the soundtrack"
 python3 "$ROOT/scripts/make_audio.py" --cues "$WORK/cues.json" --out "$WORK/score.wav"
