@@ -227,6 +227,52 @@ final class PromoStageTests: XCTestCase {
         XCTAssertNil(cast.privacyProblem())
     }
 
+    /// The voice take's scripted recognizer builds the launch-update prompt word by word, ends on the whole
+    /// prompt (what finish delivers and sends), and the prompt fits the closed pill without head truncation.
+    func testVoiceScriptBuildsTheLaunchUpdatePrompt() throws {
+        let prompt = PromoContent.launchUpdate.prompt
+        XCTAssertLessThanOrEqual(prompt.count, 40)
+        let steps = PromoContent.voiceScript
+        XCTAssertEqual(steps.last?.text, prompt)
+        XCTAssertEqual(steps.first?.text, "Write")
+        var previous = ""
+        for step in steps {
+            XCTAssertTrue(step.text.hasPrefix(previous), step.text)
+            XCTAssertTrue((0.3...0.8).contains(step.level), "\(step.level)")
+            previous = step.text
+        }
+        let total = steps.reduce(Duration.zero) { $0 + $1.delay }
+        XCTAssertEqual(total.timeInterval, 1.8, accuracy: 0.1)
+    }
+
+    /// The Shelf beat's files are real files on disk with the desktop icons' names, and the painted
+    /// thumbnailer draws every one of them (Quick Look and system icons never appear on stage).
+    func testShelfFixturesArePaintedWithoutQuickLook() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("otto-promo-test-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let urls = try PromoContent.writeFixtures(PromoContent.desktopFixtures, to: folder)
+        XCTAssertEqual(urls.map(\.lastPathComponent),
+                       ["launch-plan.md", "screenshot.png", "invoice.pdf", "release-notes.md", "hero-draft.png"])
+        XCTAssertEqual(PromoContent.shelfFixtures.map(\.name), ["release-notes.md", "hero-draft.png"])
+        let thumbnailer = PromoShelfThumbnailer()
+        for url in urls {
+            let image = await thumbnailer.thumbnail(for: url, size: CGSize(width: 64, height: 64), scale: 2)
+            XCTAssertNotNil(image, url.lastPathComponent)
+        }
+    }
+
+    /// recents.png's rows come from the film's world, the first is the current conversation, and they span
+    /// Today, Yesterday and the previous week.
+    func testRecentSummariesSpanThreeDays() {
+        let current = UUID()
+        let rows = PromoContent.recentSummaries(currentID: current, now: PromoContent.stageNow)
+        XCTAssertEqual(rows.count, 6)
+        XCTAssertEqual(rows.first?.id, current)
+        XCTAssertEqual(rows.first?.title, "What to fix before Friday")
+        XCTAssertTrue(rows.allSatisfy { $0.updatedAt <= PromoContent.stageNow })
+        XCTAssertEqual(Set(rows.map(\.id)).count, 6)
+    }
+
     func testEasingIsMonotonicFromZeroToOne() {
         let easing = PromoEasing(x1: 0.42, y1: 0, x2: 0.18, y2: 1)
         XCTAssertEqual(easing.value(at: 0), 0)

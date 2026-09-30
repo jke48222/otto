@@ -533,60 +533,95 @@ private struct PromoPaperShape: Shape {
     }
 }
 
-/// The three files as desktop icons (tile + name) in a column centered on the middle one, with the
-/// Finder selection look (a soft plate behind each tile, the name on an accent capsule).
-struct PromoDesktopFiles: View {
-    var isSelected = false
+/// One desktop file: its name, the badge on its tile and the badge's color.
+struct PromoDesktopFile {
+    let name: String
+    let badge: String
+    let tint: Color
 
-    static let names = ["launch-plan.md", "screenshot.png", "invoice.pdf"]
+    /// The five files on the stage's desktop, top to bottom. The story drags the first three onto the
+    /// notch; shelf-voice parks the last two on the Shelf.
+    static let all: [PromoDesktopFile] = [
+        PromoDesktopFile(name: "launch-plan.md", badge: "MD", tint: Theme.rgb(0x5E6AD2)),
+        PromoDesktopFile(name: "screenshot.png", badge: "PNG", tint: Theme.rgb(0x2FA37A)),
+        PromoDesktopFile(name: "invoice.pdf", badge: "PDF", tint: Theme.rgb(0xD9534F)),
+        PromoDesktopFile(name: "release-notes.md", badge: "MD", tint: Theme.rgb(0x5E6AD2)),
+        PromoDesktopFile(name: "hero-draft.png", badge: "PNG", tint: Theme.rgb(0x2FA37A)),
+    ]
+
+    /// The story's drag (the first three files).
+    static var contextFiles: [PromoDesktopFile] { Array(all.prefix(3)) }
+    /// The Shelf drag (the last two).
+    static var shelfFiles: [PromoDesktopFile] { Array(all.suffix(2)) }
+}
+
+/// The five files as desktop icons (tile + name), each placed at `PromoDirector.desktopIconCenter`, with the
+/// Finder selection look (a soft plate behind the tile, the name on an accent capsule) on the selected ones and
+/// the dragged ones ghosted, as Finder does.
+struct PromoDesktopFiles: View {
+    let layout: PromoLayout
+    var selected: Set<Int> = []
+    var dimmed: Set<Int> = []
 
     var body: some View {
-        VStack(spacing: 6) {
-            ForEach(Array(PromoDragStack.tiles.enumerated()), id: \.offset) { index, tile in
-                VStack(spacing: 5) {
-                    PromoFileTile(badge: tile.0, tint: tile.1, width: 44)
-                        .padding(7)
-                        .background {
-                            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                .fill(Color.white.opacity(isSelected ? 0.2 : 0))
-                        }
-                    Text(Self.names[index])
-                        .font(.system(size: 11.5, weight: .semibold))
-                        .foregroundStyle(Color.white)
-                        .shadow(color: .black.opacity(isSelected ? 0 : 0.6), radius: 1.5, y: 0.5)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1.5)
-                        .background {
-                            Capsule().fill(Theme.rgb(0x2F6FE4).opacity(isSelected ? 1 : 0))
-                        }
-                        .fixedSize()
-                }
-                .frame(width: 92)
+        ZStack(alignment: .topLeading) {
+            ForEach(Array(PromoDesktopFile.all.enumerated()), id: \.offset) { index, file in
+                let center = PromoDirector.desktopIconCenter(index, in: layout)
+                PromoDesktopIcon(file: file, isSelected: selected.contains(index))
+                    .opacity(dimmed.contains(index) ? 0.45 : 1)
+                    .position(x: center.x - layout.screenRect.minX, y: center.y - layout.screenRect.minY)
             }
         }
+        .frame(width: layout.screenRect.width, height: layout.screenRect.height, alignment: .topLeading)
         .accessibilityHidden(true)
+    }
+}
+
+/// One desktop icon. Its tile is centered `PromoDesktopIcon.tileOffset` above the icon's center.
+private struct PromoDesktopIcon: View {
+    let file: PromoDesktopFile
+    let isSelected: Bool
+
+    var body: some View {
+        VStack(spacing: 5) {
+            PromoFileTile(badge: file.badge, tint: file.tint, width: 44)
+                .padding(7)
+                .background {
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(Color.white.opacity(isSelected ? 0.2 : 0))
+                }
+            Text(file.name)
+                .font(.system(size: 11.5, weight: .semibold))
+                .foregroundStyle(Color.white)
+                .shadow(color: .black.opacity(isSelected ? 0 : 0.6), radius: 1.5, y: 0.5)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 1.5)
+                .background {
+                    Capsule().fill(Theme.rgb(0x2F6FE4).opacity(isSelected ? 1 : 0))
+                }
+                .fixedSize()
+        }
+        .frame(width: 104, height: PromoDirector.desktopIconPitch - 6)
     }
 }
 
 /// The fanned stack of files carried by the pointer, with a count badge.
 struct PromoDragStack: View {
-    static let tiles: [(String, Color)] = [
-        ("MD", Theme.rgb(0x5E6AD2)),
-        ("PNG", Theme.rgb(0x2FA37A)),
-        ("PDF", Theme.rgb(0xD9534F)),
-    ]
+    let tiles: [PromoDesktopFile]
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
             ZStack {
-                ForEach(Array(Self.tiles.enumerated()), id: \.offset) { index, tile in
-                    PromoFileTile(badge: tile.0, tint: tile.1)
-                        .rotationEffect(.degrees(Double(index - 1) * 9))
-                        .offset(x: CGFloat(index - 1) * 16, y: CGFloat(abs(index - 1)) * 3)
+                let middle = Double(tiles.count - 1) / 2
+                ForEach(Array(tiles.enumerated()), id: \.offset) { index, tile in
+                    let spread = Double(index) - middle
+                    PromoFileTile(badge: tile.badge, tint: tile.tint)
+                        .rotationEffect(.degrees(spread * 9))
+                        .offset(x: CGFloat(spread) * 16, y: CGFloat(abs(spread)) * 3)
                 }
             }
             .frame(width: 96, height: 72)
-            Text("\(Self.tiles.count)")
+            Text("\(tiles.count)")
                 .font(.system(size: 12, weight: .bold, design: .rounded))
                 .foregroundStyle(.white)
                 .frame(minWidth: 20, minHeight: 20)
@@ -595,6 +630,103 @@ struct PromoDragStack: View {
         }
         .opacity(0.94)
         .accessibilityHidden(true)
+    }
+}
+
+// MARK: - Shelf thumbnails
+
+/// Stands in for Quick Look on the stage, so Shelf tiles look the same on every Mac and no system type icon
+/// or real file rendering ever appears: hero-draft.png gets a painted dusk picture (the same painting as the
+/// snapshots' `SnapshotFixtures.heroThumbnail`, which is private to the snapshot renderer), the
+/// Markdown files a page of grey lines, screenshot.png the painted sign-up form and invoice.pdf a white page
+/// with lines and a small PDF label. Any other file gets nothing (the store then shows its placeholder).
+struct PromoShelfThumbnailer: ShelfThumbnailing {
+    func thumbnail(for url: URL, size: CGSize, scale: CGFloat) async -> CGImage? {
+        let name = url.lastPathComponent
+        let ext = url.pathExtension.lowercased()
+        return await MainActor.run {
+            let side = max(size.width, size.height) * scale
+            switch (name, ext) {
+            case ("hero-draft.png", _):
+                return Self.cgImage(Self.heroPicture(side: side), side: side)
+            case ("screenshot.png", _):
+                let image = PromoContent.screenshotThumbnail()
+                return Self.cgImage(image, side: side)
+            case (_, "md"), (_, "txt"):
+                return Self.page(height: size.height * scale, label: nil)
+            case (_, "pdf"):
+                return Self.page(height: size.height * scale, label: "PDF")
+            default:
+                return nil
+            }
+        }
+    }
+
+    /// A small painted stand-in for a hero image draft: a dusk sky, a low sun and two hills.
+    static func heroPicture(side: CGFloat) -> NSImage {
+        NSImage(size: NSSize(width: side, height: side), flipped: false) { _ in
+            let transform = NSAffineTransform()
+            transform.scale(by: side / 64)
+            transform.concat()
+            let sky = NSGradient(colors: [
+                NSColor(srgbRed: 0.95, green: 0.78, blue: 0.58, alpha: 1),
+                NSColor(srgbRed: 0.55, green: 0.47, blue: 0.62, alpha: 1),
+            ])
+            sky?.draw(in: NSRect(x: 0, y: 0, width: 64, height: 64), angle: 90)
+            NSColor(srgbRed: 0.99, green: 0.9, blue: 0.72, alpha: 1).setFill()
+            NSBezierPath(ovalIn: NSRect(x: 34, y: 26, width: 18, height: 18)).fill()
+            NSColor(srgbRed: 0.36, green: 0.34, blue: 0.45, alpha: 1).setFill()
+            NSBezierPath(ovalIn: NSRect(x: -24, y: -30, width: 80, height: 58)).fill()
+            NSColor(srgbRed: 0.22, green: 0.22, blue: 0.3, alpha: 1).setFill()
+            NSBezierPath(ovalIn: NSRect(x: 18, y: -38, width: 76, height: 56)).fill()
+            return true
+        }
+    }
+
+    @MainActor
+    private static func cgImage(_ image: NSImage, side: CGFloat) -> CGImage? {
+        var rect = CGRect(x: 0, y: 0, width: side, height: side)
+        return image.cgImage(forProposedRect: &rect, context: nil, hints: nil)
+    }
+
+    /// A white page (a document's proportions) with grey lines of "text"; `label` adds a small red tag.
+    private static func page(height: CGFloat, label: String?) -> CGImage? {
+        let pixelHeight = max(1, Int(height))
+        let pixelWidth = max(1, Int(CGFloat(pixelHeight) * 0.78))
+        let size = NSSize(width: pixelWidth, height: pixelHeight)
+        let image = NSImage(size: size, flipped: true) { rect in
+            let w = rect.width
+            let h = rect.height
+            NSColor(srgbRed: 0.98, green: 0.98, blue: 0.97, alpha: 1).setFill()
+            NSBezierPath(roundedRect: rect, xRadius: w * 0.06, yRadius: w * 0.06).fill()
+            let margin = w * 0.14
+            let lineHeight = h * 0.035
+            let pitch = h * 0.075
+            let widths: [CGFloat] = [0.55, 0.9, 0.82, 0.88, 0.6, 0, 0.86, 0.78, 0.9, 0.5]
+            var top = margin * 1.2
+            for (index, fraction) in widths.enumerated() {
+                if fraction > 0 {
+                    (index == 0 ? NSColor(srgbRed: 0.35, green: 0.36, blue: 0.4, alpha: 1)
+                                : NSColor(srgbRed: 0.72, green: 0.72, blue: 0.74, alpha: 1)).setFill()
+                    let line = NSRect(x: margin, y: top, width: (w - margin * 2) * fraction, height: lineHeight)
+                    NSBezierPath(roundedRect: line, xRadius: lineHeight / 2, yRadius: lineHeight / 2).fill()
+                }
+                top += pitch
+            }
+            if let label {
+                let font = NSFont.systemFont(ofSize: h * 0.1, weight: .heavy)
+                let text = NSAttributedString(string: label, attributes: [.font: font, .foregroundColor: NSColor.white])
+                let textSize = text.size()
+                let tag = NSRect(x: margin, y: h - margin - textSize.height - h * 0.02,
+                                 width: textSize.width + h * 0.06, height: textSize.height + h * 0.02)
+                NSColor(srgbRed: 0.85, green: 0.33, blue: 0.31, alpha: 1).setFill()
+                NSBezierPath(roundedRect: tag, xRadius: h * 0.02, yRadius: h * 0.02).fill()
+                text.draw(at: NSPoint(x: tag.minX + h * 0.03, y: tag.minY + h * 0.01))
+            }
+            return true
+        }
+        var rect = CGRect(origin: .zero, size: size)
+        return image.cgImage(forProposedRect: &rect, context: nil, hints: nil)
     }
 }
 
