@@ -1,11 +1,11 @@
 {
   "schema": 1,
-  "siteHost": "JALEN_MUST_SET_SITE_HOST",
+  "siteHost": "ottonotch.com",
   "downloadsHost": "hbf1i2zuh6iqdyiw.public.blob.vercel-storage.com",
   "seller": {
-    "legalName": "JALEN_MUST_SET_LEGAL_NAME",
-    "supportEmail": "JALEN_MUST_SET_SUPPORT_EMAIL",
-    "governingLaw": "JALEN_MUST_SET_US_STATE"
+    "legalName": "Jalen Edusei",
+    "supportEmail": "jalenedusei@gmail.com",
+    "governingLaw": "Georgia"
   },
   "price": {"usd": 19, "seats": 3, "trialDays": 14, "refundDays": 30, "studentDiscountPercent": 30, "minMacOS": "14"},
   "polar": {
