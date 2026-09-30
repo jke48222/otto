@@ -26,6 +26,9 @@
   <link rel="stylesheet" href="styles.css">
   <script>document.documentElement.classList.add("js");</script>
   <script src="script.js" defer></script>
+  <!-- Vercel Web Analytics counts page views without cookies. beforeSend drops the query string and fragment from each address it sends. -->
+  <script>window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); }; window.va("beforeSend", function (event) { var url = new URL(event.url); url.search = ""; url.hash = ""; event.url = url.href; return event; });</script>
+  <script src="/_vercel/insights/script.js" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>

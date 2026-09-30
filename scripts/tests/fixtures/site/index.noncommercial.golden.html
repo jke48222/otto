@@ -29,6 +29,9 @@
   <link rel="stylesheet" href="styles.css">
   <script>document.documentElement.classList.add("js");</script>
   <script src="script.js" defer></script>
+  <!-- Vercel Web Analytics counts page views without cookies. beforeSend drops the query string and fragment from each address it sends. -->
+  <script>window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); }; window.va("beforeSend", function (event) { var url = new URL(event.url); url.search = ""; url.hash = ""; event.url = url.href; return event; });</script>
+  <script src="/_vercel/insights/script.js" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
@@ -233,7 +236,7 @@
             <p>Bring your own Anthropic API key. It lives in your macOS Keychain, nothing leaves your Mac until you press send, and there's no account to create and no telemetry to opt out of.</p>
             <ul class="facts">
               <li>API key stored in your login Keychain</li>
-              <li>No account, no analytics, no tracking</li>
+              <li>No account, no analytics, no tracking in the app</li>
               <li>Open source under the MIT license</li>
             </ul>
           </div>
@@ -307,6 +310,7 @@
         </div>
 
         <p class="privacy__note reveal">Otto asks for a permission only when a feature needs it. Automation, per browser, reads the front tab's title and address. Screen Recording is only for capturing a region or a window, and Accessibility only for pasting an answer into another app or offering your selected text. Voice needs Microphone and Speech Recognition, and calendar and reminder actions need Calendars and Reminders.</p>
+        <p class="privacy__note reveal">This website counts page views with Vercel Web Analytics. It sets no cookies. Vercel tells visitors apart by a hash of the request and discards each visitor session after 24 hours. The Otto app itself has no analytics.</p>
       </div>
     </section>
 

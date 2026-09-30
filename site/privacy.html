@@ -14,6 +14,9 @@
   <link rel="stylesheet" href="styles.css">
   <script>document.documentElement.classList.add("js");</script>
   <script src="script.js" defer></script>
+  <!-- Vercel Web Analytics counts page views without cookies. beforeSend drops the query string and fragment from each address it sends. -->
+  <script>window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); }; window.va("beforeSend", function (event) { var url = new URL(event.url); url.search = ""; url.hash = ""; event.url = url.href; return event; });</script>
+  <script src="/_vercel/insights/script.js" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
@@ -39,7 +42,7 @@
       <header class="doc__head">
         <h1 class="h2">Privacy policy</h1>
         <p class="doc__meta">Effective {{EFFECTIVE_DATE}}.</p>
-        <p class="doc__intro">Otto runs on your Mac. It has no account, no analytics and no server of its own. This page lists everything the signed app sends, where it goes, and what stays on your Mac.</p>
+        <p class="doc__intro">Otto runs on your Mac. The app has no account, no analytics and no server of its own. This page lists everything the signed app sends, where it goes, what stays on your Mac, and what this website records.</p>
       </header>
 
       <section class="doc__section" aria-labelledby="privacy-send">
@@ -84,7 +87,8 @@
 
       <section class="doc__section" aria-labelledby="privacy-site">
         <h2 id="privacy-site" class="h4">This website</h2>
-        <p>{{SITE_HOST}} is hosted by Vercel. It sets no cookies and runs no analytics or trackers. Vercel keeps standard server logs.</p>
+        <p>{{SITE_HOST}} is hosted by Vercel, which keeps standard server logs. The site counts page views with Vercel Web Analytics. Its script sets no cookies. Instead, Vercel tells visitors apart by a hash made from each incoming request, and it discards each visitor session after 24 hours.</p>
+        <p>With each page view, Vercel stores the time, the page's address, the site that linked you here, your country, region and city, your operating system and browser with their versions, whether you're on a phone, tablet or computer, and the script's version. These pages remove anything after "?" or "#" in the address before it's sent. I see only totals. The Otto app has no analytics or telemetry.</p>
       </section>
 
       <section class="doc__section" aria-labelledby="privacy-rights">
