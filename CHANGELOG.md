@@ -7,9 +7,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-Planned as 1.1.0: the first tagged source release, and the build the signed app will ship from. It
-includes everything in the 1.0.0 notes below, which were prepared but never tagged. Otto's source code is
-MIT licensed; the signed, notarized app will be a one-time purchase.
+## [1.1.0] - 2026-09-30
+
+The first tagged source release, and the build the signed app ships from. It includes everything in the
+1.0.0 notes below, which were prepared but never tagged. Otto's source code is MIT licensed; the signed,
+notarized app is a one-time purchase.
 
 ### Added
 
@@ -98,6 +100,19 @@ MIT licensed; the signed, notarized app will be a one-time purchase.
 
 Results of the [v1.1 release gate](docs/RELEASING.md#v11-release-gate) are recorded here before `v1.1.0` is
 tagged: one line per check, pass or fail, with the macOS version and build number it ran on.
+
+Automated checks, macOS 27.0 (26A5378j), Otto 1.1.0 (2):
+
+- Full test suite: 1,873 tests, 0 failures, 2 opt-in tests skipped. Pass.
+- Self-test while signed in at the Mac: 33 of 33 steps, no checks skipped. Pass.
+- Gate H1, input provenance (Debug build, 2026-09-27): hardware click and ⌘↩ carry pid 0, the System
+  Events ⌘↩ doesn't. Pass.
+- Signed paid build: notarized and stapled, Gatekeeper reports "Notarized Developer ID", and the disk
+  image smoke test launches the app. Pass.
+- Polar production and sandbox license API with real keys: activate, validate, deactivate, activate
+  again, a fourth Mac refused, a wrong benefit refused. Pass.
+- The app's Polar sandbox round trip (`OTTO_POLAR_SANDBOX_TESTS=1`): activate, validate, deactivate.
+  Pass.
 
 ## 1.0.0 (prepared, never tagged)
 
