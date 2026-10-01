@@ -692,13 +692,18 @@ final class HistoryStoreTests: XCTestCase {
             let first = expectation(description: "first save")
             let second = expectation(description: "second save")
             let results = HistoryTestResults()
-            env.store.enqueueSave(firstSnapshot) { result in
-                results.append(result)
-                first.fulfill()
-            }
-            env.store.enqueueSave(secondSnapshot) { result in
-                results.append(result)
-                second.fulfill()
+            // Both saves are queued before either runs. Unheld, the queue can start the first save before the second
+            // is enqueued, and a save that has started is no longer superseded (a timing race, not the behavior
+            // under test).
+            env.store.debugHoldingQueue {
+                env.store.enqueueSave(firstSnapshot) { result in
+                    results.append(result)
+                    first.fulfill()
+                }
+                env.store.enqueueSave(secondSnapshot) { result in
+                    results.append(result)
+                    second.fulfill()
+                }
             }
             await fulfillment(of: [first, second], timeout: 5)
 
