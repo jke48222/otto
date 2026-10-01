@@ -139,26 +139,29 @@ private struct ArmingConfirmButton: View {
         TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: armedAt == nil || isArmed(at: Date()))) { context in
             let armed = isArmed(at: context.date)
             Button(action: action) {
-                ZStack {
-                    Capsule(style: .continuous).fill(Color.white.opacity(0.08))
-                    GeometryReader { proxy in
-                        Capsule(style: .continuous)
-                            .fill(LinearGradient(colors: [Theme.sendTop, Theme.sendBottom], startPoint: .top,
-                                                 endPoint: .bottom))
-                            .frame(width: proxy.size.width * progress(at: context.date))
-                            .opacity(armed && isEnabled ? 1 : 0.35)
+                // The label sets the size; the fill sits behind it (shapes and GeometryReader take any height given).
+                HStack(spacing: 6) {
+                    if isWorking {
+                        MiniSpinner(size: 13, color: Theme.sendGlyph)
+                    }
+                    Text(title)
+                        .font(Theme.font(15.5, .semibold))
+                }
+                .foregroundStyle(armed && isEnabled ? Theme.sendGlyph : Theme.textSecondary)
+                .frame(maxWidth: .infinity, minHeight: 46)
+                .background {
+                    ZStack(alignment: .leading) {
+                        Capsule(style: .continuous).fill(Color.white.opacity(0.08))
+                        GeometryReader { proxy in
+                            Capsule(style: .continuous)
+                                .fill(LinearGradient(colors: [Theme.sendTop, Theme.sendBottom], startPoint: .top,
+                                                     endPoint: .bottom))
+                                .frame(width: proxy.size.width * progress(at: context.date))
+                                .opacity(armed && isEnabled ? 1 : 0.35)
+                        }
                     }
                     .clipShape(Capsule(style: .continuous))
-                    HStack(spacing: 6) {
-                        if isWorking {
-                            MiniSpinner(size: 13, color: Theme.sendGlyph)
-                        }
-                        Text(title)
-                            .font(Theme.font(15.5, .semibold))
-                    }
-                    .foregroundStyle(armed && isEnabled ? Theme.sendGlyph : Theme.textSecondary)
                 }
-                .frame(maxWidth: .infinity, minHeight: 46)
                 .contentShape(Capsule(style: .continuous))
             }
             .buttonStyle(PressableButtonStyle(pressedScale: 0.97))
