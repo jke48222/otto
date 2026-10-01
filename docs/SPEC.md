@@ -1557,7 +1557,8 @@ and arms afresh. Decline and "Don't run
 the other N either" resolve `.deny` and `.denyAll`. `ApprovalCard` sits above the composer: the presentation's
 title and "n of m", the event (date tile, time, location, notes, calendar picker, hint, conflicts, time-zone and
 daylight-saving notes), reminder, consent or plain body, the iOS access line, provenance, caution, and the
-decline and confirm buttons (the confirm button fills over the last second before it arms). Action rows show the
+decline and confirm buttons (the confirm button fills over the last second before it arms); a card taller than
+the space scrolls its body and access line while provenance, caution and the buttons stay in view. Action rows show the
 Mac's labels with a status glyph, Undo while the token is valid (re-evaluated every 15 s), Stop while running,
 and Settings when the group is off. While Otto is away, the Live Activity alerts once when its stage turns to
 "Needs your OK", and with no activity `notifyWhenAway` posts "Otto needs your OK".
@@ -1596,6 +1597,6 @@ Undo, the permission step, the log, the away alert), the Live Activity states an
 and prompt, the transcript's follow math and the preferences, all on inert graphs. `SnapshotTests` renders
 `chat-empty`, `chat-needs-key`, `chat-conversation`, `chat-streaming`, `chat-composer`, `chat-listening`,
 `chat-failed`, `chat-approval`, `chat-action`, `recents`, `settings`, `onboarding` and `live-activity` full
-screen in a window of their own, plus `chat-approval-small` (a worst-case card at 375 × 667 pt, whose details
-scroll), and writes PNGs to `OTTO_SNAPSHOT_DIR`. `scripts/ios.sh [build|test] [--snapshots DIR]` picks the newest
+screen in a window of their own, plus `chat-approval-small` (a worst-case card at 375 × 667 pt, whose event
+scrolls), and writes PNGs to `OTTO_SNAPSHOT_DIR`. `scripts/ios.sh [build|test] [--snapshots DIR]` picks the newest
 iPhone simulator; the CI job `ios` runs it and uploads the PNGs as the `ios-snapshots` artifact.

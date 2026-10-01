@@ -41,13 +41,22 @@ struct ApprovalCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
-            // A card taller than the screen (long notes on a small iPhone) scrolls its details; the buttons stay.
+            // A card taller than the screen (long notes on a small iPhone) scrolls what it would add; where the
+            // request came from, the caution and the buttons stay in view.
             ViewThatFits(in: .vertical) {
                 details
                 ScrollView {
                     details
                 }
                 .scrollBounceBehavior(.basedOnSize)
+                .scrollIndicatorsFlash(onAppear: true)
+            }
+            if let provenance = approval.provenance, !provenance.isEmpty {
+                CardNote(symbol: "info.circle", text: DisplayText.sanitized(provenance, maxLength: 200),
+                         color: Theme.textTertiary)
+            }
+            if let caution = approval.caution {
+                CautionView(caution: caution)
             }
             buttons
         }
@@ -65,13 +74,6 @@ struct ApprovalCard: View {
                 CardNote(symbol: "lock",
                          text: "Otto needs access to your \(Self.names(missingPermissions)). iOS will ask next.",
                          color: Theme.textSecondary)
-            }
-            if let provenance = approval.provenance, !provenance.isEmpty {
-                CardNote(symbol: "info.circle", text: DisplayText.sanitized(provenance, maxLength: 200),
-                         color: Theme.textTertiary)
-            }
-            if let caution = approval.caution {
-                CautionView(caution: caution)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

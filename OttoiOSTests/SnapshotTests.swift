@@ -85,8 +85,8 @@ final class SnapshotTests: XCTestCase {
         await waitUntil { !graph.chat.isStreaming }
     }
 
-    /// A worst-case card (long notes, conflicts, provenance and a caution) on a small iPhone: its details scroll and
-    /// its buttons stay on screen.
+    /// A worst-case card (long notes, conflicts, provenance and a caution) on a small iPhone: the event scrolls; the
+    /// caution and the buttons stay on screen.
     func testOversizedApprovalCard() async throws {
         let graph = makeSnapshotGraph()
         let approval = PendingApproval(
