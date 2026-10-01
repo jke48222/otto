@@ -51,8 +51,7 @@ import os
         self.catalog = catalog
         super.init()
         synthesizer.delegate = self
-        let language = settings.voice.locale.identifier(.bcp47)
-        Task.detached(priority: .utility) { _ = catalog.voices(languageCode: language) }
+        catalog.warm(languageCode: settings.voice.locale.identifier(.bcp47))
     }
 
     /// Feed the whole reply so far. Complete sentences are queued as they appear; `isFinal` reads the rest.
@@ -112,9 +111,7 @@ import os
 
     /// `availableVoices` off the main thread, for the Settings picker.
     nonisolated static func loadAvailableVoices(languageCode: String) async -> [AVSpeechSynthesisVoice] {
-        await Task.detached(priority: .userInitiated) {
-            VoiceCatalog.shared.voices(languageCode: languageCode)
-        }.value
+        await VoiceCatalog.shared.load(languageCode: languageCode)
     }
 
     // MARK: - AVSpeechSynthesizerDelegate
@@ -179,7 +176,9 @@ import os
 /// The installed system voices, ranked per language and cached for the process. Enumerating them costs tens of
 /// milliseconds a call (`speechVoices()` isn't cached by the system), far too slow for every streamed sentence
 /// or every Settings redraw. The cache empties when macOS reports that the installed voices changed.
-/// Thread-safe; the first lookup can run on any thread.
+/// Thread-safe; the first lookup can run on any thread. Off the main thread, lookups go through one serial
+/// dispatch queue: `speechVoices()` waits synchronously on the speech service (seconds after a cold boot), which
+/// must not hold Swift concurrency's few threads, and lookups queued behind the first one read its cache.
 final class VoiceCatalog: @unchecked Sendable {
     static let shared = VoiceCatalog()
 
@@ -188,6 +187,7 @@ final class VoiceCatalog: @unchecked Sendable {
     typealias SystemPick = @Sendable (String) -> String?
 
     private let lock = NSLock()
+    private let queue = DispatchQueue(label: "com.jalenedusei.otto.voice-catalog", qos: .utility)
     private let enumerate: Enumerate
     private let systemPick: SystemPick
     private let notificationCenter: NotificationCenter
@@ -221,6 +221,20 @@ final class VoiceCatalog: @unchecked Sendable {
             allVoices = nil
             ranked = [:]
             generationValue += 1
+        }
+    }
+
+    /// Fills the cache for the language in the background, so the first spoken sentence doesn't wait for it.
+    func warm(languageCode: String) {
+        queue.async { [self] in _ = voices(languageCode: languageCode) }
+    }
+
+    /// `voices` off the calling thread.
+    func load(languageCode: String) async -> [AVSpeechSynthesisVoice] {
+        await withCheckedContinuation { continuation in
+            queue.async(qos: .userInitiated, flags: .enforceQoS) { [self] in
+                continuation.resume(returning: voices(languageCode: languageCode))
+            }
         }
     }
 

@@ -706,15 +706,16 @@ struct ChatScreenServices {
         approvalOptions.calendarIdentifier = id
     }
 
-    /// The card's confirm button. A card that needs iOS access asks for it first (iOS's own prompt), then runs.
+    /// The card's confirm button. A card that needs iOS access asks for it first (iOS's own prompt); the action's
+    /// own card follows. Until access is granted EventKit lists no calendars, so that step needs no pick.
     func approve() {
         guard let approval = pendingApproval, let since = approvalVisibleSince, !isObtainingPermission else { return }
-        if approval.body.requiresSelection, approvalOptions.calendarIdentifier == nil { return }
         let options = approvalOptions
         if case .permission(let missing, _) = approval.kind {
             obtainPermissions(missing, for: approval.callID, options: options, visibleSince: since)
             return
         }
+        if approval.body.requiresSelection, options.calendarIdentifier == nil { return }
         // Every tap on iPhone is the user's own: there is no synthetic input to guard against here.
         chat.resolveApproval(.run(options), hardwareConfirmed: true, visibleSince: since)
     }

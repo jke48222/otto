@@ -86,7 +86,9 @@ if [[ "$action" == "test" ]]; then
     echo "==> Writing snapshots to $TEST_RUNNER_OTTO_SNAPSHOT_DIR"
   fi
   echo "==> Testing Otto for iPhone"
-  xcodebuild "${arguments[@]}" -resultBundlePath build/iOSTestResults.xcresult test
+  # A test that hangs fails by name after two minutes instead of holding the run until the job times out.
+  xcodebuild "${arguments[@]}" -resultBundlePath build/iOSTestResults.xcresult \
+    -test-timeouts-enabled YES -default-test-execution-time-allowance 120 test
 else
   echo "==> Building Otto for iPhone (Debug)"
   xcodebuild "${arguments[@]}" build

@@ -9,9 +9,11 @@ import UIKit
 import XCTest
 @testable import Otto
 
+/// Polls `condition` on the main actor. The timeout is generous because a simulator that has just booted can stall
+/// for seconds; a passing wait returns as soon as the condition holds.
 @MainActor
 func waitUntil(
-    timeout: TimeInterval = 5,
+    timeout: TimeInterval = 10,
     file: StaticString = #filePath,
     line: UInt = #line,
     _ condition: () -> Bool

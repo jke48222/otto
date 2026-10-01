@@ -22,8 +22,9 @@ struct ApprovalCard: View {
         )
     }
 
+    /// The access step needs no pick: EventKit lists no calendars until iOS grants access.
     private var hasRequiredSelection: Bool {
-        guard approval.body.requiresSelection else { return true }
+        guard missingPermissions.isEmpty, approval.body.requiresSelection else { return true }
         guard let picked = model.approvalOptions.calendarIdentifier else { return false }
         switch approval.body {
         case .event(let preview): return preview.calendars.contains { $0.id == picked }
@@ -40,7 +41,8 @@ struct ApprovalCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
-            ApprovalBodyContent(approvalBody: approval.body, selection: selection)
+            ApprovalBodyContent(approvalBody: approval.body, selection: selection,
+                                choosesCalendar: missingPermissions.isEmpty)
             if !missingPermissions.isEmpty {
                 CardNote(symbol: "lock",
                          text: "Otto needs access to your \(Self.names(missingPermissions)). iOS will ask next.",
@@ -213,15 +215,17 @@ private struct CautionView: View {
 struct ApprovalBodyContent: View {
     let approvalBody: ApprovalBody
     @Binding var selection: String?
+    /// false on the access step: the calendar or list is picked on the card that follows it.
+    var choosesCalendar = true
 
     var body: some View {
         switch approvalBody {
         case .consent(let preview):
             ConsentBodyView(preview: preview)
         case .event(let preview):
-            EventBodyView(preview: preview, selection: $selection)
+            EventBodyView(preview: preview, selection: $selection, choosesCalendar: choosesCalendar)
         case .reminder(let preview):
-            ReminderBodyView(preview: preview, selection: $selection)
+            ReminderBodyView(preview: preview, selection: $selection, choosesList: choosesCalendar)
         case .text(let preview):
             PlainBody(label: preview.label, text: preview.text)
         case .shortcut(let preview):
@@ -266,6 +270,7 @@ private struct ConsentBodyView: View {
 private struct EventBodyView: View {
     let preview: EventPreview
     @Binding var selection: String?
+    let choosesCalendar: Bool
 
     private var selected: CalendarChoice? { preview.calendars.first { $0.id == selection } }
 
@@ -301,8 +306,10 @@ private struct EventBodyView: View {
                         CardNote(symbol: "note.text", text: DisplayText.sanitized(notes, maxLength: 600),
                                  color: Theme.textTertiary)
                     }
-                    CalendarChoicePicker(choices: preview.calendars, selection: $selection, noun: "Calendar")
-                        .padding(.top, 2)
+                    if choosesCalendar {
+                        CalendarChoicePicker(choices: preview.calendars, selection: $selection, noun: "Calendar")
+                            .padding(.top, 2)
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -310,7 +317,7 @@ private struct EventBodyView: View {
             .padding(12)
             .background(Theme.codeFill, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
 
-            if let hint = preview.calendarHint, !hint.isEmpty {
+            if choosesCalendar, let hint = preview.calendarHint, !hint.isEmpty {
                 CardNote(symbol: "questionmark.circle", text: hint, color: Theme.attention)
             }
             ForEach(Array(preview.conflicts.enumerated()), id: \.offset) { _, conflict in
@@ -329,6 +336,7 @@ private struct EventBodyView: View {
 private struct ReminderBodyView: View {
     let preview: ReminderPreview
     @Binding var selection: String?
+    let choosesList: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -361,15 +369,17 @@ private struct ReminderBodyView: View {
                         CardNote(symbol: "note.text", text: DisplayText.sanitized(notes, maxLength: 600),
                                  color: Theme.textTertiary)
                     }
-                    CalendarChoicePicker(choices: preview.lists, selection: $selection, noun: "List")
-                        .padding(.top, 2)
+                    if choosesList {
+                        CalendarChoicePicker(choices: preview.lists, selection: $selection, noun: "List")
+                            .padding(.top, 2)
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding(12)
             .background(Theme.codeFill, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
 
-            if let hint = preview.listHint, !hint.isEmpty {
+            if choosesList, let hint = preview.listHint, !hint.isEmpty {
                 CardNote(symbol: "questionmark.circle", text: hint, color: Theme.attention)
             }
         }

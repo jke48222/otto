@@ -139,6 +139,29 @@ final class ActionsTests: XCTestCase {
         XCTAssertEqual(lastCall(graph)?.call.status, .succeeded)
     }
 
+    func testTheAccessStepNeedsNoCalendarYet() async throws {
+        let probe = StaticPermissionProbe(statuses: [.calendars: .notDetermined], promptAnswer: .granted)
+        let graph = MobileComposition.inert(permissionProbe: probe, eventKit: AccessGatedEventKit(probe: probe))
+        addTeardownBlock { await graph.terminate() }
+
+        let first = try await requireCard(graph)
+        guard case .event(let before) = first.body else { return XCTFail("Expected an event card") }
+        XCTAssertTrue(before.calendars.isEmpty, "EventKit lists no calendars before access")
+        XCTAssertTrue(first.body.requiresSelection)
+
+        await waitUntilArmed(graph)
+        graph.model.approve()
+        await waitUntil { graph.model.pendingApproval.map { $0.callID == first.callID && $0.kind != first.kind } ?? false }
+        guard case .event(let after) = graph.model.pendingApproval?.body else {
+            return XCTFail("Expected the event card next")
+        }
+        XCTAssertFalse(after.calendars.isEmpty, "With access, the calendars are listed")
+        XCTAssertEqual(graph.model.approvalOptions.calendarIdentifier, after.selectedCalendarID)
+
+        graph.model.declineApproval()
+        await waitUntil { !graph.chat.isStreaming }
+    }
+
     func testARefusedPermissionSaysWhereToFixIt() async throws {
         let probe = StaticPermissionProbe(statuses: [.calendars: .notDetermined], promptAnswer: .denied)
         let graph = MobileComposition.inert(permissionProbe: probe)
@@ -245,5 +268,53 @@ final class ActionsTests: XCTestCase {
                        ["calendar_list_events", "calendar_create_event", "reminders_list", "reminders_create"])
         XCTAssertEqual(MobileToolCatalog.actionLogMaxAge(for: .forever), 90 * 86_400)
         XCTAssertEqual(MobileToolCatalog.actionLogMaxAge(for: .week), 7 * 86_400)
+    }
+}
+
+/// The demo calendars, as EventKit shows them: none until the probe has granted Calendars.
+private actor AccessGatedEventKit: EventKitProviding {
+    private let demo = DemoEventKitService()
+    private let probe: StaticPermissionProbe
+
+    init(probe: StaticPermissionProbe) {
+        self.probe = probe
+    }
+
+    private func granted() async -> Bool {
+        await MainActor.run { probe.status(.calendars) == .granted }
+    }
+
+    func calendars(for kind: CalendarItemKind) async -> [CalendarListInfo] {
+        guard await granted() else { return [] }
+        return await demo.calendars(for: kind)
+    }
+
+    func defaultCalendarID(for kind: CalendarItemKind) async -> String? {
+        guard await granted() else { return nil }
+        return await demo.defaultCalendarID(for: kind)
+    }
+
+    func events(from start: Date, to end: Date, calendarIDs: [String]?) async throws -> [CalendarEventRecord] {
+        try await demo.events(from: start, to: end, calendarIDs: calendarIDs)
+    }
+
+    func createEvent(_ draft: CalendarEventDraft, calendarID: String) async throws -> CalendarEventRecord {
+        try await demo.createEvent(draft, calendarID: calendarID)
+    }
+
+    func removeEvent(identifier: String) async throws -> Bool {
+        try await demo.removeEvent(identifier: identifier)
+    }
+
+    func reminders(in listIDs: [String]?, filter: CalendarReminderFilter) async throws -> [CalendarReminderRecord] {
+        try await demo.reminders(in: listIDs, filter: filter)
+    }
+
+    func createReminder(_ draft: CalendarReminderDraft, listID: String) async throws -> CalendarReminderRecord {
+        try await demo.createReminder(draft, listID: listID)
+    }
+
+    func removeReminder(identifier: String) async throws -> Bool {
+        try await demo.removeReminder(identifier: identifier)
     }
 }

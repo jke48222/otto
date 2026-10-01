@@ -112,7 +112,8 @@ final class MobileComposition {
     /// (no delays), a scripted speech engine and recording stand-ins for ActivityKit, notifications and
     /// background time. `isDemo: false` draws the screens as they look with a key (snapshots).
     static func inert(latencyScale: Double = 0, isDemo: Bool = true,
-                      permissionProbe: MobilePermissionProbing = StaticPermissionProbe()) -> MobileComposition {
+                      permissionProbe: MobilePermissionProbing = StaticPermissionProbe(),
+                      eventKit: any EventKitProviding = DemoEventKitService()) -> MobileComposition {
         let suiteName = "com.jalenedusei.otto.ios-composition.\(UUID().uuidString)"
         guard let defaults = UserDefaults(suiteName: suiteName) else {
             preconditionFailure("UserDefaults refused the suite \(suiteName)")
@@ -129,7 +130,7 @@ final class MobileComposition {
             historyRoot: nil,
             ledgerFile: nil,
             actionLogDirectory: nil,
-            eventKit: DemoEventKitService(),
+            eventKit: eventKit,
             permissionProbe: permissionProbe,
             makeClient: { MockLLMClient(latencyScale: latencyScale) },
             makeEngine: { ScriptedSpeechEngine(script: []) },
