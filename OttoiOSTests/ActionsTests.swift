@@ -23,6 +23,13 @@ final class ActionsTests: XCTestCase {
         return graph.model.pendingApproval
     }
 
+    /// `askForEvent`, failing the test when no card came.
+    private func requireCard(_ graph: MobileComposition, file: StaticString = #filePath,
+                             line: UInt = #line) async throws -> PendingApproval {
+        let approval = await askForEvent(graph)
+        return try XCTUnwrap(approval, "No approval card", file: file, line: line)
+    }
+
     private func waitUntilArmed(_ graph: MobileComposition) async {
         await waitUntil { (graph.model.approvalArmedAt.map { $0 <= Date() }) ?? false }
     }
@@ -37,7 +44,7 @@ final class ActionsTests: XCTestCase {
 
     func testAddingAnEventAsksFirstThenRunsAndCanBeUndone() async throws {
         let graph = makeGraph()
-        let approval = try XCTUnwrap(await askForEvent(graph))
+        let approval = try await requireCard(graph)
         XCTAssertEqual(approval.toolName, "calendar_create_event")
         guard case .event(let preview) = approval.body else { return XCTFail("Expected an event card") }
         XCTAssertEqual(preview.title, "Dentist")
@@ -61,7 +68,7 @@ final class ActionsTests: XCTestCase {
 
     func testTheCardWaitsForItsArmingDelay() async throws {
         let graph = makeGraph()
-        let approval = try XCTUnwrap(await askForEvent(graph))
+        let approval = try await requireCard(graph)
         let armedAt = try XCTUnwrap(graph.model.approvalArmedAt)
         XCTAssertGreaterThan(armedAt, Date(), "A fresh card isn't armed yet")
 
@@ -75,7 +82,7 @@ final class ActionsTests: XCTestCase {
 
     func testLeavingRestartsArming() async throws {
         let graph = makeGraph()
-        _ = try XCTUnwrap(await askForEvent(graph))
+        _ = try await requireCard(graph)
         graph.sceneEnteredBackground()
         XCTAssertNil(graph.model.approvalVisibleSince)
         XCTAssertNil(graph.model.approvalArmedAt)
@@ -89,7 +96,7 @@ final class ActionsTests: XCTestCase {
 
     func testDecliningLeavesTheCalendarAlone() async throws {
         let graph = makeGraph()
-        _ = try XCTUnwrap(await askForEvent(graph))
+        _ = try await requireCard(graph)
 
         graph.model.declineApproval()
         await waitUntil { !graph.chat.isStreaming }
@@ -102,7 +109,7 @@ final class ActionsTests: XCTestCase {
 
     func testStoppingTheReplyCancelsTheCard() async throws {
         let graph = makeGraph()
-        _ = try XCTUnwrap(await askForEvent(graph))
+        _ = try await requireCard(graph)
         graph.model.stop()
         await waitUntil { !graph.chat.isStreaming }
         XCTAssertNil(graph.model.pendingApproval)
@@ -115,7 +122,7 @@ final class ActionsTests: XCTestCase {
         let graph = MobileComposition.inert(permissionProbe: probe)
         addTeardownBlock { await graph.terminate() }
 
-        let first = try XCTUnwrap(await askForEvent(graph))
+        let first = try await requireCard(graph)
         guard case .permission(let missing, _) = first.kind else { return XCTFail("Expected the permission step") }
         XCTAssertEqual(missing, [.calendars])
 
@@ -137,7 +144,7 @@ final class ActionsTests: XCTestCase {
         let graph = MobileComposition.inert(permissionProbe: probe)
         addTeardownBlock { await graph.terminate() }
 
-        _ = try XCTUnwrap(await askForEvent(graph))
+        _ = try await requireCard(graph)
         await waitUntilArmed(graph)
         graph.model.approve()
         await waitUntil { graph.model.notice != nil }
@@ -184,7 +191,7 @@ final class ActionsTests: XCTestCase {
 
     func testTheActivityLogRecordsTheAction() async throws {
         let graph = makeGraph()
-        _ = try XCTUnwrap(await askForEvent(graph))
+        _ = try await requireCard(graph)
         await waitUntilArmed(graph)
         graph.model.approve()
         await waitUntil { !graph.chat.isStreaming }
