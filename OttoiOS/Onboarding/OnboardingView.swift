@@ -63,7 +63,7 @@ struct OnboardingView: View {
                        detail: "Type, or attach photos, a camera shot or files.")
             FeatureRow(symbol: "mic", title: "Talk to it",
                        detail: "Hold the mic to ask out loud, and have replies read back.")
-            FeatureRow(symbol: "capsule.portrait", title: "Keeps going when you leave",
+            FeatureRow(symbol: "iphone.gen3", title: "Keeps going when you leave",
                        detail: "Follow a reply in the Dynamic Island and on the Lock Screen.")
             FeatureRow(symbol: "lock", title: "Yours alone",
                        detail: "Your key stays in the Keychain and chats stay on this iPhone.")

@@ -208,11 +208,14 @@ enum Snapshot {
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first,
                                   "The test host has no window scene")
         let window = UIWindow(windowScene: scene)
+        window.frame = scene.coordinateSpace.bounds
         window.windowLevel = .normal + 1
         let host = UIHostingController(rootView: view.preferredColorScheme(.dark))
         host.view.backgroundColor = UIColor(white: 0.024, alpha: 1)
+        host.view.frame = window.bounds
         window.rootViewController = host
         window.isHidden = false
+        window.layoutIfNeeded()
         defer {
             window.isHidden = true
             window.rootViewController = nil

@@ -51,18 +51,18 @@ final class MobilePlatformTests: XCTestCase {
 
     func testDistanceFromBottom() {
         // Content taller than the view, scrolled to the very bottom.
-        let atBottom = ScrollMetrics(offset: 600, contentHeight: 1_400, containerHeight: 900, bottomInset: 100)
+        let atBottom = ScrollMetrics(offset: 500, contentHeight: 1_400, containerHeight: 900, bottomInset: 100)
         XCTAssertEqual(atBottom.distanceFromBottom, 0)
 
-        let scrolledUp = ScrollMetrics(offset: 200, contentHeight: 1_400, containerHeight: 900, bottomInset: 100)
+        let scrolledUp = ScrollMetrics(offset: 100, contentHeight: 1_400, containerHeight: 900, bottomInset: 100)
         XCTAssertEqual(scrolledUp.distanceFromBottom, 400)
 
-        // Content that fits is always at the bottom.
-        let short = ScrollMetrics(offset: -50, contentHeight: 300, containerHeight: 900, topInset: 50, bottomInset: 100)
+        // Content that fits is always at the bottom, whatever the composer's inset.
+        let short = ScrollMetrics(offset: 0, contentHeight: 540, containerHeight: 625, bottomInset: 216)
         XCTAssertEqual(short.distanceFromBottom, 0)
 
         // Overscroll past the end is still the bottom.
-        let bounced = ScrollMetrics(offset: 660, contentHeight: 1_400, containerHeight: 900, bottomInset: 100)
+        let bounced = ScrollMetrics(offset: 560, contentHeight: 1_400, containerHeight: 900, bottomInset: 100)
         XCTAssertEqual(bounced.distanceFromBottom, 0)
     }
 

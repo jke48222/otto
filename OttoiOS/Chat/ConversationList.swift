@@ -56,16 +56,24 @@ struct ConversationList: View {
                     }
                 }
                 .scrollTargetLayout()
-                .padding(.horizontal, Self.sidePadding)
                 .padding(.top, 12)
                 .padding(.bottom, 20)
             }
+            // Margins rather than padding, and leading anchors: the content is never wider than the view, and a
+            // first layout at another size can't leave it scrolled sideways.
+            .contentMargins(.horizontal, Self.sidePadding, for: .scrollContent)
             .scrollPosition($position)
-            .defaultScrollAnchor(.bottom, for: .initialOffset)
+            .defaultScrollAnchor(.bottomLeading, for: .initialOffset)
+            .defaultScrollAnchor(.topLeading, for: .alignment)
             .scrollDismissesKeyboard(.interactively)
-            .onScrollPhaseChange { _, phase in
-                isUserScrolling = phase == .tracking || phase == .interacting || phase == .decelerating
-                if !isUserScrolling {
+            .onAppear {
+                position.scrollTo(edge: .bottom)
+            }
+            .onScrollPhaseChange { old, new in
+                let wasDragging = Self.isUserDriven(old)
+                isUserScrolling = Self.isUserDriven(new)
+                if wasDragging, !isUserScrolling {
+                    // The user's scroll came to rest: following resumes only at the bottom.
                     isPinned = distanceFromBottom < Self.pinThreshold
                 }
             }
@@ -98,6 +106,7 @@ struct ConversationList: View {
 
     // MARK: - Following
 
+    /// Only the user's own scrolling unpins the transcript (a programmatic jump to a reply unpins it explicitly).
     private func geometryChanged(from old: ScrollMetrics, to new: ScrollMetrics) {
         distanceFromBottom = new.distanceFromBottom
         if isUserScrolling {
@@ -106,13 +115,19 @@ struct ConversationList: View {
         }
         let resized = new.contentHeight != old.contentHeight || new.containerHeight != old.containerHeight
             || new.bottomInset != old.bottomInset
-        if resized {
+        if resized, isPinned {
             // A streaming reply grew, the keyboard came up or the composer got taller: stay at the bottom.
-            if isPinned, new.distanceFromBottom > 0.5 {
-                position.scrollTo(edge: .bottom)
-            }
-        } else {
-            isPinned = new.distanceFromBottom < Self.pinThreshold
+            position.scrollTo(edge: .bottom)
+        } else if new.distanceFromBottom < 1 {
+            isPinned = true
+        }
+    }
+
+    private static func isUserDriven(_ phase: ScrollPhase) -> Bool {
+        switch phase {
+        case .tracking, .interacting, .decelerating: return true
+        case .idle, .animating: return false
+        @unknown default: return false
         }
     }
 
@@ -141,31 +156,29 @@ struct ScrollMetrics: Equatable {
     var offset: CGFloat
     var contentHeight: CGFloat
     var containerHeight: CGFloat
-    var topInset: CGFloat
+    /// Only compared: a change means the keyboard or the composer moved.
     var bottomInset: CGFloat
 
     init(_ geometry: ScrollGeometry) {
         offset = geometry.contentOffset.y
         contentHeight = geometry.contentSize.height
         containerHeight = geometry.containerSize.height
-        topInset = geometry.contentInsets.top
         bottomInset = geometry.contentInsets.bottom
     }
 
-    init(offset: CGFloat, contentHeight: CGFloat, containerHeight: CGFloat, topInset: CGFloat = 0,
-         bottomInset: CGFloat = 0) {
+    init(offset: CGFloat, contentHeight: CGFloat, containerHeight: CGFloat, bottomInset: CGFloat = 0) {
         self.offset = offset
         self.contentHeight = contentHeight
         self.containerHeight = containerHeight
-        self.topInset = topInset
         self.bottomInset = bottomInset
     }
 
     /// How far the bottom of the content is below the visible area (0 at the bottom, or when it all fits).
+    /// SwiftUI reports the container without the composer's inset (the content's visible height), so the inset
+    /// isn't added again; were it reported the UIKit way, this would only under-report by the inset, which delays
+    /// the jump button and never shows it at the bottom.
     var distanceFromBottom: CGFloat {
-        let maxOffset = contentHeight + bottomInset - containerHeight
-        guard maxOffset > -topInset else { return 0 }
-        return max(0, maxOffset - offset)
+        max(0, contentHeight - containerHeight - offset)
     }
 }
 
