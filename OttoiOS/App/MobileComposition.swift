@@ -37,6 +37,11 @@ final class MobileComposition {
     let notifier: ReplyNotifier
     let backgroundKeeper: BackgroundReplyKeeper
 
+    /// The system behind the graph (recording stand-ins in an inert graph, which tests read).
+    let activities: ReplyActivityHosting
+    let notificationCenter: ReplyNotificationCentering
+    let backgroundTime: BackgroundTimeProviding
+
     private(set) var isStarted = false
     private(set) var isTerminated = false
 
@@ -80,8 +85,8 @@ final class MobileComposition {
 
     /// Tests and snapshots: the whole graph with throwaway preferences, in-memory stores, the mock client
     /// (no delays), a scripted speech engine and recording stand-ins for ActivityKit, notifications and
-    /// background time.
-    static func inert(latencyScale: Double = 0) -> MobileComposition {
+    /// background time. `isDemo: false` draws the screens as they look with a key (snapshots).
+    static func inert(latencyScale: Double = 0, isDemo: Bool = true) -> MobileComposition {
         let suiteName = "com.jalenedusei.otto.ios-composition.\(UUID().uuidString)"
         guard let defaults = UserDefaults(suiteName: suiteName) else {
             preconditionFailure("UserDefaults refused the suite \(suiteName)")
@@ -93,7 +98,7 @@ final class MobileComposition {
             kind: .inert,
             settings: settings,
             throwawaySuiteName: suiteName,
-            isDemo: true,
+            isDemo: isDemo,
             historyRoot: nil,
             ledgerFile: nil,
             makeClient: { MockLLMClient(latencyScale: latencyScale) },
@@ -122,6 +127,9 @@ final class MobileComposition {
         self.settings = settings
         self.throwawaySuiteName = throwawaySuiteName
         self.audio = audio
+        self.activities = activities
+        self.notificationCenter = notificationCenter
+        self.backgroundTime = backgroundTime
 
         // The conversation, its usage and its history.
         let chat = ChatSession(settings: settings, makeClient: makeClient, isDemo: isDemo)

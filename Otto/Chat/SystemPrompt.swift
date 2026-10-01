@@ -16,9 +16,10 @@ enum SystemPrompt {
         + "events or reminders, run shortcuts, control music or open links, tell them they can turn on Actions in "
         + "Otto's Settings."
     #else
-    /// The actions section when no tool is available this turn.
-    static let actionsOffLine = "Actions: you can't act on the user's iPhone right now. If they ask you to add "
-        + "calendar events or reminders or open links, tell them they can turn on Actions in Otto's Settings."
+    /// The actions section: Otto for iPhone has no actions yet.
+    static let actionsOffLine = "Actions: you can't act on the user's iPhone (no calendar, reminders or opening "
+        + "links). If they ask for that, say so in a few words and give them what they need to do it themselves, "
+        + "such as the event details or the link."
     #endif
 
     #if os(macOS)

@@ -61,7 +61,8 @@ import Speech
     var microphone: PermissionStatus
     var speechRecognition: PermissionStatus
 
-    init(microphone: PermissionStatus = .granted, speechRecognition: PermissionStatus = .granted) {
+    /// Nonisolated so it can be a default value.
+    nonisolated init(microphone: PermissionStatus = .granted, speechRecognition: PermissionStatus = .granted) {
         self.microphone = microphone
         self.speechRecognition = speechRecognition
     }
