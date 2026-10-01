@@ -326,41 +326,11 @@ jobs:
           xcodegen generate --spec project-ios.yml
           test -z "$(git status --porcelain)" || { git status --porcelain; exit 1; }
 
-      - name: Pick an iPhone simulator
-        run: |
-          udid=$(xcrun simctl list devices available -j | python3 -c '
-          import json, sys
-          best = None
-          for runtime, devices in json.load(sys.stdin)["devices"].items():
-              if ".iOS-" not in runtime:
-                  continue
-              version = tuple(int(part) for part in runtime.rsplit(".iOS-", 1)[1].split("-"))
-              for device in devices:
-                  if device.get("isAvailable") and device["name"].startswith("iPhone"):
-                      key = (version, "Pro" in device["name"], device["name"])
-                      if best is None or key > best[0]:
-                          best = (key, device["udid"])
-          print(best[1] if best else "")
-          ')
-          test -n "$udid" || { echo "No iPhone simulator is available."; exit 1; }
-          xcrun simctl list devices | grep "$udid"
-          echo "SIMULATOR_UDID=$udid" >> "$GITHUB_ENV"
-
       - name: Build and test
         run: |
           set -o pipefail
-          mkdir -p build/ios-snapshots
-          # Keep compiling after the first error, so one run reports every file that fails.
-          TEST_RUNNER_OTTO_SNAPSHOT_DIR="$PWD/build/ios-snapshots" xcodebuild \
-            -project OttoiOS.xcodeproj \
-            -scheme OttoiOS \
-            -configuration Debug \
-            -destination "id=$SIMULATOR_UDID" \
-            -derivedDataPath build/ios \
-            -resultBundlePath build/iOSTestResults.xcresult \
-            -IDEBuildingContinueBuildingAfterErrors=YES \
-            CODE_SIGNING_ALLOWED=NO \
-            test 2>&1 | tee build/ios-build.log
+          mkdir -p build
+          scripts/ios.sh test --snapshots build/ios-snapshots 2>&1 | tee build/ios-build.log
 
       - name: Summarize build errors
         if: failure()

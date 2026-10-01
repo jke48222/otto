@@ -75,7 +75,7 @@ struct ReplyActivityClock: View {
     }
 }
 
-/// What Otto is doing, or the reply's first line. The reply's own words are hidden while the iPhone is locked.
+/// What Otto is doing, or the reply's first line, marked privacy-sensitive so the system can redact it.
 struct ReplyActivityDetail: View {
     let state: ReplyActivityAttributes.ContentState
 

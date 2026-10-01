@@ -7,6 +7,35 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Otto for iPhone**, built from the same source (`project-ios.yml`, iOS 18 or later). It shares the Mac
+  app's chat core: the Claude client and streaming, the system prompt, History and Recents, usage and cost,
+  voice and spoken replies, attachments, the clay theme and the Markdown renderer.
+  - **The chat**: replies stream in with thinking, web search and sources; copy, share, read aloud,
+    regenerate and step through versions; long-press your last question to edit it. The transcript follows
+    a streaming reply and offers a way back to the latest line when you scroll up.
+  - **Attachments** from the photo library, the camera, Files, the clipboard or a drag from another app.
+  - **Voice**: hold the mic to talk and let go to send, or tap to start and tap again; a live waveform and
+    transcript take the field's place while Otto listens. Replies can be read aloud.
+  - **Keeps going when you leave**: a reply keeps streaming for a while after you switch apps, and the
+    reply's **Live Activity** shows what Otto is doing in the Dynamic Island and on the Lock Screen, then
+    the reply's first line. If iOS pauses the reply first, it says so and Retry picks it up. Optionally, a
+    notification when a reply finishes while you're away.
+  - **Recents** with search, swipe to delete and Undo; **Continue** picks up the last conversation.
+  - **Siri and Shortcuts** ("Ask Otto", "New chat in Otto"), an **Ask Otto** widget for the Home and Lock
+    Screen, and a Control Center control.
+  - **Settings** for the API key (kept in the iPhone's Keychain), demo mode, model, response style, web
+    search, custom instructions, cost labels, the Live Activity and notifications, voice, history, usage
+    and haptics; a first-run welcome that asks for a key or offers the demo.
+  - Actions (calendar, reminders, Shortcuts, AppleScript) stay Mac-only for now.
+- An iOS CI job builds the app and its widget extension, runs the iPhone tests on the newest simulator and
+  uploads snapshots of every screen.
+
+### Changed
+
+- Shared copy names the device it runs on ("saved on this iPhone"), so the core reads right on both.
+
 ## [1.1.0] - 2026-09-30
 
 The first tagged source release, and the build the signed app ships from. It includes everything in the

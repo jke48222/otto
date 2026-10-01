@@ -30,12 +30,12 @@ import Observation
         didSet { store.set(notifyWhenAway, Keys.notifyWhenAway) }
     }
 
-    /// Notifications and the Live Activity may show the reply's first line (never while the iPhone is locked).
+    /// Notifications and the Live Activity may show the reply's first line (marked privacy-sensitive).
     var notificationPreview: Bool {
         didSet { store.set(notificationPreview, Keys.notificationPreview) }
     }
 
-    /// Light taps when a reply starts and finishes, and on approvals.
+    /// A light tap when a question goes and when a reply arrives on screen.
     var haptics: Bool {
         didSet { store.set(haptics, Keys.haptics) }
     }

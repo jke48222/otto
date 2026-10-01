@@ -5,7 +5,7 @@
 //  The reply's Live Activity. In the Dynamic Island the orb sits on the left and a glyph on the right says what
 //  Otto is doing (thinking, searching, writing, waiting for your OK), like the ears of the closed notch on the
 //  Mac; when the reply lands the glyph turns to a check and the expanded island shows its first line. The Lock
-//  Screen shows the same, with the reply's text hidden while the iPhone is locked.
+//  Screen shows the same; the detail line is privacy-sensitive, so the system can redact it.
 //
 
 import ActivityKit
