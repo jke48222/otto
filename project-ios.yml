@@ -1,7 +1,7 @@
 name: OttoiOS
 # Otto for iPhone: OttoiOS.xcodeproj, generated with `xcodegen generate --spec project-ios.yml` (not checked in).
 # The app compiles the platform-neutral half of the Mac app's sources (listed below by module) next to its own
-# code in OttoiOS/; the widget extension (Live Activity, Ask Otto widget and control) lives in OttoWidgets/ and
+# code in OttoiOS/; the widget extension (Live Activity, chat widget and control) lives in OttoWidgets/ and
 # shares OttoiOS/Shared (the Live Activity's attributes and the App Intents) with the app.
 options:
   bundleIdPrefix: com.jalenedusei

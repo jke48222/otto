@@ -10,12 +10,12 @@ import AppIntents
 struct OttoShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
         AppShortcut(
-            intent: AskOttoIntent(),
+            intent: ChatWithOttoIntent(),
             phrases: [
-                "Ask \(.applicationName)",
-                "Ask \(.applicationName) a question",
+                "Chat with \(.applicationName)",
+                "I have a question for \(.applicationName)",
             ],
-            shortTitle: "Ask Otto",
+            shortTitle: "Chat with Otto",
             systemImageName: "sparkle"
         )
         AppShortcut(
