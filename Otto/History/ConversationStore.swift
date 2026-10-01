@@ -187,6 +187,15 @@ final class ConversationStore: @unchecked Sendable {
         try queue.sync { try currentBackend().placeRawConversation(data, id: id) }
     }
 
+    /// Test seam: holds the queue while `body` runs, so nothing it enqueues starts before it returns. A test uses it to
+    /// queue two saves of one conversation before either runs, the case in which the later save supersedes the
+    /// earlier one. `body` must only enqueue: `flush()` or another synchronous call inside it would wait forever.
+    func debugHoldingQueue(_ body: () -> Void) {
+        queue.suspend()
+        defer { queue.resume() }
+        body()
+    }
+
     // MARK: - State (queue-confined unless noted)
 
     private let root: URL?
