@@ -1469,22 +1469,26 @@ the app needs no entitlements.
 **Shared sources.** The app compiles its own `OttoiOS/**` plus an explicit list of files from `Otto/`: the chat
 (`Models`, `ChatSession`, `SystemPrompt`), the API module, `AppSettings` and its groups, `AppSupport`,
 `LaunchOptions`, `ObservationLoop`, the attachment loader and budget, `GlanceContracts` and `ReplyPreview`, the
-History module and `ReadingRestore`, the tool contracts and registry (no executor), the Usage module, the Voice
-module, and from the UI the theme, `MarkdownText`, `MessageSegments`, `VersionPager`, `AnswerCostLabel`,
-`HistoryRecentsModel` and `VoiceWaveformView`. Rules for those files:
+History module and `ReadingRestore`, the tool loop (contracts, registry, `ToolExecutor`, `ApprovalStore`,
+`TrustLedger`, `EchoDetector`, `ToolRateLimiter`, `ActionLog`) and the four calendar and reminder tools with
+`EventKitService` and `DemoEventKitService`, the Usage module, the Voice module, and from the UI the theme,
+`MarkdownText`, `MessageSegments`, `VersionPager`, `AnswerCostLabel`, `HistoryRecentsModel` and
+`VoiceWaveformView`. Rules for those files:
 
 - Mac-only code sits behind `#if os(macOS)` with the iPhone's version in `#else`; the Mac side of every such
   block is unchanged. `PlatformImage` is `NSImage` or `UIImage`. Two types exist once per platform under the
   same name: `SystemVoiceInterruptions` and `VoiceHoldProbes` (`OttoiOS/Voice/MobileVoiceInterruptions.swift`).
 - Copy that names the device uses `OttoDevice.name` ("Mac" / "iPhone"). The iPhone's system prompt describes a
-  phone screen, and its actions line says Otto can't act on the iPhone (there is no executor, so every turn
-  uses `SystemPrompt.actionsOffLine`). The spoken code note is "I've put the code on screen."
+  phone screen; its actions section names "this iPhone", and with no tool offered `actionsOffLine` points at
+  Settings → Actions (calendar and reminders only). The spoken code note is "I've put the code on screen."
 - `AppSettings` has no login item or shortcut settings on iPhone and adds `mobile: MobileSettings`
   (`otto.ios.*`: `liveActivities` true, `notifyWhenAway` false, `notificationPreview` true, `haptics` true,
   `demoMode` false, `didFinishOnboarding` false).
 
-**Object graph.** `MobileComposition` builds and owns everything: settings, `ChatSession` (the Anthropic client,
-or `MockLLMClient` in demo mode), `UsageLedger`, `HistoryController` and `RecentsState` over a
+**Object graph.** `MobileComposition` builds and owns everything: settings, the actions stack
+(`MobilePermissions`, `ApprovalStore`, `ActionLog` in `Logs.noindex` (memory in demo mode), the registry from
+`MobileToolCatalog` on `EventKitService` or `DemoEventKitService`, and a `ToolExecutor` with the Mac's two
+hooks), `ChatSession` on it (the Anthropic client, or `MockLLMClient` in demo mode), `UsageLedger`, `HistoryController` and `RecentsState` over a
 `ConversationStore` in `Application Support/Otto` (`Otto/Demo` in demo mode, whose usage never reaches the
 ledger file), `VoiceController` with `SFSpeechEngine`, `AudioSessionCoordinator`, `ChatScreenModel`,
 `ReplyActivityController`, `ReplyNotifier` and `BackgroundReplyKeeper`. `live()` is the app; `inert(latencyScale:
@@ -1535,6 +1539,27 @@ the system keeps the words in the composer); a tap starts a toggle session and t
 listens the field becomes `VoiceWaveformView` and the live transcript, and + becomes cancel. `RecentsScreen` and
 `SettingsScreen` use `RecentsState`, `HistoryRecentsText` and the shared settings groups with the Mac's copy.
 
+**Actions.** `MobileToolCatalog` registers `calendar_list_events`, `calendar_create_event`, `reminders_list` and
+`reminders_create`; Settings → Actions offers the master switch and the Calendar and Reminders groups (with
+their iOS access) and the activity log, which follows History's retention and stays in memory while History is
+off. `MobilePermissions` implements `PermissionProviding` over `MobilePermissionProbing` (live: EventKit,
+`AVAudioApplication`, Speech, UserNotifications; tests and the demo: `StaticPermissionProbe`): statuses are cached
+for 2 s, `request` shows iOS's prompt only while the status is `.notDetermined` and posts
+`PermissionEvents.didGrant` on a grant (so `EventKitService` resets its store), `openSystemSettings` opens Otto's
+page in the Settings app, and the Mac-only permissions read `.unavailable`. `ChatScreenModel` follows
+`chat.pendingApproval`: a new card resets `approvalOptions` (seeded with the tool's calendar or list) and sets
+`approvalVisibleSince` to now while Otto is on screen (nil while away; coming back restarts it), so
+`approvalArmedAt = armedAt(visibleSince:)`. `approve()` resolves `.run` with `hardwareConfirmed: true` (a tap is the
+user's own) once a required calendar or list is picked; a `.permission` card first asks iOS for each missing
+permission and runs only when all are granted, else it leaves a notice with Open Settings. Decline and "Don't run
+the other N either" resolve `.deny` and `.denyAll`. `ApprovalCard` sits above the composer: the presentation's
+title and "n of m", the event (date tile, time, location, notes, calendar picker, hint, conflicts, time-zone and
+daylight-saving notes), reminder, consent or plain body, the iOS access line, provenance, caution, and the
+decline and confirm buttons (the confirm button fills over the last second before it arms). Action rows show the
+Mac's labels with a status glyph, Undo while the token is valid (re-evaluated every 15 s), Stop while running,
+and Settings when the group is off. While Otto is away, the Live Activity alerts once when its stage turns to
+"Needs your OK", and with no activity `notifyWhenAway` posts "Otto needs your OK".
+
 **Voice.** `AudioSessionCoordinator` holds one session: `.record`/`.measurement` while listening,
 `.playback`/`.spokenAudio` (ducking others) while reading aloud, inactive otherwise. Microphone and speech
 permissions are asked on first use, after the consent question (which turns voice on). Interruptions on iPhone:
@@ -1559,13 +1584,15 @@ trailing, the title, an elapsed-time clock and the detail line, marked privacy-s
 and "New chat in Otto" to Siri, Spotlight and the Action button. The Ask Otto widget (small, circular,
 rectangular, inline) opens `otto://ask`; the control runs `AskOttoIntent`.
 
-**Not on iPhone.** Actions and the tool executor, approvals and the activity log; permissions cards; the File
-Shelf; selection, window and browser-tab context and paste-back; the closed-notch glance, Now Playing and the
-meeting chip; licensing and updates.
+**Not on iPhone.** Shortcuts, AppleScript, media control and links (`ToolCatalog`, `ProcessRunner`, `URLGuard`);
+"Always allow", the safety-mode setting and the permission cards (iOS's own prompts stand in); the File Shelf;
+selection, window and browser-tab context and paste-back; the closed-notch glance, Now Playing and the meeting
+chip; licensing and updates.
 
-**Tests.** `OttoiOSTests` covers the chat screen model, the Live Activity states and controller, the iPhone's
-copy and prompt, the transcript's follow math and the preferences, all on inert graphs. `SnapshotTests` renders
+**Tests.** `OttoiOSTests` covers the chat screen model, actions end to end (the card, arming, approve, decline,
+Undo, the permission step, the log, the away alert), the Live Activity states and controller, the iPhone's copy
+and prompt, the transcript's follow math and the preferences, all on inert graphs. `SnapshotTests` renders
 `chat-empty`, `chat-needs-key`, `chat-conversation`, `chat-streaming`, `chat-composer`, `chat-listening`,
-`chat-failed`, `recents`, `settings`, `onboarding` and `live-activity` full screen in a window of their own and
-writes PNGs to `OTTO_SNAPSHOT_DIR`. `scripts/ios.sh [build|test] [--snapshots DIR]` picks the newest iPhone
+`chat-failed`, `chat-approval`, `chat-action`, `recents`, `settings`, `onboarding` and `live-activity` full
+screen in a window of their own and writes PNGs to `OTTO_SNAPSHOT_DIR`. `scripts/ios.sh [build|test] [--snapshots DIR]` picks the newest iPhone
 simulator; the CI job `ios` runs it and uploads the PNGs as the `ios-snapshots` artifact.

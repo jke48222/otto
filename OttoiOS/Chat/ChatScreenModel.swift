@@ -133,7 +133,13 @@ struct ChatScreenServices {
     @ObservationIgnored private var voiceTurnUserMessageIDs: Set<UUID> = []
     @ObservationIgnored private var isSendingVoiceTurn = false
     @ObservationIgnored private var speakingLoop: ObservationLoop<Bool>?
-    @ObservationIgnored private var approvalLoop: ObservationLoop<String?>?
+    @ObservationIgnored private var approvalLoop: ObservationLoop<ApprovalKey?>?
+
+    /// One card: a call can show more than one (the iOS access step, then the action itself).
+    private struct ApprovalKey: Equatable {
+        let callID: String
+        let presentedAt: Date
+    }
 
     init(settings: AppSettings, chat: ChatSession, history: HistoryController, recents: RecentsState,
          ledger: UsageLedger, voice: VoiceController, audio: AudioSessionCoordinator,
@@ -737,12 +743,15 @@ struct ChatScreenServices {
 
     private func installApprovalTracking() {
         let chat = chat
-        approvalLoop = ObservationLoop(read: { chat.pendingApproval?.callID }) { [weak self] _ in
+        approvalLoop = ObservationLoop(read: {
+            chat.pendingApproval.map { ApprovalKey(callID: $0.callID, presentedAt: $0.presentedAt) }
+        }) { [weak self] _ in
             self?.approvalChanged()
         }
     }
 
-    /// A new card (or none): fresh choices, and arming starts now if Otto is on screen.
+    /// A new card (or none): fresh choices, and arming starts now if Otto is on screen. A call's second card (after
+    /// the iOS access step) arms again, so the action itself is seen before it can be confirmed.
     private func approvalChanged() {
         let approval = pendingApproval
         approvalOptions = ApprovalOptions(alwaysAllow: false, calendarIdentifier: Self.initialSelection(for: approval))

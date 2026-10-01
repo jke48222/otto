@@ -100,10 +100,11 @@ Otto/
 └── Debug/        Debug-build-only tools: SnapshotRenderer (--snapshot), SelfTest (--selftest),
                   the promo stage and stills (--promo, --promo-stills) behind the launch media
 OttoTests/        XCTest unit tests; shared fakes in OttoTests/Support/
-OttoiOS/          Otto for iPhone: MobileComposition (the graph), the chat screen and its model, Recents,
-                  Settings, onboarding, the Live Activity controller, notifications, background time, the
-                  audio session; Shared/ holds what the widget extension compiles too (intents, deep links,
-                  the Live Activity's attributes and views)
+OttoiOS/          Otto for iPhone: MobileComposition (the graph), the chat screen and its model, the approval
+                  card, Recents, Settings, onboarding, Actions/ (permissions and the tool catalog), the Live
+                  Activity controller, notifications, background time, the audio session; Shared/ holds what
+                  the widget extension compiles too (intents, deep links, the Live Activity's attributes and
+                  views)
 OttoWidgets/      the iPhone widget extension: the reply's Live Activity, the Ask Otto widget and control
 OttoiOSTests/     the iPhone tests, including the snapshot test that draws every screen
 scripts/          build.sh, run.sh, snapshot.sh, make_icon.swift, release.sh, publish.sh, make_media.sh
@@ -211,8 +212,8 @@ When you're done, make sure no Otto process is left running (`pkill -x Otto`).
 
 **Testing the iPhone app.** `scripts/ios.sh test` generates `OttoiOS.xcodeproj` and runs the iPhone tests on
 the newest iPhone simulator you have; `scripts/ios.sh build` only builds. Add `--snapshots <dir>` to have the
-snapshot test write a PNG of every screen (the chat, the composer, listening, a failed reply, Recents,
-Settings, the welcome and the Live Activity) into `<dir>`. CI does the same on every run and keeps the PNGs
+snapshot test write a PNG of every screen (the chat, the composer, listening, a failed reply, an approval
+card and a finished action, Recents, Settings, the welcome and the Live Activity) into `<dir>`. CI does the same on every run and keeps the PNGs
 as the `ios-snapshots` artifact. To run Otto on your own iPhone, set `DEVELOPMENT_TEAM` in
 `Config/Local.xcconfig`, open `OttoiOS.xcodeproj` and run the `OttoiOS` scheme; a free Apple ID is enough.
 

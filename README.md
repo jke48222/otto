@@ -56,8 +56,8 @@ up yesterday's conversation from Recents.
 It's a native Mac app written in Swift with SwiftUI and AppKit. The source build uses only Apple frameworks;
 the signed app adds Sparkle for updates. It talks to the Anthropic API directly with your own key.
 
-There's also [Otto for iPhone](#otto-for-iphone), built from the same source: the same chat, History and
-voice, with the reply's progress in the Dynamic Island while you're in another app.
+There's also [Otto for iPhone](#otto-for-iphone), built from the same source: the same chat, History, voice
+and calendar actions, with the reply's progress in the Dynamic Island while you're in another app.
 
 ## Why I built it
 
@@ -180,11 +180,14 @@ the App Store; [build it from source](#otto-for-iphone-1) and run it on your pho
   Optionally, a notification when a reply finishes while you're away.
 - **One tap away.** "Ask Otto" and "New chat in Otto" work from Siri, Shortcuts, Spotlight and the Action
   button, and there's an Ask Otto widget for the Home and Lock Screen and a Control Center control.
+- **Acts with your OK.** Turn on **Settings → Actions** and Claude can read and add calendar events and
+  reminders. Adding one shows a card with exactly what will be added and the calendar or list it goes to,
+  and waits for your tap; iOS asks for Calendars or Reminders access the first time. Added items can be
+  undone for 10 minutes, and a local activity log lists what ran.
 - **Recents and Continue**, as on the Mac: search every conversation, swipe to delete with Undo, and pick up
   the last chat after a fresh start.
 
-Actions (calendar, reminders, Shortcuts, AppleScript, media control), the File Shelf and the Mac's context
-chips stay on the Mac.
+Shortcuts, AppleScript, media control and links, the File Shelf and the Mac's context chips stay on the Mac.
 
 ## Features
 
@@ -657,7 +660,8 @@ scripts/ios.sh test       # the iPhone tests; add --snapshots <dir> for a PNG of
 To run it on your own iPhone, add your team to `Config/Local.xcconfig` (`DEVELOPMENT_TEAM = ABCDE12345`; a free
 Apple ID works for your own devices), open `OttoiOS.xcodeproj` and run the **OttoiOS** scheme. Otto for iPhone
 needs no entitlements or capabilities. Turn on **Demo Mode** in its Settings, or tap **Try the Demo First** on
-the welcome screen, to try it without a key.
+the welcome screen, to try it without a key; "add the dentist to my calendar" shows the approval card on a
+made-up calendar.
 
 ## How it works
 
@@ -686,13 +690,13 @@ Otto/
 ├── Setapp/       Setapp build only: usage events and release notes
 ├── UI/           SwiftUI views: notch, dock cards, pages, chat, glance, voice, Settings panes, theme
 └── Debug/        Debug-build tools: snapshot renderer, on-screen self-test, promo stage for the launch media
-OttoiOS/          Otto for iPhone: the chat screen, Recents, Settings, the Live Activity, notifications, intents
+OttoiOS/          Otto for iPhone: the chat screen, approvals, Recents, Settings, the Live Activity, notifications, intents
 OttoWidgets/      the iPhone widget extension: the reply's Live Activity, the Ask Otto widget and control
 ```
 
 The iPhone app compiles the platform-neutral part of `Otto/` (the chat, API, History, Usage and Voice modules,
-the theme and the Markdown renderer) next to its own code in `OttoiOS/`; the few Mac-only lines in those files
-sit behind `#if os(macOS)`.
+the tool loop and the calendar tools, the theme and the Markdown renderer) next to its own code in `OttoiOS/`;
+the few Mac-only lines in those files sit behind `#if os(macOS)`.
 
 A transparent, non-activating panel sits over the notch and only accepts clicks inside the shape it
 draws, so everything else passes through to your apps and the menu bar. The global shortcut uses the

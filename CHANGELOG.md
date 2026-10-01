@@ -22,13 +22,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     reply's **Live Activity** shows what Otto is doing in the Dynamic Island and on the Lock Screen, then
     the reply's first line. If iOS pauses the reply first, it says so and Retry picks it up. Optionally, a
     notification when a reply finishes while you're away.
+  - **Actions** for calendar events and reminders, with the Mac's tools, approvals and activity log: a card
+    shows exactly what will be added and arms before it can be confirmed, iOS's own prompt asks for access
+    the first time, added items have Undo for 10 minutes, and an action waiting while you're away lights up
+    the Live Activity.
   - **Recents** with search, swipe to delete and Undo; **Continue** picks up the last conversation.
   - **Siri and Shortcuts** ("Ask Otto", "New chat in Otto"), an **Ask Otto** widget for the Home and Lock
     Screen, and a Control Center control.
   - **Settings** for the API key (kept in the iPhone's Keychain), demo mode, model, response style, web
-    search, custom instructions, cost labels, the Live Activity and notifications, voice, history, usage
-    and haptics; a first-run welcome that asks for a key or offers the demo.
-  - Actions (calendar, reminders, Shortcuts, AppleScript) stay Mac-only for now.
+    search, custom instructions, cost labels, actions, the Live Activity and notifications, voice, history,
+    usage and haptics; a first-run welcome that asks for a key or offers the demo.
+  - Shortcuts, AppleScript, media control and links stay on the Mac.
 - An iOS CI job builds the app and its widget extension, runs the iPhone tests on the newest simulator and
   uploads snapshots of every screen.
 
