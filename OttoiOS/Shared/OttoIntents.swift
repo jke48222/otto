@@ -11,9 +11,9 @@
 import AppIntents
 import Foundation
 
-/// "Ask Otto": opens a fresh composer, or sends `question` right away when the shortcut supplies one.
-struct AskOttoIntent: AppIntent {
-    static let title: LocalizedStringResource = "Ask Otto"
+/// "Chat with Otto": opens a fresh composer, or sends `question` right away when the shortcut supplies one.
+struct ChatWithOttoIntent: AppIntent {
+    static let title: LocalizedStringResource = "Chat with Otto"
     static let description = IntentDescription("Opens Otto ready for your question, or asks it right away.")
     static let openAppWhenRun = true
 

@@ -2,8 +2,8 @@
 //  OttoWidgetsBundle.swift
 //  Otto
 //
-//  The widget extension: the reply's Live Activity (Dynamic Island and Lock Screen), the Ask Otto widget for
-//  the Home and Lock Screen, and the Ask Otto control for Control Center and the Action button.
+//  The widget extension: the reply's Live Activity (Dynamic Island and Lock Screen), the chat widget for
+//  the Home and Lock Screen, and the chat control for Control Center and the Action button.
 //
 
 import SwiftUI
@@ -13,7 +13,7 @@ import WidgetKit
 struct OttoWidgetsBundle: WidgetBundle {
     var body: some Widget {
         ReplyLiveActivity()
-        AskOttoWidget()
-        AskOttoControl()
+        OttoChatWidget()
+        OttoChatControl()
     }
 }

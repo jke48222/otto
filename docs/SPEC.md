@@ -1461,7 +1461,7 @@ because its framework starts at launch. CONTRIBUTING.md lists the commands.
 
 `project-ios.yml` generates `OttoiOS.xcodeproj` (not checked in) with three targets: **OttoiOS**, the app
 (`com.jalenedusei.otto`, product `Otto.app`, iOS 18, iPhone only, Swift 5 mode, minimal concurrency checking),
-**OttoWidgets**, an app extension (`com.jalenedusei.otto.widgets`) with the reply's Live Activity, the Ask Otto
+**OttoWidgets**, an app extension (`com.jalenedusei.otto.widgets`) with the reply's Live Activity, the chat
 widget and the Control Center control, and **OttoiOSTests**, hosted in the app. Signing comes from
 `Config/Signing-iOS.xcconfig` (automatic, team from the shared `Local.xcconfig`); the simulator needs none, and
 the app needs no entitlements.
@@ -1582,10 +1582,10 @@ behind. The widget extension draws the Lock Screen banner and the island (orb le
 trailing, the title, an elapsed-time clock and the detail line, marked privacy-sensitive); tapping opens
 `otto://reply/<id>`.
 
-**Ways in.** `AskOttoIntent` (optional question) and `NewOttoChatIntent` open the app and hand a request to
-`OttoIntentRouter`, which holds requests until the app installs its handler. `OttoShortcuts` offers "Ask Otto"
-and "New chat in Otto" to Siri, Spotlight and the Action button. The Ask Otto widget (small, circular,
-rectangular, inline) opens `otto://ask`; the control runs `AskOttoIntent`.
+**Ways in.** `ChatWithOttoIntent` (optional question) and `NewOttoChatIntent` open the app and hand a request to
+`OttoIntentRouter`, which holds requests until the app installs its handler. `OttoShortcuts` offers "Chat with Otto"
+and "New chat in Otto" to Siri, Spotlight and the Action button. The chat widget (small, circular,
+rectangular, inline) opens `otto://ask`; the control runs `ChatWithOttoIntent`.
 
 **Not on iPhone.** Shortcuts, AppleScript, media control and links (`ToolCatalog`, `ProcessRunner`, `URLGuard`);
 "Always allow", the safety-mode setting and the permission cards (iOS's own prompts stand in); the File Shelf;
