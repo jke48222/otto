@@ -350,6 +350,7 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p build/ios-snapshots
+          # Keep compiling after the first error, so one run reports every file that fails.
           TEST_RUNNER_OTTO_SNAPSHOT_DIR="$PWD/build/ios-snapshots" xcodebuild \
             -project OttoiOS.xcodeproj \
             -scheme OttoiOS \
@@ -357,8 +358,14 @@ jobs:
             -destination "id=$SIMULATOR_UDID" \
             -derivedDataPath build/ios \
             -resultBundlePath build/iOSTestResults.xcresult \
+            -IDEBuildingContinueBuildingAfterErrors=YES \
             CODE_SIGNING_ALLOWED=NO \
-            test
+            test 2>&1 | tee build/ios-build.log
+
+      - name: Summarize build errors
+        if: failure()
+        run: |
+          grep -E ": error: |Test Case .* failed" build/ios-build.log | sort -u | head -300 || true
 
       - name: Upload snapshots
         if: always()

@@ -4,9 +4,12 @@
 //
 //  Where the transcript should land when the notch opens: the start of a reply that finished while it was
 //  closed, else where the user stopped reading (if the conversation hasn't moved on since), else the bottom.
+//  The iPhone app restores a reopened conversation the same way.
 //
 
 import Foundation
+
+enum TranscriptRestoreTarget: Equatable, Sendable { case bottom, messageTop(UUID) }
 
 enum ReadingRestore {
     /// 1. unreadReplyID exists in messages → .messageTop(unreadReplyID)

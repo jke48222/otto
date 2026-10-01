@@ -193,12 +193,12 @@ enum ConversationCodec {
     static func missingNote(for block: JSONValue) -> JSONValue {
         let title = block["title"]?.stringValue.map { DisplayText.sanitized($0, maxLength: 200) }
         let name = (title?.isEmpty == false ? title : nil) ?? (block.typeName == "image" ? "an image" : "a document")
-        return ["type": "text", "text": .string("[Earlier attachment not kept on this Mac: \(name). Ask the user to attach it again if you need it.]")]
+        return ["type": "text", "text": .string("[Earlier attachment not kept on this \(OttoDevice.name): \(name). Ask the user to attach it again if you need it.]")]
     }
 
     /// Chip text of an attachment whose payload is gone.
     static func unavailablePayloadText(for name: String) -> String {
-        "[\(name) is no longer stored on this Mac.]"
+        "[\(name) is no longer stored on this \(OttoDevice.name).]"
     }
 
     // MARK: - Encoding

@@ -74,6 +74,15 @@ import os
         Self.logger.debug("Queued \(sentences.count, privacy: .public) sentences to read aloud")
     }
 
+    /// Reads a whole reply from the start (the iPhone's Read Aloud), even one that was stopped before.
+    func read(assistantID: UUID, text: String) {
+        if isSpeaking { stopSynthesizer() }
+        chunker = SpeechChunker()
+        chunkerAssistantID = assistantID
+        silencedAssistantID = nil
+        progress(assistantID: assistantID, text: text, isFinal: true)
+    }
+
     /// Stops right away and stays quiet for the rest of the current reply.
     func stop() {
         silencedAssistantID = chunkerAssistantID

@@ -73,6 +73,7 @@ targets:
       - Otto/History/HistoryPolicy.swift
       - Otto/History/HistorySearch.swift
       - Otto/History/RecentsState.swift
+      - Otto/Notch/ReadingRestore.swift
       # Tools: the contracts the chat loop speaks
       - Otto/Permissions/PermissionContracts.swift
       - Otto/Tools/JSONSchemaValidator.swift
@@ -101,6 +102,7 @@ targets:
       - Otto/UI/MessageSegments.swift
       - Otto/UI/Pages/HistoryRecentsModel.swift
       - Otto/UI/Theme.swift
+      - Otto/UI/Voice/VoiceWaveformView.swift
     info:
       path: OttoiOS/Info.plist
       properties:
