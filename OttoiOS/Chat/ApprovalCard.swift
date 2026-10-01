@@ -41,6 +41,24 @@ struct ApprovalCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
+            // A card taller than the screen (long notes on a small iPhone) scrolls its details; the buttons stay.
+            ViewThatFits(in: .vertical) {
+                details
+                ScrollView {
+                    details
+                }
+                .scrollBounceBehavior(.basedOnSize)
+            }
+            buttons
+        }
+        .padding(16)
+        .clay(cornerRadius: 22, style: .tray)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Otto asks: \(approval.presentation.title)")
+    }
+
+    private var details: some View {
+        VStack(alignment: .leading, spacing: 12) {
             ApprovalBodyContent(approvalBody: approval.body, selection: selection,
                                 choosesCalendar: missingPermissions.isEmpty)
             if !missingPermissions.isEmpty {
@@ -55,12 +73,8 @@ struct ApprovalCard: View {
             if let caution = approval.caution {
                 CautionView(caution: caution)
             }
-            buttons
         }
-        .padding(16)
-        .clay(cornerRadius: 22, style: .tray)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Otto asks: \(approval.presentation.title)")
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var header: some View {

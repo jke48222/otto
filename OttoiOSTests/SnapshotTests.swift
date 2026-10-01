@@ -85,6 +85,43 @@ final class SnapshotTests: XCTestCase {
         await waitUntil { !graph.chat.isStreaming }
     }
 
+    /// A worst-case card (long notes, conflicts, provenance and a caution) on a small iPhone: its details scroll and
+    /// its buttons stay on screen.
+    func testOversizedApprovalCard() async throws {
+        let graph = makeSnapshotGraph()
+        let approval = PendingApproval(
+            callID: "toolu_snapshot", messageID: UUID(), toolName: "calendar_create_event",
+            kind: .approval(rememberScope: nil),
+            presentation: ToolCallPresentation(symbol: "calendar.badge.plus",
+                                               title: "Add \u{201C}Quarterly planning offsite\u{201D} to Calendar",
+                                               activeTitle: "Adding to Calendar\u{2026}", doneTitle: "Added",
+                                               detail: nil, disclosure: nil),
+            body: .event(EventPreview(
+                title: "Quarterly planning offsite", weekday: "THU", day: "8", timeLine: "9:00 AM \u{2013} 5:30 PM",
+                location: "Harbor Room, 4th floor, 200 Market Street",
+                notes: String(repeating: "Bring the Q3 numbers, the hiring plan and the draft roadmap. ", count: 6),
+                calendars: [CalendarChoice(id: "work", title: "Work", source: "iCloud", colorRGBA: [0.35, 0.55, 0.95, 1])],
+                selectedCalendarID: "work", calendarHint: nil,
+                conflicts: ["Overlaps with \u{201C}Team sync\u{201D} 10:00 AM",
+                            "Overlaps with \u{201C}1:1 with Sam\u{201D} 2:00 PM"],
+                timeZoneNote: "9:00 AM your time (12:00 PM New York)", adjustmentNote: nil)),
+            confirmLabel: "Add Event", declineLabel: "Don't add",
+            provenance: "Requested after reading example.com",
+            caution: CautionBanner(headline: "Otto read example.com just before asking.",
+                                   body: "Pages and files can hide instructions. Only continue if you asked for this."),
+            armingDelay: .seconds(1), presentedAt: Date(), position: 1, total: 2)
+        // Hosted like the composer: a bottom inset under a screen that takes the rest.
+        let screen = Color.clear
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                ApprovalCard(approval: approval, model: graph.model)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 8)
+            }
+            .background { OttoBackground() }
+        try await Snapshot.render(screen, named: "chat-approval-small", size: CGSize(width: 375, height: 667))
+    }
+
     func testFinishedAction() async throws {
         let graph = makeSnapshotGraph()
         graph.settings.actions.enabled = true
@@ -226,14 +263,14 @@ enum Snapshot {
     }
 
     /// Renders `view` full screen in its own window, above the test host's, and writes `<name>.png` when
-    /// OTTO_SNAPSHOT_DIR is set.
+    /// OTTO_SNAPSHOT_DIR is set. `size` draws it in a smaller window at the top left instead (a smaller iPhone).
     @discardableResult
-    static func render<V: View>(_ view: V, named name: String,
-                                settle: Duration = .milliseconds(900)) async throws -> UIImage {
+    static func render<V: View>(_ view: V, named name: String, settle: Duration = .milliseconds(900),
+                                size: CGSize? = nil) async throws -> UIImage {
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first,
                                   "The test host has no window scene")
         let window = UIWindow(windowScene: scene)
-        window.frame = scene.coordinateSpace.bounds
+        window.frame = size.map { CGRect(origin: .zero, size: $0) } ?? scene.coordinateSpace.bounds
         window.windowLevel = .normal + 1
         let host = UIHostingController(rootView: view.preferredColorScheme(.dark))
         host.view.backgroundColor = UIColor(white: 0.024, alpha: 1)

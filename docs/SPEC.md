@@ -1596,5 +1596,6 @@ Undo, the permission step, the log, the away alert), the Live Activity states an
 and prompt, the transcript's follow math and the preferences, all on inert graphs. `SnapshotTests` renders
 `chat-empty`, `chat-needs-key`, `chat-conversation`, `chat-streaming`, `chat-composer`, `chat-listening`,
 `chat-failed`, `chat-approval`, `chat-action`, `recents`, `settings`, `onboarding` and `live-activity` full
-screen in a window of their own and writes PNGs to `OTTO_SNAPSHOT_DIR`. `scripts/ios.sh [build|test] [--snapshots DIR]` picks the newest iPhone
-simulator; the CI job `ios` runs it and uploads the PNGs as the `ios-snapshots` artifact.
+screen in a window of their own, plus `chat-approval-small` (a worst-case card at 375 × 667 pt, whose details
+scroll), and writes PNGs to `OTTO_SNAPSHOT_DIR`. `scripts/ios.sh [build|test] [--snapshots DIR]` picks the newest
+iPhone simulator; the CI job `ios` runs it and uploads the PNGs as the `ios-snapshots` artifact.
