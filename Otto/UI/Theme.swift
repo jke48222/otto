@@ -3,10 +3,13 @@
 //  Otto
 //
 //  Design tokens and the shared visual primitives of the notch: the fine foam grain,
-//  raised "clay" surfaces, the Otto orb and a few small animated indicators.
+//  raised "clay" surfaces, the Otto orb and a few small animated indicators. The iPhone app and its
+//  widgets use the same tokens and forms.
 //
 
+#if os(macOS)
 import AppKit
+#endif
 import SwiftUI
 
 // MARK: - Tokens
@@ -961,6 +964,7 @@ struct VerticalDots: View {
 
 // MARK: - Icons
 
+#if os(macOS)
 /// Resolves and caches application icons by bundle identifier (browser chips).
 @MainActor
 enum AppIconCache {
@@ -979,3 +983,4 @@ enum AppIconCache {
         return icon
     }
 }
+#endif

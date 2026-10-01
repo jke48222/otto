@@ -172,6 +172,15 @@ enum SecureFile {
     }
 }
 
+/// The device Otto runs on, as user-facing copy names it ("on this Mac", "on this iPhone").
+enum OttoDevice {
+    #if os(macOS)
+    static let name = "Mac"
+    #else
+    static let name = "iPhone"
+    #endif
+}
+
 /// Cleaning for text that comes from outside Otto and is only displayed (never executed).
 enum DisplayText {
     /// Removes C0/C1 controls (keeps \n and \t only when allowNewlines), DEL, bidi embeddings/overrides/isolates

@@ -5,10 +5,11 @@
 //
 //  Renders Otto's app icon — a near-black squircle with a fine grain, a soft charcoal notch
 //  silhouette hanging from the top edge and a small warm-white orb — at 1024 px, then writes every
-//  macOS AppIcon size plus Contents.json.
+//  macOS AppIcon size plus Contents.json. Also renders the iPhone app's icon: the same felt, full bleed
+//  (iOS rounds the corners itself), with a Dynamic Island pill in place of the notch, as one 1024 px PNG.
 //
-//  Usage: swift scripts/make_icon.swift [path/to/Assets.xcassets]
-//         (defaults to Otto/Assets.xcassets next to this script's parent directory)
+//  Usage: swift scripts/make_icon.swift [path/to/Assets.xcassets] [path/to/iOS/Assets.xcassets]
+//         (default to Otto/Assets.xcassets and OttoiOS/Assets.xcassets next to this script's parent directory)
 //
 
 import CoreGraphics
@@ -24,6 +25,10 @@ let catalogURL: URL = CommandLine.arguments.count > 1
     ? URL(fileURLWithPath: CommandLine.arguments[1]).standardizedFileURL
     : repositoryRoot.appendingPathComponent("Otto/Assets.xcassets")
 let iconSetURL = catalogURL.appendingPathComponent("AppIcon.appiconset")
+let iOSCatalogURL: URL = CommandLine.arguments.count > 2
+    ? URL(fileURLWithPath: CommandLine.arguments[2]).standardizedFileURL
+    : repositoryRoot.appendingPathComponent("OttoiOS/Assets.xcassets")
+let iOSIconSetURL = iOSCatalogURL.appendingPathComponent("AppIcon.appiconset")
 
 // MARK: - Drawing helpers
 
@@ -265,6 +270,114 @@ func renderMaster() -> CGImage {
     return image
 }
 
+// MARK: - iPhone artwork
+
+/// The iPhone icon: the body's felt to every edge (no squircle, shadow or rim: iOS masks the corners), and a
+/// charcoal Dynamic Island pill near the top with the orb in its middle. Same colors, glow and grain as the Mac.
+func renderIOSMaster() -> CGImage {
+    let context = makeContext(size: Int(canvas))
+    let center = CGPoint(x: canvas / 2, y: canvas / 2)
+
+    context.drawLinearGradient(
+        gradient([(color(0x141416), 0), (color(0x08080A), 1)]),
+        start: CGPoint(x: center.x, y: canvas),
+        end: CGPoint(x: center.x, y: 0),
+        options: []
+    )
+    context.drawRadialGradient(
+        gradient([(color(0xFFFFFF, 0.045), 0), (color(0xFFFFFF, 0), 1)]),
+        startCenter: CGPoint(x: center.x, y: canvas - 40), startRadius: 0,
+        endCenter: CGPoint(x: center.x, y: canvas - 40), endRadius: 620,
+        options: []
+    )
+
+    // The Dynamic Island: a capsule 560 × 168 whose top edge sits 150 px below the canvas top.
+    let pillFrame = CGRect(x: center.x - 280, y: canvas - 150 - 168, width: 560, height: 168)
+    let pill = CGPath(roundedRect: pillFrame, cornerWidth: 84, cornerHeight: 84, transform: nil)
+
+    context.saveGState()
+    context.setShadow(offset: CGSize(width: 0, height: -14), blur: 34, color: color(0x000000, 0.7))
+    context.addPath(pill)
+    context.setFillColor(color(0x202023))
+    context.fillPath()
+    context.restoreGState()
+
+    context.saveGState()
+    context.addPath(pill)
+    context.clip()
+    context.drawLinearGradient(
+        gradient([(color(0x2A2A2E), 0), (color(0x1D1D20), 1)]),
+        start: CGPoint(x: center.x, y: pillFrame.maxY),
+        end: CGPoint(x: center.x, y: pillFrame.minY),
+        options: []
+    )
+    context.restoreGState()
+
+    strokeWithGradient(
+        context,
+        path: pill,
+        lineWidth: 5,
+        gradient: gradient([(color(0xFFFFFF, 0.02), 0), (color(0xFFFFFF, 0.10), 0.55), (color(0xFFFFFF, 0.03), 1)]),
+        from: CGPoint(x: center.x, y: pillFrame.maxY),
+        to: CGPoint(x: center.x, y: pillFrame.minY)
+    )
+
+    let orbCenter = CGPoint(x: center.x, y: pillFrame.midY)
+    let orbRadius: CGFloat = 40
+    context.drawRadialGradient(
+        gradient([(color(0xF4F1EA, 0.24), 0), (color(0xF4F1EA, 0.06), 0.45), (color(0xF4F1EA, 0), 1)]),
+        startCenter: orbCenter, startRadius: 0,
+        endCenter: orbCenter, endRadius: 190,
+        options: []
+    )
+
+    context.saveGState()
+    context.setBlendMode(.screen)
+    context.setAlpha(0.07)
+    context.draw(makeNoiseImage(size: Int(canvas), seed: 0x4D49_4C4C_4552), in: CGRect(x: 0, y: 0, width: canvas, height: canvas))
+    context.restoreGState()
+
+    context.saveGState()
+    context.setShadow(offset: CGSize(width: 0, height: -6), blur: 18, color: color(0x000000, 0.55))
+    context.addEllipse(in: CGRect(x: orbCenter.x - orbRadius, y: orbCenter.y - orbRadius, width: orbRadius * 2, height: orbRadius * 2))
+    context.setFillColor(color(0x8C8A86))
+    context.fillPath()
+    context.restoreGState()
+
+    context.saveGState()
+    context.addEllipse(in: CGRect(x: orbCenter.x - orbRadius, y: orbCenter.y - orbRadius, width: orbRadius * 2, height: orbRadius * 2))
+    context.clip()
+    let highlight = CGPoint(x: orbCenter.x - orbRadius * 0.35, y: orbCenter.y + orbRadius * 0.4)
+    context.drawRadialGradient(
+        gradient([(color(0xFFFDF8), 0), (color(0xF4F1EA), 0.35), (color(0xC9C6BF), 0.75), (color(0x8C8A86), 1)]),
+        startCenter: highlight, startRadius: 0,
+        endCenter: orbCenter, endRadius: orbRadius * 1.08,
+        options: [.drawsAfterEndLocation]
+    )
+    context.restoreGState()
+
+    guard let image = context.makeImage() else { fatalError("Could not render the iPhone icon") }
+    return image
+}
+
+/// iOS rejects an app icon with an alpha channel, so the iPhone icon is written opaque.
+func opaque(_ image: CGImage) -> CGImage {
+    guard let context = CGContext(
+        data: nil,
+        width: image.width,
+        height: image.height,
+        bitsPerComponent: 8,
+        bytesPerRow: 0,
+        space: colorSpace,
+        bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+    ) else {
+        fatalError("Could not create an opaque bitmap context")
+    }
+    context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+    guard let result = context.makeImage() else { fatalError("Could not flatten the iPhone icon") }
+    return result
+}
+
 // MARK: - Output
 
 func resized(_ image: CGImage, to pixels: Int) -> CGImage {
@@ -326,6 +439,21 @@ do {
         try JSONSerialization.data(withJSONObject: ["info": info], options: options).write(to: catalogContentsURL)
     }
     print("AppIcon written to \(iconSetURL.path)")
+
+    // The iPhone app: one opaque 1024 px universal icon.
+    try fileManager.createDirectory(at: iOSIconSetURL, withIntermediateDirectories: true)
+    let iOSIconURL = iOSIconSetURL.appendingPathComponent("AppIcon.png")
+    try writePNG(opaque(renderIOSMaster()), to: iOSIconURL)
+    print("wrote \(iOSIconURL.path)")
+    let iOSImages: [[String: String]] = [
+        ["filename": "AppIcon.png", "idiom": "universal", "platform": "ios", "size": "1024x1024"],
+    ]
+    try JSONSerialization.data(withJSONObject: ["images": iOSImages, "info": info], options: options)
+        .write(to: iOSIconSetURL.appendingPathComponent("Contents.json"))
+    let iOSCatalogContentsURL = iOSCatalogURL.appendingPathComponent("Contents.json")
+    if !fileManager.fileExists(atPath: iOSCatalogContentsURL.path) {
+        try JSONSerialization.data(withJSONObject: ["info": info], options: options).write(to: iOSCatalogContentsURL)
+    }
 } catch {
     FileHandle.standardError.write(Data("make_icon: \(error.localizedDescription)\n".utf8))
     exit(1)

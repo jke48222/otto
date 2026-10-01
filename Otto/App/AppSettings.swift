@@ -4,13 +4,16 @@
 //
 //  User preferences. Everything except the API key persists to UserDefaults under `otto.` keys;
 //  the API key lives in the Keychain and is cached in memory. Feature preferences live in the groups
-//  under Otto/App/Settings, all created here over one PreferenceStore.
+//  under Otto/App/Settings, all created here over one PreferenceStore. Shared with the iPhone app, which
+//  has no login item or global shortcut and adds its own group (`mobile`).
 //
 
 import Foundation
 import Observation
 import Security
+#if os(macOS)
 import ServiceManagement
+#endif
 import os
 
 @MainActor @Observable final class AppSettings {
@@ -66,11 +69,13 @@ import os
         didSet { defaults.set(showMenuBarIcon, forKey: Key.showMenuBarIcon) }
     }
 
+    #if os(macOS)
     /// Mirrors `SMAppService.mainApp`. Setting it registers / unregisters the login item and reverts
     /// (with `lastSettingsError` set) when the system refuses.
     var launchAtLogin: Bool {
         didSet { launchAtLoginDidChange(from: oldValue) }
     }
+    #endif
 
     var customInstructions: String {
         didSet { defaults.set(customInstructions, forKey: Key.customInstructions) }
@@ -83,7 +88,12 @@ import os
 
     // Feature groups (Otto/App/Settings). Each persists its own keys.
     let notch: NotchSettings
+    #if os(macOS)
     let shortcuts: ShortcutSettings
+    #else
+    /// The iPhone app's own preferences (OttoiOS/App/MobileSettings.swift).
+    let mobile: MobileSettings
+    #endif
     let voice: VoiceSettings
     let context: ContextSettings
     let shelf: ShelfSettings
@@ -117,8 +127,10 @@ import os
     @ObservationIgnored private let environmentAPIKey: String?
     /// The value currently stored in the Keychain, so redundant writes are skipped.
     @ObservationIgnored private var persistedAPIKey: String
+    #if os(macOS)
     /// Set while `launchAtLogin` is being reverted so its `didSet` does not re-run the registration.
     @ObservationIgnored private var isRevertingLaunchAtLogin = false
+    #endif
 
     init(defaults: UserDefaults = .standard, usesKeychain: Bool = true) {
         self.defaults = defaults
@@ -136,7 +148,11 @@ import os
 
         let store = PreferenceStore(defaults: defaults)
         notch = NotchSettings(store: store)
+        #if os(macOS)
         shortcuts = ShortcutSettings(store: store)
+        #else
+        mobile = MobileSettings(store: store)
+        #endif
         voice = VoiceSettings(store: store)
         context = ContextSettings(store: store)
         shelf = ShelfSettings(store: store)
@@ -145,6 +161,7 @@ import os
         usage = UsageSettings(store: store)
         history = HistorySettings(store: store)
 
+        #if os(macOS)
         // The login item can be removed in System Settings behind our back, so the system is the
         // source of truth; the stored value is only kept in sync for completeness.
         let registered = Self.isLoginItemRegistered()
@@ -152,6 +169,7 @@ import os
         if defaults.object(forKey: Key.launchAtLogin) as? Bool != registered {
             defaults.set(registered, forKey: Key.launchAtLogin)
         }
+        #endif
 
         let storedKey = !usesKeychain ? "" : KeychainStore.read(account: KeychainStore.apiKeyAccount)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -218,6 +236,7 @@ import os
 
     // MARK: - Launch at login
 
+    #if os(macOS)
     private func launchAtLoginDidChange(from oldValue: Bool) {
         guard !isRevertingLaunchAtLogin, launchAtLogin != oldValue else { return }
 
@@ -262,6 +281,7 @@ import os
             return false
         }
     }
+    #endif
 
     // MARK: - Helpers
 

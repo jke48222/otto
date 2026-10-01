@@ -129,7 +129,7 @@ enum HistoryRecentsText {
     static let noConversationsTitle = "No conversations yet"
     static let noConversationsBody = "Your chats with Otto will show up here."
     static let historyOffTitle = "History is off"
-    static let historyOffBody = "Otto isn't saving conversations on this Mac."
+    static let historyOffBody = "Otto isn't saving conversations on this \(OttoDevice.name)."
     static let turnOnHistory = "Turn On History"
     static let noMatchesBody = "Try fewer words or a different spelling."
 
@@ -232,7 +232,11 @@ enum HistoryRecentsText {
 
     /// The first-run notice body for the current retention.
     static func noticeBody(retention: HistoryRetention) -> String {
+        #if os(macOS)
         let intro = "Conversations are saved on this Mac only, so you can pick them up with ⌘Y."
+        #else
+        let intro = "Conversations are saved on this iPhone only, so you can pick them up from Recents."
+        #endif
         let kept: String
         if retention == .forever {
             kept = "They're kept until you delete them."

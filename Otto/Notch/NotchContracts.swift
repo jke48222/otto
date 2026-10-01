@@ -187,8 +187,6 @@ struct ReadingAnchor: Equatable, Sendable {
     static func markerID(_ messageID: UUID) -> String { "anchor-\(messageID.uuidString)" }
 }
 
-enum TranscriptRestoreTarget: Equatable, Sendable { case bottom, messageTop(UUID) }
-
 /// Keyboard commands (mapped by NotchKeyCommands, dispatched by NotchViewModel.perform).
 enum NotchKeyCommand: Equatable, Sendable {
     case close, newChat, openSettings, pasteAsAttachment

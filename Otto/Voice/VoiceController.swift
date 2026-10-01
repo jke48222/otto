@@ -20,8 +20,14 @@ import os
         static let timeLimit = "Stopped after 2 minutes. Your words are in the message box."
         static let timeLimitNothingHeard = "Stopped listening after 2 minutes."
         static let screenLocked = "Your screen locked, so Otto stopped listening."
+        #if os(macOS)
         static let asleep = "Your Mac went to sleep, so Otto stopped listening."
         static let userSwitched = "You switched users, so Otto stopped listening."
+        #else
+        static let asleep = "Your iPhone went to sleep, so Otto stopped listening."
+        /// The iPhone app reports leaving the foreground, or a call taking the audio, as `.sessionResignedActive`.
+        static let userSwitched = "Otto stopped listening when it left the screen."
+        #endif
 
         static func text(for interruption: VoiceInterruption) -> String {
             switch interruption {

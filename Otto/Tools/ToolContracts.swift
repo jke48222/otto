@@ -6,7 +6,9 @@
 //  tool is, how it asks for approval, what the approval card shows and how a round reaches the executor.
 //
 
+#if os(macOS)
 import AppKit
+#endif
 import Foundation
 
 /// Settings groups of the Actions feature (one toggle each). Order = display order and system-prompt order.

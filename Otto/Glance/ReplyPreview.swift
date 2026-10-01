@@ -3,11 +3,14 @@
 //  Otto
 //
 //  The line that drops below the closed notch when a reply finishes: its outcome, the first line of
-//  the answer as plain text, and the drop's size and timing.
+//  the answer as plain text, and the drop's size and timing. The iPhone app shows the same preview in its
+//  Live Activity; the drop's metrics are the Mac's alone.
 //
 
+#if os(macOS)
 import AppKit
 import CoreText
+#endif
 import Foundation
 
 struct ReplyPreview: Equatable, Identifiable, Sendable {
@@ -222,6 +225,7 @@ enum ReplyPreviewText {
     }
 }
 
+#if os(macOS)
 /// Size and timing of the reply-preview drop (§4.2 shape rules).
 enum ReplyPreviewMetrics {
     static let dropHeight: CGFloat = 28
@@ -252,3 +256,4 @@ enum ReplyPreviewMetrics {
         return ceil(chrome + textWidth)
     }
 }
+#endif

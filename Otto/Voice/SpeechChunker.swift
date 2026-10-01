@@ -13,7 +13,11 @@ import NaturalLanguage
 
 struct SpeechChunker {
     /// Said once per reply, where the first code block starts.
+    #if os(macOS)
     static let codePhrase = "I've put the code in the notch."
+    #else
+    static let codePhrase = "I've put the code on screen."
+    #endif
     /// Said for a bare web address.
     static let linkPhrase = "a link"
 

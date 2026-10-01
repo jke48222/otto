@@ -11,10 +11,14 @@
 //
 //  Links: only http(s) and mailto links stay clickable, and they open through `MarkdownLinkPolicy`
 //  rather than SwiftUI's default handler (which would hand any scheme — file:, smb:, shortcuts:,
-//  custom app schemes — straight to NSWorkspace).
+//  custom app schemes — straight to NSWorkspace). The iPhone app renders replies with the same view.
 //
 
+#if os(macOS)
 import AppKit
+#else
+import UIKit
+#endif
 import SwiftUI
 
 // MARK: - Block model
@@ -660,7 +664,13 @@ enum MarkdownLinkPolicy {
     static var openURLAction: OpenURLAction {
         OpenURLAction { url in
             guard isAllowed(url) else { return .discarded }
+            #if os(macOS)
             return NSWorkspace.shared.open(url) ? .handled : .discarded
+            #else
+            // The system opens web links in the default browser (or the app that claims them) and mail
+            // links in Mail.
+            return .systemAction(url)
+            #endif
         }
     }
 }
@@ -1397,7 +1407,11 @@ enum MarkdownListMetrics {
     static func orderedWidth(digits: Int, baseSize: CGFloat) -> CGFloat {
         let key = "\(digits)|\(baseSize)"
         if let cached = orderedWidths[key] { return cached }
+        #if os(macOS)
         let font = NSFont.monospacedDigitSystemFont(ofSize: baseSize, weight: .medium)
+        #else
+        let font = UIFont.monospacedDigitSystemFont(ofSize: baseSize, weight: .medium)
+        #endif
         let sample = String(repeating: "0", count: max(1, digits)) + "."
         let width = ceil((sample as NSString).size(withAttributes: [.font: font]).width) + 1
         orderedWidths[key] = width
@@ -1514,9 +1528,13 @@ private struct MarkdownCodeBlock: View {
     }
 
     private func copy() {
+        #if os(macOS)
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(displayCode, forType: .string)
+        #else
+        UIPasteboard.general.string = displayCode
+        #endif
         didCopy = true
         resetTask?.cancel()
         resetTask = Task { @MainActor in

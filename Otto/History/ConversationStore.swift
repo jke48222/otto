@@ -46,7 +46,7 @@ enum HistoryStoreError: LocalizedError, Equatable {
     /// Completes "Otto couldn't save your latest conversation: …" and similar lines.
     var errorDescription: String? {
         switch self {
-        case .notFound: return "the conversation is no longer on this Mac"
+        case .notFound: return "the conversation is no longer on this \(OttoDevice.name)"
         case .damaged: return "the file may be damaged"
         case .newerVersion: return "a newer version of Otto saved it"
         case .tooLarge: return "the file is too large to open"

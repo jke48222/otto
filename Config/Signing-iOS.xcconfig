@@ -1,0 +1,14 @@
+// Signing for Otto on iPhone.
+//
+// The simulator needs no signing. To run Otto on your own iPhone, put your team in Config/Local.xcconfig
+// (git-ignored, shared with the Mac build), for example:
+//
+//     DEVELOPMENT_TEAM = ABCDE12345
+//
+// Xcode then signs automatically with that team; a free Apple ID works for your own devices. Otto for iPhone
+// needs no entitlements, so no capability has to be set up first.
+//
+CODE_SIGN_STYLE = Automatic
+DEVELOPMENT_TEAM =
+
+#include? "Local.xcconfig"

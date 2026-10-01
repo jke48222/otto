@@ -668,9 +668,15 @@ import os
         }
     }
 
+    #if os(macOS)
     /// Shown when a conversation no longer fits one request, whatever Otto leaves out of the earlier turns.
     nonisolated static let conversationTooLongDescription =
         "This conversation is too long for Otto to continue. Start a new chat (⌘N) to keep going."
+    #else
+    /// Shown when a conversation no longer fits one request, whatever Otto leaves out of the earlier turns.
+    nonisolated static let conversationTooLongDescription =
+        "This conversation is too long for Otto to continue. Start a new chat to keep going."
+    #endif
 
     /// The configuration a turn started now would use. No executor means no client tools.
     private func makeTurnConfig() -> TurnConfig {

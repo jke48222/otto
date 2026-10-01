@@ -100,11 +100,19 @@ Otto/
 └── Debug/        Debug-build-only tools: SnapshotRenderer (--snapshot), SelfTest (--selftest),
                   the promo stage and stills (--promo, --promo-stills) behind the launch media
 OttoTests/        XCTest unit tests; shared fakes in OttoTests/Support/
+OttoiOS/          Otto for iPhone: MobileComposition (the graph), the chat screen and its model, the approval
+                  card, Recents, Settings, onboarding, Actions/ (permissions and the tool catalog), the Live
+                  Activity controller, notifications, background time, the audio session; Shared/ holds what
+                  the widget extension compiles too (intents, deep links, the Live Activity's attributes and
+                  views)
+OttoWidgets/      the iPhone widget extension: the reply's Live Activity, the Ask Otto widget and control
+OttoiOSTests/     the iPhone tests, including the snapshot test that draws every screen
 scripts/          build.sh, run.sh, snapshot.sh, make_icon.swift, release.sh, publish.sh, make_media.sh
                   (+ video tools), audit_flavor.sh, check_commercial_config.sh; their tests in scripts/tests/
 Config/           Signing.xcconfig (+ your git-ignored Local.xcconfig); Commercial.xcconfig, Paid.xcconfig
                   and Setapp.xcconfig for the paid and Setapp builds
-project*.yml      project.yml (Otto.xcodeproj); project-paid.yml and project-setapp.yml add one package each
+project*.yml      project.yml (Otto.xcodeproj); project-paid.yml and project-setapp.yml add one package each;
+                  project-ios.yml (OttoiOS.xcodeproj) builds the iPhone app from OttoiOS/ and the shared part of Otto/
 docs/             SPEC.md (architecture & design spec), RELEASING.md, snapshots/, media/
 ```
 
@@ -152,6 +160,9 @@ language. Read the section for the area you're changing before you start. The sh
 - **Match the look.** New UI follows the clay theme in `Otto/UI/Theme.swift` and the look & feel section of
   the spec.
 - **Keep copy honest.** User-facing text and docs describe only what the app actually does today.
+- **Shared code builds for both apps.** The iPhone app compiles the files listed in `project-ios.yml` from
+  `Otto/`. In those files, Mac-only code sits behind `#if os(macOS)` with the iPhone's version in the `#else`,
+  and device names in copy come from `OttoDevice.name`. When you change a shared file, run both test suites.
 
 ## Tests and tools
 
@@ -198,6 +209,13 @@ only, so run them from `scripts/build.sh` output:
   reports "skipped" on an ad hoc signed build.
 
 When you're done, make sure no Otto process is left running (`pkill -x Otto`).
+
+**Testing the iPhone app.** `scripts/ios.sh test` generates `OttoiOS.xcodeproj` and runs the iPhone tests on
+the newest iPhone simulator you have; `scripts/ios.sh build` only builds. Add `--snapshots <dir>` to have the
+snapshot test write a PNG of every screen (the chat, the composer, listening, a failed reply, an approval
+card and a finished action, Recents, Settings, the welcome and the Live Activity) into `<dir>`. CI does the same on every run and keeps the PNGs
+as the `ios-snapshots` artifact. To run Otto on your own iPhone, set `DEVELOPMENT_TEAM` in
+`Config/Local.xcconfig`, open `OttoiOS.xcodeproj` and run the `OttoiOS` scheme; a free Apple ID is enough.
 
 **Testing licensing.** The trial, license keys and updaters compile only into the paid and Setapp builds, so
 the test run above skips them. Run these when you change anything under `Otto/Licensing/`, `Otto/Updates/` or

@@ -4,13 +4,17 @@
 //
 //  What ends a voice session early so the microphone never stays on unattended: the screen locking, the Mac
 //  or its displays going to sleep, and switching users. Also the probes that tell whether the key or mouse
-//  button that started a hold is still physically down.
+//  button that started a hold is still physically down. The iPhone app has its own system source and probes
+//  (OttoiOS/Voice/MobileVoiceInterruptions.swift) and shares the inert source.
 //
 
+#if os(macOS)
 import AppKit
 import CoreGraphics
+#endif
 import os
 
+#if os(macOS)
 /// Distributed "com.apple.screenIsLocked"; NSWorkspace willSleep / screensDidSleep / sessionDidResignActive.
 @MainActor final class SystemVoiceInterruptions: VoiceInterruptionSource {
     private static let logger = Logger(subsystem: "com.jalenedusei.otto", category: "Voice")
@@ -60,6 +64,7 @@ import os
         observers.removeAll()
     }
 }
+#endif
 
 /// Never observes the system. `fire(_:)` delivers an interruption while started (tests, SelfTest, demos).
 @MainActor final class InertVoiceInterruptions: VoiceInterruptionSource {
@@ -82,6 +87,7 @@ import os
     }
 }
 
+#if os(macOS)
 enum VoiceHoldProbes {
     /// .shortcut → CGEventSource.keyState(.combinedSessionState, key: settings.shortcuts.hotKey.keyCode);
     /// .micButton → NSEvent.pressedMouseButtons & 1 != 0.
@@ -99,3 +105,4 @@ enum VoiceHoldProbes {
         }
     }
 }
+#endif

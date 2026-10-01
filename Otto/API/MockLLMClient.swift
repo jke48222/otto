@@ -220,7 +220,7 @@ final class MockLLMClient: LLMClient, @unchecked Sendable {
         let toolUseID = "toolu_demo_" + UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(20).lowercased()
         let thinkingParts = [
             "The user wants me to \(tool.request). ",
-            "That needs an action on their Mac, so I'll call the tool and they can approve it.",
+            "That needs an action on their \(OttoDevice.name), so I'll call the tool and they can approve it.",
         ]
         let thinking = thinkingParts.joined()
         var steps: [Step] = [
@@ -268,13 +268,18 @@ final class MockLLMClient: LLMClient, @unchecked Sendable {
         return blocks.filter { $0.typeName == "tool_result" }
     }
 
-    /// A short answer after a tool round: it quotes the first result, or says the user declined.
+    /// A short answer after a tool round: it says what was added, quotes the first result, or says the user declined.
     private static func toolAnswerScript(for results: [JSONValue], inputTokens: Int) -> [Step] {
         let resultText = results.first?["content"]?.arrayValue?
             .first(where: { $0.typeName == "text" })?["text"]?.stringValue ?? ""
-        let answer = resultText.hasPrefix("declined:")
-            ? "You declined, so I left things as they are."
-            : "Done. It reported: \u{201C}\(shortened(resultText, limit: 300))\u{201D}"
+        let answer: String
+        if resultText.hasPrefix("declined:") {
+            answer = "You declined, so I left things as they are."
+        } else if let added = addedItemAnswer(resultText) {
+            answer = added
+        } else {
+            answer = "Done. It reported: \u{201C}\(shortened(resultText, limit: 300))\u{201D}"
+        }
         var steps: [Step] = [
             .pause(250...400),
             .emit(.messageStart(model: demoModel)),
@@ -290,6 +295,20 @@ final class MockLLMClient: LLMClient, @unchecked Sendable {
                                                    stopReason: "end_turn", stopDetails: nil, model: demoModel,
                                                    usage: usage))))
         return steps
+    }
+
+    /// "Done. “Dentist” is on your Home calendar." for an event or reminder a tool created; nil for other results.
+    private static func addedItemAnswer(_ resultText: String) -> String? {
+        guard let result = try? JSONValue.decode(resultText), result["status"]?.stringValue == "created",
+              let title = result["title"]?.stringValue, !title.isEmpty else { return nil }
+        let quoted = "\u{201C}\(shortened(title, limit: 80))\u{201D}"
+        if let calendar = result["calendar"]?.stringValue, !calendar.isEmpty {
+            return "Done. \(quoted) is on your \(calendar) calendar."
+        }
+        if let list = result["list"]?.stringValue, !list.isEmpty {
+            return "Done. \(quoted) is on your \(list) list."
+        }
+        return "Done. I added \(quoted)."
     }
 
     /// Usage shaped like the API's: token counts, cache fields and, after a search, server-tool use.
@@ -346,6 +365,13 @@ final class MockLLMClient: LLMClient, @unchecked Sendable {
         ]
     }
 
+    /// The demo reply's last "with an API key" bullet.
+    #if os(macOS)
+    private static let streamingBullet = "Answers streamed straight into the notch"
+    #else
+    private static let streamingBullet = "Answers that keep streaming in the Dynamic Island when you leave"
+    #endif
+
     private static func makeAnswer(quote: String, attachmentCount: Int) -> String {
         let opening = quote.isEmpty
             ? "Here's a demo reply"
@@ -361,7 +387,7 @@ final class MockLLMClient: LLMClient, @unchecked Sendable {
 
         - **Summarized thinking** you can expand above the reply
         - **Web search and fetch** results, listed as sources
-        - Answers streamed straight into the notch
+        - \(streamingBullet)
 
         A small SwiftUI view, to show how code renders:
 

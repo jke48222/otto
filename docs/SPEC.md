@@ -30,7 +30,8 @@ Sections 1 to 5 describe Otto 1.0. [Otto 1.1: modules added and changed](#otto-1
 sections 6 to 18, adds actions, permissions, voice, history, usage, the closed-notch glance, Now Playing, the
 calendar chip, the File Shelf, selection and window context, paste-back and the tabbed Settings window, and
 lists what changed in the 1.0 modules. Where the two parts disagree, the 1.1 part is current. Section 19 covers
-the paid and Setapp builds: the trial, license keys and updates.
+the paid and Setapp builds: the trial, license keys and updates. Section 20 covers Otto for iPhone, which is built from
+the same repository and shares the platform-neutral modules.
 
 Global conventions
 - Swift 5 mode, `SWIFT_STRICT_CONCURRENCY=minimal`. Mark UI/state classes `@MainActor`. Use `@Observable`
@@ -1455,3 +1456,147 @@ against a `com.jalenedusei.otto.tests.<UUID>` service, and `PolarSandboxLiveTest
 `OTTO_POLAR_SANDBOX_TESTS=1` and sandbox credentials. `scripts/snapshot.sh --licensing` and `--paid` render the license
 and updates scenes into `docs/snapshots/licensing/` and `docs/snapshots/paid/`; the Setapp build has no snapshots,
 because its framework starts at launch. CONTRIBUTING.md lists the commands.
+
+### 20. Otto for iPhone
+
+`project-ios.yml` generates `OttoiOS.xcodeproj` (not checked in) with three targets: **OttoiOS**, the app
+(`com.jalenedusei.otto`, product `Otto.app`, iOS 18, iPhone only, Swift 5 mode, minimal concurrency checking),
+**OttoWidgets**, an app extension (`com.jalenedusei.otto.widgets`) with the reply's Live Activity, the Ask Otto
+widget and the Control Center control, and **OttoiOSTests**, hosted in the app. Signing comes from
+`Config/Signing-iOS.xcconfig` (automatic, team from the shared `Local.xcconfig`); the simulator needs none, and
+the app needs no entitlements.
+
+**Shared sources.** The app compiles its own `OttoiOS/**` plus an explicit list of files from `Otto/`: the chat
+(`Models`, `ChatSession`, `SystemPrompt`), the API module, `AppSettings` and its groups, `AppSupport`,
+`LaunchOptions`, `ObservationLoop`, the attachment loader and budget, `GlanceContracts` and `ReplyPreview`, the
+History module and `ReadingRestore`, the tool loop (contracts, registry, `ToolExecutor`, `ApprovalStore`,
+`TrustLedger`, `EchoDetector`, `ToolRateLimiter`, `ActionLog`) and the four calendar and reminder tools with
+`EventKitService` and `DemoEventKitService`, the Usage module, the Voice module, and from the UI the theme,
+`MarkdownText`, `MessageSegments`, `VersionPager`, `AnswerCostLabel`, `HistoryRecentsModel` and
+`VoiceWaveformView`. Rules for those files:
+
+- Mac-only code sits behind `#if os(macOS)` with the iPhone's version in `#else`; the Mac side of every such
+  block is unchanged. `PlatformImage` is `NSImage` or `UIImage`. Two types exist once per platform under the
+  same name: `SystemVoiceInterruptions` and `VoiceHoldProbes` (`OttoiOS/Voice/MobileVoiceInterruptions.swift`).
+- Copy that names the device uses `OttoDevice.name` ("Mac" / "iPhone"). The iPhone's system prompt describes a
+  phone screen; its actions section names "this iPhone", and with no tool offered `actionsOffLine` points at
+  Settings → Actions (calendar and reminders only). The spoken code note is "I've put the code on screen."
+- `AppSettings` has no login item or shortcut settings on iPhone and adds `mobile: MobileSettings`
+  (`otto.ios.*`: `liveActivities` true, `notifyWhenAway` false, `notificationPreview` true, `haptics` true,
+  `demoMode` false, `didFinishOnboarding` false).
+
+**Object graph.** `MobileComposition` builds and owns everything: settings, the actions stack
+(`MobilePermissions`, `ApprovalStore`, `ActionLog` in `Logs.noindex` (memory in demo mode), the registry from
+`MobileToolCatalog` on `EventKitService` or `DemoEventKitService`, and a `ToolExecutor` with the Mac's two
+hooks), `ChatSession` on it (the Anthropic client, or `MockLLMClient` in demo mode), `UsageLedger`, `HistoryController` and `RecentsState` over a
+`ConversationStore` in `Application Support/Otto` (`Otto/Demo` in demo mode, whose usage never reaches the
+ledger file), `VoiceController` with `SFSpeechEngine`, `AudioSessionCoordinator`, `ChatScreenModel`,
+`ReplyActivityController`, `ReplyNotifier` and `BackgroundReplyKeeper`. `live()` is the app; `inert(latencyScale:
+isDemo:)` is the same graph for tests and snapshots on a throwaway `UserDefaults` suite, in-memory stores, a
+scripted speech engine and recording stand-ins for ActivityKit (`InertReplyActivities`), notifications
+(`InertReplyNotificationCenter`) and background time (`InertBackgroundTime`), which the composition exposes as
+`activities`, `notificationCenter` and `backgroundTime`. `start()` starts History, the Live Activity follower and
+the notification delegate; `terminate()` cancels voice and the reply and flushes History and the ledger.
+`CompositionHost` (in `OttoApp`) owns the graph, makes it inert under XCTest, installs the intent router's
+handler, and rebuilds the graph when demo mode changes (the root view takes a new identity).
+
+**Scene phase.** Becoming active ends background time, marks the Live Activity follower active and dismisses a
+finished or idle activity, clears delivered notifications and calls `ChatScreenModel.sceneBecameActive()`
+(History's idle reset, then a scroll to a reply that finished away). Entering the background marks the app away,
+begins background time when a reply streams, and flushes History and the ledger. `chat.onReplyFinished` reaches
+the composition: the model counts the reply (a haptic on screen, unread off screen); off screen with no Live
+Activity and `notifyWhenAway` on, a notification is posted (its text only with `notificationPreview`); History
+and the ledger flush; background time ends once nothing streams. When background time expires mid-reply, the
+activity is told to pause, the reply is cancelled (Retry continues it) and everything flushes.
+
+**ChatScreenModel** (`@MainActor @Observable`) is the screen's state: the draft (`composerText`, `attachments`,
+`pendingAttachmentLoads`, `editing`, `focusRequest`), the sheet (Recents or Settings), a notice (4 s; an error
+can offer Open Settings), one-shot scroll requests (bottom, or a message), `unreadReplyID`, `isAppActive`, the
+haptic serials and the voice consent question. Actions: send (checks the attachment budget again; an edit
+replaces the last turn), stop, regenerate, retry, new chat, edit and cancel editing, copy, read aloud; files
+(security-scoped picker URLs), photos and camera captures as encoded data, the clipboard and drops (short text
+goes into the composer), at most 10 attachments, each load raced against 30 s and inserted in pick order;
+Recents and Continue with the reading position restored; links (`otto://ask`, `new`, `reply/<id>`, `open`) and
+intent requests (`ask(question:)` sends at once into an empty composer and otherwise waits in it; `newChat`).
+Everything that touches the system goes through `ChatScreenServices` (clipboard, copy, iOS Settings, voice
+permissions, notification permission, whether Live Activities are allowed).
+
+**Screens.** `RootView` shows `ChatScreen` with Recents and Settings as sheets, `OnboardingView` full screen
+until a key, the demo or "Not Now", and the voice consent alert. The header has Recents, the orb (breathing
+while a reply streams), "Otto", the model menu (model, effort, web search) and a DEMO badge, new chat and ⋮
+(copy last reply, regenerate, Settings). `ConversationList` is a lazy stack in a `ScrollView` with a
+`ScrollPosition`: it starts at the bottom, follows content growth while within 72 pt of the bottom (also when
+the keyboard or composer changes the view's height), stops following while the user drags, offers "Latest" /
+"Otto is replying" when away from the bottom, and serves scroll requests. Rows: questions are clay plates on the
+right (long press: copy, edit the last one, share); replies show thinking (collapsible), web activity, the
+Markdown reply at 16.5 pt interleaved with tool rows, source pills (one per host, at most 8), the status line and
+a footer (Open Settings / New Chat / Retry, copy, share, read aloud, regenerate, the version pager, the model or
+cost). `EmptyChatView` has the orb and a greeting, the key card without a key, and the Continue chip.
+`ComposerArea` stacks the notice, "Reading aloud · Stop", the edit banner and the chips over the clay slab:
++ (photo library, camera when available, files, paste), the field (1 to 8 lines), the mic and send/stop. The
+mic: a press held 0.3 s starts a hold session (release sends, sliding 90 pt away cancels, a press taken away by
+the system keeps the words in the composer); a tap starts a toggle session and the next tap sends. While Otto
+listens the field becomes `VoiceWaveformView` and the live transcript, and + becomes cancel. `RecentsScreen` and
+`SettingsScreen` use `RecentsState`, `HistoryRecentsText` and the shared settings groups with the Mac's copy.
+
+**Actions.** `MobileToolCatalog` registers `calendar_list_events`, `calendar_create_event`, `reminders_list` and
+`reminders_create`; Settings → Actions offers the master switch and the Calendar and Reminders groups (with
+their iOS access) and the activity log, which follows History's retention and stays in memory while History is
+off. `MobilePermissions` implements `PermissionProviding` over `MobilePermissionProbing` (live: EventKit,
+`AVAudioApplication`, Speech, UserNotifications; tests and the demo: `StaticPermissionProbe`): statuses are cached
+for 2 s, `request` shows iOS's prompt only while the status is `.notDetermined` and posts
+`PermissionEvents.didGrant` on a grant (so `EventKitService` resets its store), `openSystemSettings` opens Otto's
+page in the Settings app, and the Mac-only permissions read `.unavailable`. `ChatScreenModel` follows
+`chat.pendingApproval`: a new card resets `approvalOptions` (seeded with the tool's calendar or list) and sets
+`approvalVisibleSince` to now while Otto is on screen (nil while away; coming back restarts it), so
+`approvalArmedAt = armedAt(visibleSince:)`. `approve()` resolves `.run` with `hardwareConfirmed: true` (a tap is the
+user's own) once a required calendar or list is picked. A `.permission` card needs no pick (EventKit lists no
+calendars before access, so the card hides the picker and its hint): it first asks iOS for each missing permission
+and resolves only when all are granted, else it leaves a notice with Open Settings; the action's own card follows
+and arms afresh. Decline and "Don't run
+the other N either" resolve `.deny` and `.denyAll`. `ApprovalCard` sits above the composer: the presentation's
+title and "n of m", the event (date tile, time, location, notes, calendar picker, hint, conflicts, time-zone and
+daylight-saving notes), reminder, consent or plain body, the iOS access line, provenance, caution, and the
+decline and confirm buttons (the confirm button fills over the last second before it arms); a card taller than
+the space scrolls its body and access line while provenance, caution and the buttons stay in view. Action rows show the
+Mac's labels with a status glyph, Undo while the token is valid (re-evaluated every 15 s), Stop while running,
+and Settings when the group is off. While Otto is away, the Live Activity alerts once when its stage turns to
+"Needs your OK", and with no activity `notifyWhenAway` posts "Otto needs your OK".
+
+**Voice.** `AudioSessionCoordinator` holds one session: `.record`/`.measurement` while listening,
+`.playback`/`.spokenAudio` (ducking others) while reading aloud, inactive otherwise. Microphone and speech
+permissions are asked on first use, after the consent question (which turns voice on). Interruptions on iPhone:
+resigning active and audio session interruptions end a session as `.sessionResignedActive`, protected data
+becoming unavailable as `.screenLocked`. There is no hold probe; the mic's own touch tracking reports the
+release.
+
+**Live Activity.** `ReplyActivityAttributes` (one per reply, keyed by the assistant message id) carries a
+`ContentState` of stage (connecting, thinking, searching, writing, acting, waitingForApproval, replied,
+failed, paused), detail (sanitized, at most 120 characters while working), model short name, start and finish
+dates. `ReplyActivityController` follows `chat.phase` through an `ObservationLoop`: an active phase with a
+streaming reply requests an activity (unless turned off in Settings or by iOS) and updates its state; when the
+reply settles it ends the activity if Otto is on screen or the reply was stopped, else shows the finished state
+(the reply's first line only with `notificationPreview`) with an alert when `notifyWhenAway` is on; a reply
+stopped for lack of background time shows Paused. `start()` first ends activities a previous launch left
+behind. The widget extension draws the Lock Screen banner and the island (orb leading, the stage glyph
+trailing, the title, an elapsed-time clock and the detail line, marked privacy-sensitive); tapping opens
+`otto://reply/<id>`.
+
+**Ways in.** `AskOttoIntent` (optional question) and `NewOttoChatIntent` open the app and hand a request to
+`OttoIntentRouter`, which holds requests until the app installs its handler. `OttoShortcuts` offers "Ask Otto"
+and "New chat in Otto" to Siri, Spotlight and the Action button. The Ask Otto widget (small, circular,
+rectangular, inline) opens `otto://ask`; the control runs `AskOttoIntent`.
+
+**Not on iPhone.** Shortcuts, AppleScript, media control and links (`ToolCatalog`, `ProcessRunner`, `URLGuard`);
+"Always allow", the safety-mode setting and the permission cards (iOS's own prompts stand in); the File Shelf;
+selection, window and browser-tab context and paste-back; the closed-notch glance, Now Playing and the meeting
+chip; licensing and updates.
+
+**Tests.** `OttoiOSTests` covers the chat screen model, actions end to end (the card, arming, approve, decline,
+Undo, the permission step, the log, the away alert), the Live Activity states and controller, the iPhone's copy
+and prompt, the transcript's follow math and the preferences, all on inert graphs. `SnapshotTests` renders
+`chat-empty`, `chat-needs-key`, `chat-conversation`, `chat-streaming`, `chat-composer`, `chat-listening`,
+`chat-failed`, `chat-approval`, `chat-action`, `recents`, `settings`, `onboarding` and `live-activity` full
+screen in a window of their own, plus `chat-approval-small` (a worst-case card at 375 × 667 pt, whose event
+scrolls), and writes PNGs to `OTTO_SNAPSHOT_DIR`. `scripts/ios.sh [build|test] [--snapshots DIR]` picks the newest
+iPhone simulator; the CI job `ios` runs it and uploads the PNGs as the `ios-snapshots` artifact.

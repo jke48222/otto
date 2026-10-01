@@ -169,6 +169,24 @@ final class MockToolScriptTests: XCTestCase {
         XCTAssertNotNil(result.usage)
     }
 
+    func testAnswerAfterAddingAnItemSaysWhere() throws {
+        let event = userEntry([
+            ToolOutput.text(#"{"all_day":false,"calendar":"Home","status":"created","title":"Dentist"}"#)
+                .toolResultBlock(toolUseID: "toolu_1"),
+        ])
+        let eventScript = events(of: request([typed("add the dentist"), ["role": "assistant", "content": []], event]))
+        XCTAssertEqual(completedResult(eventScript)?.content.first?["text"],
+                       "Done. \u{201C}Dentist\u{201D} is on your Home calendar.")
+
+        let reminder = userEntry([
+            ToolOutput.text(#"{"list":"Groceries","status":"created","title":"Buy milk"}"#)
+                .toolResultBlock(toolUseID: "toolu_1"),
+        ])
+        let reminderScript = events(of: request([typed("remind me"), ["role": "assistant", "content": []], reminder]))
+        XCTAssertEqual(completedResult(reminderScript)?.content.first?["text"],
+                       "Done. \u{201C}Buy milk\u{201D} is on your Groceries list.")
+    }
+
     func testAnswerAfterADeclineSaysSo() throws {
         let declined = userEntry([
             ToolOutput.error("declined: The user chose not to run a shortcut.").toolResultBlock(toolUseID: "toolu_1"),
