@@ -3,11 +3,23 @@
 //  Otto
 //
 //  Shared contract types. Every module codes against these — change them only
-//  in coordination with every caller.
+//  in coordination with every caller. Compiled into the Mac and the iPhone app.
 //
 
+#if os(macOS)
 import AppKit
+#else
+import UIKit
+#endif
 import Foundation
+
+#if os(macOS)
+/// The image type of attachment thumbnails: NSImage on the Mac, UIImage on iPhone.
+typealias PlatformImage = NSImage
+#else
+/// The image type of attachment thumbnails: NSImage on the Mac, UIImage on iPhone.
+typealias PlatformImage = UIImage
+#endif
 
 // MARK: - Layout metrics shared by the window controller and the SwiftUI views
 
@@ -271,7 +283,7 @@ struct Attachment: Identifiable, Equatable, @unchecked Sendable {
     /// Bundle identifier of the app the attachment came from (browser tabs) — used for the chip icon.
     var appBundleID: String?
     /// Small preview (image thumbnail / file icon). Not part of equality.
-    var thumbnail: NSImage?
+    var thumbnail: PlatformImage?
     var payload: AttachmentPayload
     /// Size of the encoded payload, for limits and display.
     var byteCount: Int
@@ -287,7 +299,7 @@ struct Attachment: Identifiable, Equatable, @unchecked Sendable {
         badge: String,
         sourceURL: URL? = nil,
         appBundleID: String? = nil,
-        thumbnail: NSImage? = nil,
+        thumbnail: PlatformImage? = nil,
         payload: AttachmentPayload,
         byteCount: Int,
         retainsPayloadInHistory: Bool = true

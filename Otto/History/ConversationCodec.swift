@@ -7,7 +7,11 @@
 //  their images, and restored conversations come back with missing payloads explained.
 //
 
+#if os(macOS)
 import AppKit
+#else
+import UIKit
+#endif
 import Foundation
 
 /// A conversation to save, built on the main actor and encoded off it.
@@ -324,7 +328,7 @@ enum ConversationCodec {
             payload = nil
         }
 
-        let thumbnail = stored.thumbnailPNG.flatMap { NSImage(data: $0) }
+        let thumbnail = stored.thumbnailPNG.flatMap { PlatformImage(data: $0) }
         let attachment = Attachment(
             id: stored.id,
             kind: stored.kind,

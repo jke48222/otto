@@ -6,9 +6,15 @@
 //  providers into `Attachment`s the Messages API accepts. File IO, document
 //  import and image encoding all run off the main actor, and loading a file
 //  never touches the network (HTML goes through `HTMLText`, not WebKit).
+//  Shared with the iPhone app, which reads Word and OpenDocument files only
+//  on the Mac (UIKit has no importer for them) and pastes through item providers.
 //
 
+#if os(macOS)
 import AppKit
+#else
+import UIKit
+#endif
 import Foundation
 import ImageIO
 import os
@@ -94,7 +100,7 @@ enum AttachmentLoader {
         try await performOffMain { try loadFile(at: fileURL) }
     }
 
-    static func load(image: NSImage, name: String) async throws -> Attachment {
+    static func load(image: PlatformImage, name: String) async throws -> Attachment {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let displayName = trimmed.isEmpty ? "Image" : trimmed
         return try await performOffMain {
@@ -102,6 +108,16 @@ enum AttachmentLoader {
                 throw AttachmentError.unreadable(name: displayName)
             }
             return try imageAttachment(cgImage: cgImage, displayName: displayName, sourceURL: nil)
+        }
+    }
+
+    /// Encoded image bytes (a photo, a camera capture): kept as they are when the API accepts them, else
+    /// oriented, downscaled and re-encoded like a file. `typeIdentifier` is a hint, such as "public.heic".
+    static func load(imageData data: Data, typeIdentifier: String?, name: String) async throws -> Attachment {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let displayName = trimmed.isEmpty ? "Image" : trimmed
+        return try await performOffMain {
+            try imageAttachment(data: data, typeIdentifier: typeIdentifier, displayName: displayName)
         }
     }
 
@@ -123,6 +139,7 @@ enum AttachmentLoader {
         )
     }
 
+    #if os(macOS)
     /// Reads NSPasteboard: file URLs → load; image data → image; web URL string → webPage;
     /// text ≤ 600 chars → inlineText; longer text → "Clipboard.txt" text attachment.
     /// At most `limit` files or images are read (the caller passes the room it has left), so a large
@@ -176,9 +193,14 @@ enum AttachmentLoader {
         }
         return (content, errors)
     }
+    #endif
 
     /// Loads SwiftUI/AppKit drop providers (.fileURL, .image, .url, .plainText). Same rules as pasteboard.
-    static func load(providers: [NSItemProvider]) async -> (PasteboardContent, [Error]) {
+    /// Long text becomes `textName` (the iPhone app passes `clipboardTextName` for what it pastes).
+    static func load(
+        providers: [NSItemProvider],
+        textName: String = droppedTextName
+    ) async -> (PasteboardContent, [Error]) {
         let outcomes = await withTaskGroup(of: (Int, ProviderOutcome).self) { group -> [ProviderOutcome] in
             for (index, provider) in providers.enumerated() {
                 group.addTask { (index, await loadProvider(provider)) }
@@ -202,7 +224,7 @@ enum AttachmentLoader {
         }
         if !texts.isEmpty {
             let joined = texts.joined(separator: "\n\n")
-            await applyTextRules(to: joined, attachmentName: droppedTextName, content: &content, errors: &errors)
+            await applyTextRules(to: joined, attachmentName: textName, content: &content, errors: &errors)
         }
         return (content, errors)
     }
@@ -280,12 +302,12 @@ enum AttachmentLoader {
         let fileSize = values.fileSize
 
         // RTFD is a directory package, so rich documents are classified before folders are rejected.
-        if let documentType = richTextDocumentType(for: type) {
-            guard !isDirectory || documentType == .rtfd else { throw AttachmentError.unsupportedType(name: name) }
+        if let document = richDocument(for: type) {
+            guard !isDirectory || document == .attributed(.rtfd) else { throw AttachmentError.unsupportedType(name: name) }
             if !isDirectory, fileSize == 0 { throw AttachmentError.empty(name: name) }
             return try loadRichDocument(
                 at: url, name: name, sourceURL: fileURL,
-                documentType: documentType, isDirectory: isDirectory, fileSize: fileSize
+                document: document, isDirectory: isDirectory, fileSize: fileSize
             )
         }
         if isDirectory { throw AttachmentError.unsupportedType(name: name) }
@@ -298,7 +320,7 @@ enum AttachmentLoader {
             if let attachment = try loadImageFile(at: url, name: name, sourceURL: fileURL) {
                 return attachment
             }
-            // Neither ImageIO nor AppKit can decode it. Vector formats such as SVG are still useful as source.
+            // Neither ImageIO nor AppKit (UIKit) can decode it. Vector formats such as SVG are still useful as source.
             do {
                 return try loadTextFile(
                     at: url, name: name, sourceURL: fileURL, type: type, fileSize: fileSize, allowLegacyEncodings: false
@@ -509,11 +531,22 @@ enum AttachmentLoader {
 
     // MARK: - Rich documents
 
-    private static func richTextDocumentType(for type: UTType) -> NSAttributedString.DocumentType? {
-        if type.conforms(to: .rtfd) || type.conforms(to: .flatRTFD) { return .rtfd }
-        if type.conforms(to: .rtf) { return .rtf }
+    /// How a rich document becomes text.
+    private enum RichDocument: Equatable {
+        /// Converted by `HTMLText`, never the WebKit-backed importer.
+        case html
+        /// A Safari web archive's main resource.
+        case webArchive
+        /// Imported through NSAttributedString: RTF and RTFD everywhere, Word and OpenDocument on the Mac.
+        case attributed(NSAttributedString.DocumentType)
+    }
+
+    private static func richDocument(for type: UTType) -> RichDocument? {
+        if type.conforms(to: .rtfd) || type.conforms(to: .flatRTFD) { return .attributed(.rtfd) }
+        if type.conforms(to: .rtf) { return .attributed(.rtf) }
         if type.conforms(to: .webArchive) { return .webArchive }
         if type.conforms(to: .html) { return .html }
+        #if os(macOS)
         let officeTypes: [(identifier: String, documentType: NSAttributedString.DocumentType)] = [
             ("org.openxmlformats.wordprocessingml.document", .officeOpenXML),
             ("com.microsoft.word.doc", .docFormat),
@@ -521,9 +554,12 @@ enum AttachmentLoader {
             ("com.microsoft.word.wordml", .wordML),
         ]
         for entry in officeTypes {
-            if type.identifier == entry.identifier { return entry.documentType }
-            if let officeType = UTType(entry.identifier), type.conforms(to: officeType) { return entry.documentType }
+            if type.identifier == entry.identifier { return .attributed(entry.documentType) }
+            if let officeType = UTType(entry.identifier), type.conforms(to: officeType) {
+                return .attributed(entry.documentType)
+            }
         }
+        #endif
         return nil
     }
 
@@ -531,11 +567,11 @@ enum AttachmentLoader {
         at url: URL,
         name: String,
         sourceURL: URL,
-        documentType: NSAttributedString.DocumentType,
+        document: RichDocument,
         isDirectory: Bool,
         fileSize: Int?
     ) throws -> Attachment {
-        switch documentType {
+        switch document {
         case .html:
             // Never AppKit's HTML importer: it is WebKit-backed, must run on the main thread and fetches every
             // stylesheet, image and frame the page references (tracking pixels included).
@@ -552,7 +588,7 @@ enum AttachmentLoader {
             let data = try readData(at: url, name: name)
             return try webArchiveAttachment(data: data, name: name, sourceURL: sourceURL)
 
-        default:
+        case .attributed(let documentType):
             if let fileSize, fileSize > maxRichDocumentBytes {
                 throw AttachmentError.tooLarge(name: name, limit: byteLimitDescription(maxRichDocumentBytes))
             }
@@ -714,7 +750,7 @@ enum AttachmentLoader {
     }
 
     /// Renders the first page with Core Graphics (thread-safe, unlike view-based PDFKit rendering).
-    private static func pdfThumbnail(data: Data) -> NSImage? {
+    private static func pdfThumbnail(data: Data) -> PlatformImage? {
         guard let provider = CGDataProvider(data: data as CFData),
               let document = CGPDFDocument(provider),
               let page = document.page(at: 1)
@@ -810,8 +846,12 @@ enum AttachmentLoader {
                 sourceURL: sourceURL
             )
         }
-        // Formats only AppKit understands.
+        // Formats only AppKit (UIKit) understands.
+        #if os(macOS)
         guard let image = NSImage(contentsOf: url), let cgImage = bestCGImage(from: image) else { return nil }
+        #else
+        guard let image = UIImage(contentsOfFile: url.path), let cgImage = bestCGImage(from: image) else { return nil }
+        #endif
         return try imageAttachment(cgImage: cgImage, displayName: name, sourceURL: sourceURL)
     }
 
@@ -823,13 +863,14 @@ enum AttachmentLoader {
            ImageInfo(source: source) != nil {
             return try imageAttachment(source: source, originalData: { data }, displayName: displayName, sourceURL: nil)
         }
-        guard let image = NSImage(data: data), let cgImage = bestCGImage(from: image) else {
+        guard let image = PlatformImage(data: data), let cgImage = bestCGImage(from: image) else {
             throw AttachmentError.unreadable(name: displayName)
         }
         return try imageAttachment(cgImage: cgImage, displayName: displayName, sourceURL: nil)
     }
 
-    /// Decoded pixels with no original file (NSImage, AppKit-only formats): normalized to PNG first.
+    /// Decoded pixels with no original file (an in-memory image, AppKit- or UIKit-only formats): normalized to PNG
+    /// first.
     private static func imageAttachment(cgImage: CGImage, displayName: String, sourceURL: URL?) throws -> Attachment {
         let longEdge = max(cgImage.width, cgImage.height)
         let prepared = longEdge > maxImageLongEdge ? (resized(cgImage, maxPixelSize: maxImageLongEdge) ?? cgImage) : cgImage
@@ -996,11 +1037,12 @@ enum AttachmentLoader {
         return data as Data
     }
 
-    private static func thumbnail(from source: CGImageSource) -> NSImage? {
+    private static func thumbnail(from source: CGImageSource) -> PlatformImage? {
         guard let image = downscaledImage(from: source, maxPixelSize: Int(thumbnailMaxPointSize * 2)) else { return nil }
         return makeThumbnailImage(image)
     }
 
+    #if os(macOS)
     /// Wraps pixels in an NSImage treated as 2× (so a 128 px image is 64 pt), capped at `thumbnailMaxPointSize`.
     private static func makeThumbnailImage(_ image: CGImage) -> NSImage {
         let longEdge = CGFloat(max(image.width, image.height, 1))
@@ -1008,7 +1050,17 @@ enum AttachmentLoader {
         let size = NSSize(width: CGFloat(image.width) * scale, height: CGFloat(image.height) * scale)
         return NSImage(cgImage: image, size: size)
     }
+    #else
+    /// Wraps pixels in a UIImage treated as at least 2× (so a 128 px image is 64 pt), capped at
+    /// `thumbnailMaxPointSize`.
+    private static func makeThumbnailImage(_ image: CGImage) -> UIImage {
+        let longEdge = CGFloat(max(image.width, image.height, 1))
+        let scale = max(2, longEdge / thumbnailMaxPointSize)
+        return UIImage(cgImage: image, scale: scale, orientation: .up)
+    }
+    #endif
 
+    #if os(macOS)
     /// The largest bitmap representation, or a rasterization at full pixel resolution (2× for vector images,
     /// capped at `maxImageLongEdge`). The proposed rect is in pixels because no context is supplied.
     private static func bestCGImage(from image: NSImage) -> CGImage? {
@@ -1026,6 +1078,20 @@ enum AttachmentLoader {
         var rect = CGRect(origin: .zero, size: targetSize)
         return image.cgImage(forProposedRect: &rect, context: nil, hints: nil)
     }
+    #else
+    /// The image's own pixels when they are upright; otherwise (a rotated camera image, or one backed by Core
+    /// Image) a rendering at its pixel size with the orientation applied, capped at `maxImageLongEdge`.
+    private static func bestCGImage(from image: UIImage) -> CGImage? {
+        if let cgImage = image.cgImage, image.imageOrientation == .up { return cgImage }
+        let size = image.size
+        guard size.width > 0, size.height > 0 else { return nil }
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = min(image.scale, CGFloat(maxImageLongEdge) / max(size.width, size.height))
+        format.opaque = false
+        let renderer = UIGraphicsImageRenderer(size: size, format: format)
+        return renderer.image { _ in image.draw(in: CGRect(origin: .zero, size: size)) }.cgImage
+    }
+    #endif
 
     private static func badge(forMediaType mediaType: String) -> String {
         switch mediaType {
@@ -1051,6 +1117,7 @@ enum AttachmentLoader {
 
     // MARK: - Pasteboard
 
+    #if os(macOS)
     /// Everything we need from a pasteboard, read on the main actor in one pass.
     private struct PasteboardSnapshot: Sendable {
         var fileURLs: [URL] = []
@@ -1080,6 +1147,7 @@ enum AttachmentLoader {
             urlTitle = pasteboard.string(forType: NSPasteboard.PasteboardType("public.url-name"))
         }
     }
+    #endif
 
     // MARK: - Item providers
 

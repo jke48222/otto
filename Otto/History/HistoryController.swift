@@ -9,7 +9,11 @@
 //  transcript surface (onTranscriptChanged, transcriptSnapshot, load, reset, cancel).
 //
 
+#if os(macOS)
 import AppKit
+#else
+import UIKit
+#endif
 import Foundation
 import Observation
 import os
@@ -485,11 +489,16 @@ import os
         return result
     }
 
-    private static func pngThumbnail(_ image: NSImage, maxBytes: Int) -> Data? {
+    private static func pngThumbnail(_ image: PlatformImage, maxBytes: Int) -> Data? {
+        #if os(macOS)
         var rect = CGRect(origin: .zero, size: image.size)
         guard let source = image.cgImage(forProposedRect: &rect, context: nil, hints: nil),
               source.width > 0, source.height > 0,
               let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
+        #else
+        guard let source = image.cgImage, source.width > 0, source.height > 0,
+              let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
+        #endif
         let scale = min(1, thumbnailPixels / CGFloat(max(source.width, source.height)))
         let width = max(1, Int((CGFloat(source.width) * scale).rounded()))
         let height = max(1, Int((CGFloat(source.height) * scale).rounded()))
@@ -499,9 +508,14 @@ import os
         }
         context.interpolationQuality = .high
         context.draw(source, in: CGRect(x: 0, y: 0, width: width, height: height))
+        #if os(macOS)
         guard let scaled = context.makeImage(),
               let data = NSBitmapImageRep(cgImage: scaled).representation(using: .png, properties: [:]),
               data.count <= maxBytes else { return nil }
+        #else
+        guard let scaled = context.makeImage(), let data = UIImage(cgImage: scaled).pngData(),
+              data.count <= maxBytes else { return nil }
+        #endif
         return data
     }
 
