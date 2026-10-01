@@ -63,7 +63,8 @@ final class MobileComposition {
     // MARK: - Recipes
 
     /// The app, on `AppSettings.shared`. Nothing is started until `start()`.
-    static func live(settings: AppSettings = .shared) -> MobileComposition {
+    static func live() -> MobileComposition {
+        let settings = AppSettings.shared
         let isDemo = LaunchOptions.demo || settings.mobile.demoMode
         var historyRoot: URL?
         do {

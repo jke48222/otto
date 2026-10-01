@@ -83,7 +83,7 @@ import UserNotifications
 
 /// The real notification center.
 @MainActor final class SystemReplyNotificationCenter: ReplyNotificationCentering {
-    private static let logger = Logger(subsystem: "com.jalenedusei.otto", category: "Glance")
+    private nonisolated static let logger = Logger(subsystem: "com.jalenedusei.otto", category: "Glance")
 
     nonisolated init() {}
 
