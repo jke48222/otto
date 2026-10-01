@@ -1,0 +1,190 @@
+name: OttoiOS
+# Otto for iPhone: OttoiOS.xcodeproj, generated with `xcodegen generate --spec project-ios.yml` (not checked in).
+# The app compiles the platform-neutral half of the Mac app's sources (listed below by module) next to its own
+# code in OttoiOS/; the widget extension (Live Activity, Ask Otto widget and control) lives in OttoWidgets/ and
+# shares OttoiOS/Shared (the Live Activity's attributes and the App Intents) with the app.
+options:
+  bundleIdPrefix: com.jalenedusei
+  deploymentTarget:
+    iOS: "18.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+
+configFiles:
+  Debug: Config/Signing-iOS.xcconfig
+  Release: Config/Signing-iOS.xcconfig
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    SWIFT_STRICT_CONCURRENCY: minimal
+    IPHONEOS_DEPLOYMENT_TARGET: "18.0"
+    TARGETED_DEVICE_FAMILY: "1"
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+
+targets:
+  OttoiOS:
+    type: application
+    platform: iOS
+    sources:
+      - path: OttoiOS
+      # Shared with the Mac app. Each file builds for both platforms; Mac-only parts sit behind #if os(macOS).
+      # Chat and API
+      - Otto/Chat/Models.swift
+      - Otto/Chat/ChatSession.swift
+      - Otto/Chat/SystemPrompt.swift
+      - Otto/API/AnthropicClient.swift
+      - Otto/API/KeychainStore.swift
+      - Otto/API/MockLLMClient.swift
+      - Otto/API/SSEParser.swift
+      - Otto/API/StreamAccumulator.swift
+      # Settings and storage
+      - Otto/App/AppSettings.swift
+      - Otto/App/AppSupport.swift
+      - Otto/App/LaunchOptions.swift
+      - Otto/App/ObservationLoop.swift
+      - Otto/App/OttoBuild.swift
+      - Otto/App/Settings/ActionSettings.swift
+      - Otto/App/Settings/ContextSettings.swift
+      - Otto/App/Settings/GlanceSettings.swift
+      - Otto/App/Settings/HistorySettings.swift
+      - Otto/App/Settings/NotchSettings.swift
+      - Otto/App/Settings/PreferenceStore.swift
+      - Otto/App/Settings/ShelfSettings.swift
+      - Otto/App/Settings/UsageSettings.swift
+      - Otto/App/Settings/VoiceSettings.swift
+      # Attachments
+      - Otto/Context/AttachmentBudget.swift
+      - Otto/Context/AttachmentLoader.swift
+      - Otto/Context/HTMLText.swift
+      - Otto/Context/LoggedError.swift
+      # Reply phase and preview
+      - Otto/Glance/GlanceContracts.swift
+      - Otto/Glance/ReplyPreview.swift
+      # History
+      - Otto/History/BlobExternalizer.swift
+      - Otto/History/ConversationCodec.swift
+      - Otto/History/ConversationRecord.swift
+      - Otto/History/ConversationStore.swift
+      - Otto/History/ConversationTitler.swift
+      - Otto/History/HistoryContracts.swift
+      - Otto/History/HistoryController.swift
+      - Otto/History/HistoryPolicy.swift
+      - Otto/History/HistorySearch.swift
+      - Otto/History/RecentsState.swift
+      # Tools: the contracts the chat loop speaks
+      - Otto/Permissions/PermissionContracts.swift
+      - Otto/Tools/JSONSchemaValidator.swift
+      - Otto/Tools/ToolContracts.swift
+      - Otto/Tools/ToolHistory.swift
+      - Otto/Tools/ToolRegistry.swift
+      - Otto/Tools/ToolSchema.swift
+      # Usage
+      - Otto/Usage/CostFormatter.swift
+      - Otto/Usage/ModelPricing.swift
+      - Otto/Usage/UsageContracts.swift
+      - Otto/Usage/UsageLedger.swift
+      - Otto/Usage/UsageModels.swift
+      # Voice
+      - Otto/Voice/AudioLevelMeter.swift
+      - Otto/Voice/ReplySpeaker.swift
+      - Otto/Voice/SpeechChunker.swift
+      - Otto/Voice/SpeechEngine.swift
+      - Otto/Voice/VoiceContracts.swift
+      - Otto/Voice/VoiceController.swift
+      - Otto/Voice/VoiceInterruptions.swift
+      # The look: tokens, clay, the orb, Markdown replies
+      - Otto/UI/Chat/VersionPager.swift
+      - Otto/UI/Glance/AnswerCostLabel.swift
+      - Otto/UI/MarkdownText.swift
+      - Otto/UI/MessageSegments.swift
+      - Otto/UI/Pages/HistoryRecentsModel.swift
+      - Otto/UI/Theme.swift
+    info:
+      path: OttoiOS/Info.plist
+      properties:
+        CFBundleName: Otto
+        CFBundleDisplayName: Otto
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        LSApplicationCategoryType: public.app-category.productivity
+        ITSAppUsesNonExemptEncryption: false
+        NSSupportsLiveActivities: true
+        UILaunchScreen:
+          UIColorName: LaunchBackground
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UIUserInterfaceStyle: Dark
+        CFBundleURLTypes:
+          - CFBundleURLName: com.jalenedusei.otto
+            CFBundleURLSchemes: [otto]
+        NSCameraUsageDescription: "Otto uses the camera only when you take a photo to ask about."
+        NSMicrophoneUsageDescription: "Otto listens only while you hold or tap the mic, so you can ask out loud."
+        NSSpeechRecognitionUsageDescription: "Otto turns what you say into text on your iPhone, then sends that text to Claude."
+        NSCalendarsFullAccessUsageDescription: "With Actions on, Otto reads your calendars to answer questions about your schedule and adds events you approve."
+        NSRemindersFullAccessUsageDescription: "With Actions on, Otto reads your reminders when you ask about them and adds reminders you approve."
+        NSHumanReadableCopyright: "© 2026 Jalen Edusei. Released under the MIT License."
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.jalenedusei.otto
+        PRODUCT_NAME: Otto
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+    dependencies:
+      - target: OttoWidgets
+
+  OttoWidgets:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: OttoWidgets
+      - OttoiOS/Shared
+      - Otto/UI/Theme.swift
+    info:
+      path: OttoWidgets/Info.plist
+      properties:
+        CFBundleName: Otto
+        CFBundleDisplayName: Otto
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+        NSHumanReadableCopyright: "© 2026 Jalen Edusei. Released under the MIT License."
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.jalenedusei.otto.widgets
+        PRODUCT_NAME: OttoWidgets
+        SKIP_INSTALL: YES
+        APPLICATION_EXTENSION_API_ONLY: YES
+
+  OttoiOSTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: OttoiOSTests
+    dependencies:
+      - target: OttoiOS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.jalenedusei.otto.ios-tests
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Otto.app/Otto"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+        GENERATE_INFOPLIST_FILE: YES
+
+schemes:
+  OttoiOS:
+    build:
+      targets:
+        OttoiOS: all
+        OttoiOSTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - OttoiOSTests

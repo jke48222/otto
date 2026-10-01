@@ -292,3 +292,87 @@ jobs:
 
       - name: The tree is still clean
         run: test -z "$(git status --porcelain)" || { git status --porcelain; exit 1; }
+
+  # Otto for iPhone (project-ios.yml): the app, its widget extension and the unit tests on the newest iPhone
+  # simulator the image has. The snapshot test renders the app's screens into build/ios-snapshots, kept as an
+  # artifact so a change to the UI can be looked at without a Mac.
+  ios:
+    name: iOS app
+    runs-on: macos-26
+    timeout-minutes: 45
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_INSTALL_CLEANUP: "1"
+      HOMEBREW_NO_ENV_HINTS: "1"
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+
+      - name: Select newest stable Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Show toolchain and simulator runtimes
+        run: |
+          xcodebuild -version
+          xcrun simctl list runtimes
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate OttoiOS.xcodeproj and check the tree stays clean
+        run: |
+          xcodegen generate --spec project-ios.yml
+          test -z "$(git status --porcelain)" || { git status --porcelain; exit 1; }
+
+      - name: Pick an iPhone simulator
+        run: |
+          udid=$(xcrun simctl list devices available -j | python3 -c '
+          import json, sys
+          best = None
+          for runtime, devices in json.load(sys.stdin)["devices"].items():
+              if ".iOS-" not in runtime:
+                  continue
+              version = tuple(int(part) for part in runtime.rsplit(".iOS-", 1)[1].split("-"))
+              for device in devices:
+                  if device.get("isAvailable") and device["name"].startswith("iPhone"):
+                      key = (version, "Pro" in device["name"], device["name"])
+                      if best is None or key > best[0]:
+                          best = (key, device["udid"])
+          print(best[1] if best else "")
+          ')
+          test -n "$udid" || { echo "No iPhone simulator is available."; exit 1; }
+          xcrun simctl list devices | grep "$udid"
+          echo "SIMULATOR_UDID=$udid" >> "$GITHUB_ENV"
+
+      - name: Build and test
+        run: |
+          set -o pipefail
+          mkdir -p build/ios-snapshots
+          TEST_RUNNER_OTTO_SNAPSHOT_DIR="$PWD/build/ios-snapshots" xcodebuild \
+            -project OttoiOS.xcodeproj \
+            -scheme OttoiOS \
+            -configuration Debug \
+            -destination "id=$SIMULATOR_UDID" \
+            -derivedDataPath build/ios \
+            -resultBundlePath build/iOSTestResults.xcresult \
+            CODE_SIGNING_ALLOWED=NO \
+            test
+
+      - name: Upload snapshots
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ios-snapshots
+          path: build/ios-snapshots
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload test results
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: iOSTestResults
+          path: build/iOSTestResults.xcresult
+          retention-days: 7
