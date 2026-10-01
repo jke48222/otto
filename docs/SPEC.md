@@ -1550,8 +1550,10 @@ page in the Settings app, and the Mac-only permissions read `.unavailable`. `Cha
 `chat.pendingApproval`: a new card resets `approvalOptions` (seeded with the tool's calendar or list) and sets
 `approvalVisibleSince` to now while Otto is on screen (nil while away; coming back restarts it), so
 `approvalArmedAt = armedAt(visibleSince:)`. `approve()` resolves `.run` with `hardwareConfirmed: true` (a tap is the
-user's own) once a required calendar or list is picked; a `.permission` card first asks iOS for each missing
-permission and runs only when all are granted, else it leaves a notice with Open Settings. Decline and "Don't run
+user's own) once a required calendar or list is picked. A `.permission` card needs no pick (EventKit lists no
+calendars before access, so the card hides the picker and its hint): it first asks iOS for each missing permission
+and resolves only when all are granted, else it leaves a notice with Open Settings; the action's own card follows
+and arms afresh. Decline and "Don't run
 the other N either" resolve `.deny` and `.denyAll`. `ApprovalCard` sits above the composer: the presentation's
 title and "n of m", the event (date tile, time, location, notes, calendar picker, hint, conflicts, time-zone and
 daylight-saving notes), reminder, consent or plain body, the iOS access line, provenance, caution, and the

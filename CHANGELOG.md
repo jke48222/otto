@@ -39,6 +39,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 
 - Shared copy names the device it runs on ("saved on this iPhone"), so the core reads right on both.
+- In demo mode, the reply after adding an event or reminder says where it went ("“Dentist” is on your Home
+  calendar") instead of quoting the action's raw result.
+
+### Fixed
+
+- Looking up the installed speech voices runs on its own queue instead of Swift's shared threads, so a slow
+  first lookup after a restart can no longer hold up other work for seconds.
 
 ## [1.1.0] - 2026-09-30
 
