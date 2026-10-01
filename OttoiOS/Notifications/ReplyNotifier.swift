@@ -24,6 +24,8 @@ import UserNotifications
     static let replyTitle = "Otto replied"
     static let failedTitle = "Otto couldn't finish"
     static let genericBody = "Tap to open Otto."
+    static let approvalTitle = "Otto needs your OK"
+    static let approvalBody = "Open Otto to answer."
     nonisolated static let messageIDKey = "otto.messageID"
 
     /// A tapped notification: the reply it is about.
@@ -45,6 +47,14 @@ import UserNotifications
         let title = preview.outcome == .failed ? Self.failedTitle : Self.replyTitle
         let body = includeText && !preview.text.isEmpty ? preview.text : Self.genericBody
         center.post(identifier: Self.replyIdentifier, title: title, body: body, messageID: preview.id)
+    }
+
+    /// An action waits for the user's OK.
+    func postApprovalNeeded(_ approval: PendingApproval, includeText: Bool) {
+        let detail = DisplayText.sanitized(approval.presentation.title, maxLength: 160)
+        let body = includeText && !detail.isEmpty ? detail : Self.approvalBody
+        center.post(identifier: Self.replyIdentifier, title: Self.approvalTitle, body: body,
+                    messageID: approval.messageID)
     }
 
     func clearDelivered() {

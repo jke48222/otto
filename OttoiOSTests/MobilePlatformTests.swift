@@ -17,7 +17,15 @@ final class MobilePlatformTests: XCTestCase {
         XCTAssertTrue(prompt.contains("phone screen"))
         XCTAssertFalse(prompt.contains("notch"))
         XCTAssertFalse(prompt.contains("Mac"))
-        XCTAssertFalse(prompt.contains("Otto's Settings"), "There are no Actions to turn on in the iPhone app")
+        XCTAssertTrue(prompt.contains("turn on Actions in Otto's Settings"))
+        XCTAssertFalse(prompt.contains("Shortcuts"), "Shortcuts and scripts are Mac-only")
+    }
+
+    func testTheActionsSectionNamesTheIPhone() {
+        let section = SystemPrompt.actionsSection(groups: [.calendar, .reminders], timeZone: TimeZone(identifier: "Europe/Lisbon")!)
+        XCTAssertTrue(section.hasPrefix("Actions on this iPhone:"))
+        XCTAssertTrue(section.contains("their calendar and reminders"))
+        XCTAssertFalse(section.contains("AppleScript"))
     }
 
     func testTheChatSendsTheIPhonePrompt() async {

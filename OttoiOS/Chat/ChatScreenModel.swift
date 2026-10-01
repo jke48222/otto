@@ -3,8 +3,8 @@
 //  Otto
 //
 //  The iPhone chat screen's state and actions, the counterpart of the Mac's NotchViewModel: the draft and its
-//  attachments, sending, stopping, regenerating and editing the last question, voice and spoken replies, Recents
-//  and Settings, notices, and what happens when Otto leaves the screen and comes back. Everything that touches
+//  attachments, sending, stopping, regenerating and editing the last question, the action approval card, voice
+//  and spoken replies, Recents and Settings, notices, and what happens when Otto leaves the screen and comes back. Everything that touches
 //  the system goes through `ChatScreenServices`, so tests drive the whole screen without UIKit.
 //
 
@@ -25,6 +25,10 @@ struct ChatScreenServices {
     var requestNotificationPermission: @MainActor () async -> Bool = { true }
     /// Live Activities are allowed for Otto in iOS Settings.
     var liveActivitiesAllowed: @MainActor () -> Bool = { true }
+    /// The newest entries of the actions activity log, newest first.
+    var recentActions: @MainActor (_ limit: Int) async -> [ActionLogEntry] = { _ in [] }
+    /// Settings → Actions → Activity Log → Clear.
+    var clearActionLog: @MainActor () async -> Void = {}
 }
 
 @MainActor @Observable final class ChatScreenModel {
@@ -98,6 +102,15 @@ struct ChatScreenServices {
     /// The mic's first-use question, while it is up.
     var voiceConsent: VoiceConsent?
 
+    // MARK: Approvals
+
+    /// Choices on the approval card (the calendar or list picked).
+    private(set) var approvalOptions: ApprovalOptions
+    /// When the current card came on screen with Otto in front; nil while away. Arming counts from here.
+    private(set) var approvalVisibleSince: Date?
+    /// iOS's permission prompt for the card is up.
+    private(set) var isObtainingPermission: Bool
+
     // MARK: Graph
 
     let settings: AppSettings
@@ -108,7 +121,10 @@ struct ChatScreenServices {
     let voice: VoiceController
     let audio: AudioSessionCoordinator
     @ObservationIgnored let services: ChatScreenServices
+    @ObservationIgnored let permissions: PermissionProviding?
     let isDemo: Bool
+    /// The clock behind arming (tests replace it).
+    @ObservationIgnored var now: () -> Date = Date.init
 
     @ObservationIgnored private var noticeTask: Task<Void, Never>?
     @ObservationIgnored private var scrollSerial = 0
@@ -117,10 +133,12 @@ struct ChatScreenServices {
     @ObservationIgnored private var voiceTurnUserMessageIDs: Set<UUID> = []
     @ObservationIgnored private var isSendingVoiceTurn = false
     @ObservationIgnored private var speakingLoop: ObservationLoop<Bool>?
+    @ObservationIgnored private var approvalLoop: ObservationLoop<String?>?
 
     init(settings: AppSettings, chat: ChatSession, history: HistoryController, recents: RecentsState,
          ledger: UsageLedger, voice: VoiceController, audio: AudioSessionCoordinator,
-         services: ChatScreenServices = ChatScreenServices(), isDemo: Bool = false) {
+         services: ChatScreenServices = ChatScreenServices(), permissions: PermissionProviding? = nil,
+         isDemo: Bool = false) {
         self.settings = settings
         self.chat = chat
         self.history = history
@@ -129,6 +147,7 @@ struct ChatScreenServices {
         self.voice = voice
         self.audio = audio
         self.services = services
+        self.permissions = permissions
         self.isDemo = isDemo
         composerText = ""
         attachments = []
@@ -143,7 +162,11 @@ struct ChatScreenServices {
         sendSerial = 0
         replySerial = 0
         voiceConsent = nil
+        approvalOptions = ApprovalOptions()
+        approvalVisibleSince = nil
+        isObtainingPermission = false
         installVoiceFeatures()
+        installApprovalTracking()
     }
 
     // MARK: - Derived state
@@ -577,6 +600,10 @@ struct ChatScreenServices {
     func sceneBecameActive() {
         guard !isAppActive else { return }
         isAppActive = true
+        // A card left waiting must be seen again for its whole arming delay.
+        if pendingApproval != nil {
+            approvalVisibleSince = now()
+        }
         if history.startFreshIfIdle(hasUnreadReply: unreadReplyID != nil, hasDraft: hasDraft) {
             editing = nil
             unreadReplyID = nil
@@ -592,6 +619,7 @@ struct ChatScreenServices {
     func sceneEnteredBackground() {
         guard isAppActive else { return }
         isAppActive = false
+        approvalVisibleSince = nil
         history.noteActivity()
     }
 
@@ -654,6 +682,118 @@ struct ChatScreenServices {
                 appendToComposer(question)
                 focusRequest += 1
             }
+        }
+    }
+
+    // MARK: - Approvals
+
+    /// The card the executor is waiting on: an action to approve, a read to consent to, or iOS access to grant.
+    var pendingApproval: PendingApproval? { chat.pendingApproval }
+
+    /// When the card's confirm button arms; nil while the card isn't on screen.
+    var approvalArmedAt: Date? {
+        guard let approval = pendingApproval, let since = approvalVisibleSince else { return nil }
+        return approval.armedAt(visibleSince: since)
+    }
+
+    func selectApprovalCalendar(_ id: String) {
+        approvalOptions.calendarIdentifier = id
+    }
+
+    /// The card's confirm button. A card that needs iOS access asks for it first (iOS's own prompt), then runs.
+    func approve() {
+        guard let approval = pendingApproval, let since = approvalVisibleSince, !isObtainingPermission else { return }
+        if approval.body.requiresSelection, approvalOptions.calendarIdentifier == nil { return }
+        let options = approvalOptions
+        if case .permission(let missing, _) = approval.kind {
+            obtainPermissions(missing, for: approval.callID, options: options, visibleSince: since)
+            return
+        }
+        // Every tap on iPhone is the user's own: there is no synthetic input to guard against here.
+        chat.resolveApproval(.run(options), hardwareConfirmed: true, visibleSince: since)
+    }
+
+    func declineApproval() {
+        chat.resolveApproval(.deny, hardwareConfirmed: true, visibleSince: approvalVisibleSince)
+    }
+
+    /// Declines this card and every remaining one of the round.
+    func declineAllApprovals() {
+        chat.resolveApproval(.denyAll, hardwareConfirmed: true, visibleSince: approvalVisibleSince)
+    }
+
+    /// [Undo] on an added event or reminder; a failure says why.
+    func undoAction(_ callID: String, in messageID: UUID) {
+        Task { [weak self] in
+            guard let self, let reason = await self.chat.undoToolCall(callID, in: messageID) else { return }
+            self.showNotice("Couldn't undo: \(reason).", isError: true)
+        }
+    }
+
+    /// [Stop] on a running action.
+    func stopAction(_ callID: String) {
+        chat.stopToolCall(callID)
+    }
+
+    private func installApprovalTracking() {
+        let chat = chat
+        approvalLoop = ObservationLoop(read: { chat.pendingApproval?.callID }) { [weak self] _ in
+            self?.approvalChanged()
+        }
+    }
+
+    /// A new card (or none): fresh choices, and arming starts now if Otto is on screen.
+    private func approvalChanged() {
+        let approval = pendingApproval
+        approvalOptions = ApprovalOptions(alwaysAllow: false, calendarIdentifier: Self.initialSelection(for: approval))
+        approvalVisibleSince = approval != nil && isAppActive ? now() : nil
+        isObtainingPermission = false
+        if approval != nil {
+            stopSpeaking()
+        }
+    }
+
+    static func initialSelection(for approval: PendingApproval?) -> String? {
+        switch approval?.body {
+        case .event(let preview)?: return preview.selectedCalendarID
+        case .reminder(let preview)?: return preview.selectedListID
+        default: return nil
+        }
+    }
+
+    private func obtainPermissions(_ missing: [Permission], for callID: String, options: ApprovalOptions,
+                                   visibleSince: Date) {
+        guard let permissions else { return }
+        isObtainingPermission = true
+        Task { [weak self] in
+            for permission in missing {
+                await permissions.refresh([permission])
+                var status = permissions.status(permission)
+                if status == .notDetermined {
+                    status = await permissions.request(permission)
+                }
+                guard let self, self.chat.pendingApproval?.callID == callID else { return }
+                guard status == .granted || status == .unavailable else {
+                    self.isObtainingPermission = false
+                    self.showNotice(Self.permissionNotice(for: permission, status: status), isError: true,
+                                    offersSettings: status == .denied || status == .limited)
+                    return
+                }
+            }
+            guard let self, self.chat.pendingApproval?.callID == callID else { return }
+            self.isObtainingPermission = false
+            self.chat.resolveApproval(.run(options), hardwareConfirmed: true, visibleSince: visibleSince)
+        }
+    }
+
+    static func permissionNotice(for permission: Permission, status: PermissionStatus) -> String {
+        switch status {
+        case .restricted:
+            return "\(permission.displayName) access is managed on this iPhone, so Otto can't use it."
+        case .limited:
+            return "Otto can only add to \(permission.displayName), not read it. Allow full access in Settings."
+        default:
+            return "Otto can't use your \(permission.displayName) yet. Allow it for Otto in Settings."
         }
     }
 

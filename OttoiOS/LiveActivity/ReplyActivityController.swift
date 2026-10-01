@@ -95,7 +95,8 @@ struct ReplyActivityAlert: Equatable, Sendable {
             } else if let current, let state = Self.workingState(for: phase, model: current.state.model,
                                                                   startedAt: current.state.startedAt),
                       state != current.state {
-                host.update(current.id, state: state, alert: nil)
+                host.update(current.id, state: state, alert: Self.approvalAlert(from: current.state, to: state,
+                                                                                isAppActive: isAppActive))
                 self.current?.state = state
             }
         } else {
@@ -180,6 +181,12 @@ struct ReplyActivityAlert: Equatable, Sendable {
         let model = message.model.map(CostFormatter.modelName) ?? working.model
         return State(stage: stage, detail: showsText ? preview.text : "", model: model.isEmpty ? working.model : model,
                      startedAt: working.startedAt, finishedAt: date)
+    }
+
+    /// Lights the screen once when an action starts waiting for the user's OK while Otto is away.
+    static func approvalAlert(from previous: State, to next: State, isAppActive: Bool) -> ReplyActivityAlert? {
+        guard !isAppActive, next.stage == .waitingForApproval, previous.stage != .waitingForApproval else { return nil }
+        return ReplyActivityAlert(title: next.title, body: next.detail.isEmpty ? "Open Otto to answer." : next.detail)
     }
 
     static func pausedState(from working: State, at date: Date) -> State {

@@ -2,7 +2,8 @@
 //  SettingsPages.swift
 //  Otto
 //
-//  The pages Settings pushes: the API key, the model list with prices, custom instructions and usage totals.
+//  The pages Settings pushes: the API key, the model list with prices, custom instructions, the actions
+//  activity log and usage totals.
 //
 
 import SwiftUI
@@ -322,5 +323,82 @@ struct UsagePage: View {
 
     static func replies(_ count: Int) -> String {
         count == 1 ? "1 reply" : "\(count.formatted()) replies"
+    }
+}
+
+// MARK: - Activity log
+
+/// What Otto's actions did, newest first: titles and outcomes only, never what was read or written.
+struct ActivityLogPage: View {
+    let services: ChatScreenServices
+
+    @State private var entries: [ActionLogEntry] = []
+    @State private var isLoaded = false
+    @State private var confirmsClear = false
+
+    static let limit = 200
+
+    var body: some View {
+        Form {
+            if isLoaded, entries.isEmpty {
+                Section {
+                    EmptyStateView(symbol: "list.bullet.rectangle", title: "No actions yet",
+                                   message: "Actions Otto runs, declines or skips show up here.")
+                }
+                .listRowBackground(Color.clear)
+            } else {
+                Section {
+                    ForEach(entries, id: \.id) { entry in
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(DisplayText.sanitized(entry.summary, maxLength: 160))
+                                .foregroundStyle(Theme.textPrimary)
+                            Text("\(Self.outcome(of: entry)) · \(entry.date.formatted(date: .abbreviated, time: .shortened))")
+                                .font(.footnote)
+                                .foregroundStyle(Theme.textTertiary)
+                        }
+                        .accessibilityElement(children: .combine)
+                    }
+                } footer: {
+                    Text("Kept as long as History keeps conversations, and cleared with it.")
+                }
+                if !entries.isEmpty {
+                    Section {
+                        Button("Clear Activity Log…", role: .destructive) { confirmsClear = true }
+                    }
+                }
+            }
+        }
+        .scrollContentBackground(.hidden)
+        .background(Theme.panel)
+        .navigationTitle("Activity Log")
+        .navigationBarTitleDisplayMode(.inline)
+        .task {
+            entries = await services.recentActions(Self.limit)
+            isLoaded = true
+        }
+        .confirmationDialog("Clear the activity log?", isPresented: $confirmsClear, titleVisibility: .visible) {
+            Button("Clear", role: .destructive) {
+                Task { @MainActor in
+                    await services.clearActionLog()
+                    entries = await services.recentActions(Self.limit)
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        }
+    }
+
+    /// "Added", "You declined", "Blocked"…
+    static func outcome(of entry: ActionLogEntry) -> String {
+        switch entry.decision {
+        case "declined": return "You declined"
+        case "blocked", "blocked_synthetic_input": return "Blocked"
+        case "limit": return "Over the limit"
+        case "timed_out": return "No answer"
+        case "cancelled": return "Stopped"
+        default:
+            if entry.outcome == "ok" { return entry.decision == "consent" ? "Read" : "Done" }
+            if entry.outcome.hasPrefix("error:") { return "Didn't finish" }
+            return "Not run"
+        }
     }
 }

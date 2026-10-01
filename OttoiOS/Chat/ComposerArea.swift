@@ -2,9 +2,10 @@
 //  ComposerArea.swift
 //  Otto
 //
-//  The bottom of the chat: a notice line, the edit banner and the attachment chips over the clay slab, which
-//  holds + (photos, camera, files, paste), the text field, the mic (hold to talk, or tap to start and tap again
-//  to send) and send / stop. While Otto listens the field becomes a live waveform and transcript.
+//  The bottom of the chat: an action's approval card, a notice line, the edit banner and the attachment chips
+//  over the clay slab, which holds + (photos, camera, files, paste), the text field, the mic (hold to talk, or
+//  tap to start and tap again to send) and send / stop. While Otto listens the field becomes a live waveform and
+//  transcript.
 //
 
 import PhotosUI
@@ -28,6 +29,11 @@ struct ComposerArea: View {
 
     var body: some View {
         VStack(spacing: 8) {
+            if let approval = model.pendingApproval {
+                ApprovalCard(approval: approval, model: model)
+                    .id(approval.callID)
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
             if let notice = model.notice {
                 NoticeLine(notice: notice, onOpenSettings: { model.openAppSettings() }, onDismiss: { model.dismissNotice() })
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
@@ -69,6 +75,11 @@ struct ComposerArea: View {
         .animation(reduceMotion ? nil : Theme.Motion.content, value: model.attachments.count)
         .animation(reduceMotion ? nil : Theme.Motion.content, value: model.isEditing)
         .animation(reduceMotion ? nil : Theme.Motion.content, value: voice.isSpeaking)
+        .animation(reduceMotion ? nil : Theme.Motion.content, value: model.pendingApproval?.callID)
+        .onChange(of: model.pendingApproval?.callID) { _, callID in
+            // The card needs the room the keyboard takes.
+            if callID != nil { isFieldFocused = false }
+        }
         .onChange(of: model.focusRequest) { _, _ in
             isFieldFocused = true
         }

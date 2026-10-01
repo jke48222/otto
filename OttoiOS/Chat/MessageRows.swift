@@ -264,7 +264,7 @@ private struct AssistantMessageRow: View {
     private func toolRows(_ calls: [ToolCall]) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             ForEach(calls) { call in
-                ToolCallRow(call: call)
+                ToolCallRow(call: call, messageID: message.id, model: model)
             }
         }
     }
@@ -469,50 +469,154 @@ private struct NoteRow: View {
     }
 }
 
-/// An action Otto took, as one line: its glyph, what it did and how it ended.
-private struct ToolCallRow: View {
+/// An action Otto took: how it stands, what it did (or why it didn't), and its controls: Undo while an added
+/// event or reminder can still be removed, Stop while it runs, Open Settings when Actions are off.
+struct ToolCallRow: View {
     let call: ToolCall
+    let messageID: UUID
+    let model: ChatScreenModel
 
-    private var title: String {
-        switch call.status {
-        case .succeeded: return call.presentation.doneTitle
-        case .running, .queued, .preparing, .waitingForSystem: return call.presentation.activeTitle
-        case .needsPermission, .awaitingApproval, .failed, .denied, .blocked, .cancelled, .skipped, .undone:
-            return call.presentation.title
+    enum Glyph: Equatable { case spinner, attention, succeeded, stopped, problem, undone }
+
+    static func glyph(for status: ToolCallStatus) -> Glyph {
+        switch status {
+        case .preparing, .queued, .running, .waitingForSystem: return .spinner
+        case .needsPermission, .awaitingApproval: return .attention
+        case .succeeded: return .succeeded
+        case .denied, .cancelled, .skipped: return .stopped
+        case .failed, .blocked: return .problem
+        case .undone: return .undone
         }
     }
 
-    private var statusText: String? {
+    /// The row's words: the title before the call starts, the active title while it runs, the done title once it
+    /// succeeded (or was undone), and what happened otherwise.
+    static func label(for call: ToolCall) -> String {
+        let presentation = call.presentation
         switch call.status {
-        case .failed(let reason), .blocked(let reason), .skipped(let reason): return reason
-        case .denied: return "Not allowed"
-        case .cancelled: return "Stopped"
-        case .undone: return "Undone"
-        case .needsPermission, .awaitingApproval: return "Waiting for your OK"
-        case .waitingForSystem(let note): return note
-        case .preparing, .queued, .running, .succeeded: return nil
+        case .preparing, .queued:
+            return presentation.title
+        case .needsPermission:
+            return "Waiting for your permission"
+        case .awaitingApproval:
+            return "Waiting for your OK"
+        case .waitingForSystem(let appName):
+            return appName.isEmpty ? "Waiting for iOS…" : "Waiting for iOS permission for \(appName)…"
+        case .running:
+            return presentation.activeTitle
+        case .succeeded, .undone:
+            return presentation.doneTitle
+        case .failed(let reason):
+            return reason.isEmpty ? "Didn't finish: \(presentation.title)" : "\(presentation.title): \(reason)"
+        case .denied:
+            return "You declined: \(presentation.title)"
+        case .blocked(let reason):
+            return reason.isEmpty ? "Blocked: \(presentation.title)" : "Blocked: \(reason)"
+        case .cancelled:
+            return "Stopped: \(presentation.title)"
+        case .skipped(let reason):
+            return reason.isEmpty ? "Skipped: \(presentation.title)" : "Skipped: \(presentation.title) (\(reason))"
+        }
+    }
+
+    static func canUndo(_ call: ToolCall, now: Date) -> Bool {
+        guard call.status == .succeeded, let undo = call.undo else { return false }
+        return now < undo.expires
+    }
+
+    static func canStop(_ call: ToolCall) -> Bool {
+        switch call.status {
+        case .running, .waitingForSystem: return true
+        default: return false
         }
     }
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Image(systemName: call.presentation.symbol)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(Theme.textMuted)
-                .frame(width: 16)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(DisplayText.sanitized(title, maxLength: 200))
-                    .font(Theme.font(14.5))
-                    .foregroundStyle(Theme.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                if let statusText {
-                    Text(DisplayText.sanitized(statusText, maxLength: 300))
-                        .font(Theme.font(13))
-                        .foregroundStyle(Theme.textTertiary)
+        // Re-evaluated now and then, so Undo goes away when its 10 minutes are up.
+        TimelineView(.periodic(from: .now, by: 15)) { context in
+            HStack(alignment: .center, spacing: 10) {
+                glyph
+                    .frame(width: 18, height: 18)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(DisplayText.sanitized(Self.label(for: call), maxLength: 240))
+                        .font(Theme.font(14.5))
+                        .foregroundStyle(call.status == .undone ? Theme.textTertiary : Theme.textSecondary)
+                        .strikethrough(call.status == .undone, color: Theme.textTertiary)
                         .fixedSize(horizontal: false, vertical: true)
+                    if call.status == .succeeded, let detail = call.presentation.detail, !detail.isEmpty {
+                        Text(DisplayText.sanitized(detail, maxLength: 200))
+                            .font(Theme.font(13))
+                            .foregroundStyle(Theme.textTertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                if Self.canUndo(call, now: context.date) {
+                    RowButton(title: "Undo") { model.undoAction(call.id, in: messageID) }
+                } else if Self.canStop(call) {
+                    RowButton(title: "Stop") { model.stopAction(call.id) }
+                } else if call.recovery != nil {
+                    RowButton(title: "Settings") { model.showSettings() }
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            .background {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Color.white.opacity(0.04))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Theme.hairline, lineWidth: 1)
+                    }
             }
         }
         .accessibilityElement(children: .combine)
+    }
+
+    @ViewBuilder
+    private var glyph: some View {
+        switch Self.glyph(for: call.status) {
+        case .spinner:
+            MiniSpinner(size: 13, lineWidth: 1.7)
+        case .attention:
+            Image(systemName: "hand.raised.fill")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Theme.attention)
+        case .succeeded:
+            Image(systemName: call.presentation.symbol)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Theme.orbLight)
+        case .stopped:
+            Image(systemName: "minus.circle")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Theme.textTertiary)
+        case .problem:
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Theme.error)
+        case .undone:
+            Image(systemName: "arrow.uturn.backward")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Theme.textTertiary)
+        }
+    }
+}
+
+/// A small text button at the end of an action row.
+private struct RowButton: View {
+    let title: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(Theme.font(13.5, .semibold))
+                .foregroundStyle(Theme.textPrimary)
+                .padding(.horizontal, 12)
+                .frame(height: 30)
+                .background(Capsule(style: .continuous).fill(Color.white.opacity(0.08)))
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(PressableButtonStyle(pressedScale: 0.95))
     }
 }

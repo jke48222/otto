@@ -72,6 +72,31 @@ final class SnapshotTests: XCTestCase {
         try await Snapshot.render(RootView(composition: graph), named: "chat-failed")
     }
 
+    // MARK: - Actions
+
+    func testApprovalCard() async throws {
+        let graph = makeSnapshotGraph()
+        graph.settings.actions.enabled = true
+        graph.model.composerText = "Please add the dentist to my calendar"
+        graph.model.send()
+        await waitUntil { graph.model.pendingApproval != nil }
+        try await Snapshot.render(RootView(composition: graph), named: "chat-approval")
+        graph.model.declineApproval()
+        await waitUntil { !graph.chat.isStreaming }
+    }
+
+    func testFinishedAction() async throws {
+        let graph = makeSnapshotGraph()
+        graph.settings.actions.enabled = true
+        graph.model.composerText = "Please add the dentist to my calendar"
+        graph.model.send()
+        await waitUntil { graph.model.pendingApproval != nil && graph.model.approvalArmedAt != nil }
+        await waitUntil { (graph.model.approvalArmedAt.map { $0 <= Date() }) ?? false }
+        graph.model.approve()
+        await waitUntil { !graph.chat.isStreaming }
+        try await Snapshot.render(RootView(composition: graph), named: "chat-action")
+    }
+
     // MARK: - Sheets and first run
 
     func testRecents() async throws {

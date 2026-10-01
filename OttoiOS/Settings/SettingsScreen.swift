@@ -3,8 +3,8 @@
 //  Otto
 //
 //  Settings on iPhone: the API key and demo mode, how Otto replies (model, response style, web search, custom
-//  instructions, cost), what happens while you're away (Live Activity, notifications), voice, history, usage,
-//  haptics and about. Same preferences and copy as the Mac where they mean the same thing.
+//  instructions, cost), actions, what happens while you're away (Live Activity, notifications), voice, history,
+//  usage, haptics and about. Same preferences and copy as the Mac where they mean the same thing.
 //
 
 import SwiftUI
@@ -39,6 +39,7 @@ private struct SettingsForm: View {
         Form {
             ClaudeSection(model: model, settings: settings)
             RepliesSection(model: model, settings: settings)
+            ActionsSection(model: model, actions: settings.actions)
             AwaySection(model: model, settings: settings, mobile: settings.mobile)
             VoiceSection(model: model, settings: settings, voice: settings.voice)
             HistorySection(model: model, settings: settings)
@@ -159,6 +160,98 @@ private struct RepliesSection: View {
         case .low: return "Quick: fast, lighter answers."
         case .medium: return "Balanced: a good balance of speed and depth."
         case .high: return "Thorough: takes longer and thinks harder."
+        }
+    }
+}
+
+// MARK: - Actions
+
+private struct ActionsSection: View {
+    let model: ChatScreenModel
+    @Bindable var actions: ActionSettings
+
+    var body: some View {
+        Section {
+            Toggle(isOn: $actions.enabled) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Let Otto Take Actions")
+                    Text("Claude can read and add calendar events and reminders, always with your OK.")
+                        .font(.footnote)
+                        .foregroundStyle(Theme.textTertiary)
+                }
+            }
+            ForEach(MobileToolCatalog.groups, id: \.self) { group in
+                Toggle(isOn: binding(for: group)) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(group.displayName)
+                        Text(accessLine(for: group))
+                            .font(.footnote)
+                            .foregroundStyle(Theme.textTertiary)
+                    }
+                }
+                .disabled(!actions.enabled)
+            }
+            if actions.enabled, needsSettingsApp {
+                Button("Allow Access in Settings") {
+                    model.services.openAppSettings()
+                }
+            }
+            NavigationLink {
+                ActivityLogPage(services: model.services)
+            } label: {
+                Text("Activity Log")
+            }
+        } header: {
+            Text("Actions")
+        } footer: {
+            Text("Adding an event or a reminder shows a card with exactly what will be added and waits for your OK; "
+                 + "reading your calendar or reminders asks once. Added items can be undone for 10 minutes. Shortcuts, "
+                 + "scripts and links are on the Mac.")
+        }
+    }
+
+    private func binding(for group: ToolGroup) -> Binding<Bool> {
+        Binding(
+            get: { actions.groups.contains(group) },
+            set: { isOn in
+                if isOn {
+                    actions.groups.insert(group)
+                } else {
+                    actions.groups.remove(group)
+                }
+            }
+        )
+    }
+
+    private static func permission(for group: ToolGroup) -> Permission? {
+        switch group {
+        case .calendar: return .calendars
+        case .reminders: return .reminders
+        case .shortcuts, .media, .links, .appleScript: return nil
+        }
+    }
+
+    private func status(for group: ToolGroup) -> PermissionStatus? {
+        guard let permission = Self.permission(for: group) else { return nil }
+        return model.permissions?.status(permission)
+    }
+
+    /// Whether some group can only be fixed in the Settings app.
+    private var needsSettingsApp: Bool {
+        MobileToolCatalog.groups.contains { group in
+            guard actions.groups.contains(group), let status = status(for: group) else { return false }
+            return status == .denied || status == .limited
+        }
+    }
+
+    private func accessLine(for group: ToolGroup) -> String {
+        switch status(for: group) {
+        case .granted?: return "Allowed"
+        case .notDetermined?: return "iOS asks the first time Otto needs it"
+        case .denied?: return "Not allowed in the Settings app"
+        case .limited?: return "Add-only access; reading needs full access"
+        case .restricted?: return "Managed on this iPhone"
+        case .needsRelaunch?, .unavailable?, nil: return ""
         }
     }
 }

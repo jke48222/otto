@@ -74,13 +74,29 @@ targets:
       - Otto/History/HistorySearch.swift
       - Otto/History/RecentsState.swift
       - Otto/Notch/ReadingRestore.swift
-      # Tools: the contracts the chat loop speaks
+      # Actions: the tool loop (executor, approvals, trust and echo checks, limits, the activity log) and the
+      # calendar and reminder tools on EventKit
       - Otto/Permissions/PermissionContracts.swift
+      - Otto/Tools/ActionLog.swift
+      - Otto/Tools/ApprovalStore.swift
+      - Otto/Tools/EchoDetector.swift
       - Otto/Tools/JSONSchemaValidator.swift
       - Otto/Tools/ToolContracts.swift
+      - Otto/Tools/ToolExecutor.swift
       - Otto/Tools/ToolHistory.swift
+      - Otto/Tools/ToolRateLimiter.swift
       - Otto/Tools/ToolRegistry.swift
       - Otto/Tools/ToolSchema.swift
+      - Otto/Tools/TrustLedger.swift
+      - Otto/Actions/Calendar/CalendarCreateEventTool.swift
+      - Otto/Actions/Calendar/CalendarCreateReminderTool.swift
+      - Otto/Actions/Calendar/CalendarListEventsTool.swift
+      - Otto/Actions/Calendar/CalendarListRemindersTool.swift
+      - Otto/Actions/Calendar/CalendarToolSupport.swift
+      - Otto/Actions/Calendar/DateInput.swift
+      - Otto/Actions/Calendar/DemoEventKitService.swift
+      - Otto/Actions/Calendar/EventKitProviding.swift
+      - Otto/Actions/Calendar/EventKitService.swift
       # Usage
       - Otto/Usage/CostFormatter.swift
       - Otto/Usage/ModelPricing.swift

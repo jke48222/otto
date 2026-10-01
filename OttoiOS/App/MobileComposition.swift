@@ -3,8 +3,9 @@
 //  Otto
 //
 //  Builds the iPhone app's object graph and owns it, like the Mac's AppComposition: settings, the chat session on
-//  the Anthropic client (or the scripted mock in demo mode), history, usage, voice, the chat screen's model, the
-//  reply's Live Activity, notifications and the background time that keeps a reply running after you leave.
+//  the Anthropic client (or the scripted mock in demo mode) with the calendar and reminder actions, history,
+//  usage, voice, the chat screen's model, the reply's Live Activity, notifications and the background time that
+//  keeps a reply running after you leave.
 //  `live()` is the app; `inert()` builds the same graph for tests and snapshots, touching neither the system
 //  nor your data.
 //
@@ -37,13 +38,24 @@ final class MobileComposition {
     let notifier: ReplyNotifier
     let backgroundKeeper: BackgroundReplyKeeper
 
+    // Actions.
+    let permissions: MobilePermissions
+    let approvals: ApprovalStore
+    let actionLog: ActionLog
+    let executor: ToolExecutor
+    let tools: ToolRegistry
+
     /// The system behind the graph (recording stand-ins in an inert graph, which tests read).
     let activities: ReplyActivityHosting
     let notificationCenter: ReplyNotificationCentering
     let backgroundTime: BackgroundTimeProviding
+    let permissionProbe: MobilePermissionProbing
+    let eventKit: any EventKitProviding
 
     private(set) var isStarted = false
     private(set) var isTerminated = false
+    /// Stops the loops `start()` set up.
+    private var cancellations: [() -> Void] = []
 
     private let throwawaySuiteName: String?
     private static let logger = Logger(subsystem: "com.jalenedusei.otto", category: "App")
@@ -59,15 +71,28 @@ final class MobileComposition {
         } catch {
             logger.fault("History stays in memory: \(String(describing: error), privacy: .private)")
         }
-        // Demo usage is made up, so it never reaches the real totals.
+        // Demo usage is made up, so it never reaches the real totals; demo actions stay out of the activity log file.
         let ledgerFile = isDemo ? nil : historyRoot?.appendingPathComponent(UsageLedger.fileName, isDirectory: false)
+        var actionLogDirectory: URL?
+        if !isDemo {
+            do {
+                actionLogDirectory = try AppSupport.directory(.logs, demo: false)
+            } catch {
+                logger.fault("The activity log stays in memory: \(String(describing: error), privacy: .private)")
+            }
+        }
         return MobileComposition(
             kind: .live,
             settings: settings,
+            defaults: .standard,
             throwawaySuiteName: nil,
             isDemo: isDemo,
             historyRoot: historyRoot,
             ledgerFile: ledgerFile,
+            actionLogDirectory: actionLogDirectory,
+            eventKit: isDemo ? DemoEventKitService() : EventKitService(),
+            // The demo's calendar is made up, so it needs no access to the real one.
+            permissionProbe: isDemo ? StaticPermissionProbe() : MobilePermissionProbe(),
             makeClient: {
                 if isDemo { return MockLLMClient() }
                 guard let apiKey = settings.resolvedAPIKey else { throw LLMError.missingAPIKey }
@@ -86,7 +111,8 @@ final class MobileComposition {
     /// Tests and snapshots: the whole graph with throwaway preferences, in-memory stores, the mock client
     /// (no delays), a scripted speech engine and recording stand-ins for ActivityKit, notifications and
     /// background time. `isDemo: false` draws the screens as they look with a key (snapshots).
-    static func inert(latencyScale: Double = 0, isDemo: Bool = true) -> MobileComposition {
+    static func inert(latencyScale: Double = 0, isDemo: Bool = true,
+                      permissionProbe: MobilePermissionProbing = StaticPermissionProbe()) -> MobileComposition {
         let suiteName = "com.jalenedusei.otto.ios-composition.\(UUID().uuidString)"
         guard let defaults = UserDefaults(suiteName: suiteName) else {
             preconditionFailure("UserDefaults refused the suite \(suiteName)")
@@ -97,10 +123,14 @@ final class MobileComposition {
         return MobileComposition(
             kind: .inert,
             settings: settings,
+            defaults: defaults,
             throwawaySuiteName: suiteName,
             isDemo: isDemo,
             historyRoot: nil,
             ledgerFile: nil,
+            actionLogDirectory: nil,
+            eventKit: DemoEventKitService(),
+            permissionProbe: permissionProbe,
             makeClient: { MockLLMClient(latencyScale: latencyScale) },
             makeEngine: { ScriptedSpeechEngine(script: []) },
             interruptions: InertVoiceInterruptions(),
@@ -112,8 +142,9 @@ final class MobileComposition {
         )
     }
 
-    private init(kind: Kind, settings: AppSettings, throwawaySuiteName: String?, isDemo: Bool,
-                 historyRoot: URL?, ledgerFile: URL?,
+    private init(kind: Kind, settings: AppSettings, defaults: UserDefaults, throwawaySuiteName: String?,
+                 isDemo: Bool, historyRoot: URL?, ledgerFile: URL?, actionLogDirectory: URL?,
+                 eventKit: any EventKitProviding, permissionProbe: MobilePermissionProbing,
                  makeClient: @escaping @MainActor () throws -> LLMClient,
                  makeEngine: @escaping @MainActor () -> SpeechEngine,
                  interruptions: VoiceInterruptionSource,
@@ -130,9 +161,32 @@ final class MobileComposition {
         self.activities = activities
         self.notificationCenter = notificationCenter
         self.backgroundTime = backgroundTime
+        self.permissionProbe = permissionProbe
+        self.eventKit = eventKit
+
+        // Actions: permissions, approvals, the activity log, the calendar and reminder tools and their executor.
+        let permissions = MobilePermissions(probe: permissionProbe)
+        self.permissions = permissions
+        let approvals = ApprovalStore(defaults: defaults)
+        self.approvals = approvals
+        let actionLog = ActionLog(directory: actionLogDirectory,
+                                  maxAge: MobileToolCatalog.actionLogMaxAge(for: settings.history.retention))
+        self.actionLog = actionLog
+        let tools = MobileToolCatalog.makeRegistry(settings: settings, eventKit: eventKit)
+        self.tools = tools
+        let executor = ToolExecutor(permissions: permissions, approvals: approvals, log: actionLog,
+                                    logFullScripts: { [settings] in settings.actions.logFullScripts })
+        // Read at every decision: the safety mode, and the environment behind the availability checks (a group or
+        // Actions itself may be turned off while its card waits).
+        executor.safetyMode = { [settings] in settings.actionSafetyMode }
+        executor.makeEnvironment = { [settings, permissions] model in
+            ToolEnvironment(settings: settings, permissions: permissions, model: model, isDemo: isDemo)
+        }
+        self.executor = executor
 
         // The conversation, its usage and its history.
-        let chat = ChatSession(settings: settings, makeClient: makeClient, isDemo: isDemo)
+        let chat = ChatSession(settings: settings, makeClient: makeClient, tools: tools, executor: executor,
+                               permissions: permissions, isDemo: isDemo)
         self.chat = chat
         let ledger = UsageLedger(fileURL: ledgerFile)
         self.ledger = ledger
@@ -157,6 +211,14 @@ final class MobileComposition {
         services.voicePermissions = voicePermissions
         services.requestNotificationPermission = { await notifier.requestPermission() }
         services.liveActivitiesAllowed = { activities.areActivitiesEnabled }
+        services.recentActions = { limit in await actionLog.recent(limit: limit) }
+        services.clearActionLog = {
+            do {
+                try await actionLog.clear()
+            } catch {
+                Self.logger.error("Couldn't clear the activity log: \(LoggedError(error), privacy: .public)")
+            }
+        }
         if kind == .live {
             services.clipboardProviders = { UIPasteboard.general.itemProviders }
             services.copyText = { UIPasteboard.general.string = $0 }
@@ -167,7 +229,8 @@ final class MobileComposition {
             }
         }
         self.model = ChatScreenModel(settings: settings, chat: chat, history: history, recents: recents,
-                                     ledger: ledger, voice: voice, audio: audio, services: services, isDemo: isDemo)
+                                     ledger: ledger, voice: voice, audio: audio, services: services,
+                                     permissions: permissions, isDemo: isDemo)
 
         // While you're away: the Live Activity and background time.
         self.replyActivity = ReplyActivityController(settings: settings, chat: chat, host: activities)
@@ -179,6 +242,24 @@ final class MobileComposition {
     private func wireGraph() {
         chat.onReplyFinished = { [weak self] in
             self?.replyFinished()
+        }
+        chat.onAttentionNeeded = { [weak self] approval in
+            self?.approvalNeeded(approval)
+        }
+        // Delete All History and turning History off clear the activity log too; other removals prune it.
+        let actionLog = actionLog
+        history.onDataRemoved = { removal in
+            guard removal == .all else {
+                Task { await actionLog.prune(now: Date()) }
+                return
+            }
+            Task {
+                do {
+                    try await actionLog.clear()
+                } catch {
+                    Self.logger.error("Couldn't clear the activity log: \(LoggedError(error), privacy: .public)")
+                }
+            }
         }
         backgroundKeeper.onExpiration = { [weak self] in
             self?.backgroundTimeRanOut()
@@ -199,6 +280,7 @@ final class MobileComposition {
         Task { await history.start() }
         replyActivity.start()
         UNUserNotificationCenterBridge.install(notifier)
+        startActionLogUpkeep()
         Self.logger.info("Otto for iPhone started (demo: \(self.isDemo, privacy: .public))")
     }
 
@@ -212,6 +294,8 @@ final class MobileComposition {
         audio.activate(.idle)
         if chat.isStreaming { chat.cancel() }
         replyActivity.stop()
+        cancellations.forEach { $0() }
+        cancellations = []
         history.flush()
         ledger.flush()
         backgroundKeeper.end()
@@ -256,6 +340,29 @@ final class MobileComposition {
         if !chat.isStreaming {
             backgroundKeeper.end()
         }
+    }
+
+    /// An action waits for an answer while Otto is away and no Live Activity can say so: a notification, if asked
+    /// for. (The Live Activity itself alerts when its stage turns to "Needs your OK".)
+    private func approvalNeeded(_ approval: PendingApproval) {
+        guard !model.isAppActive, replyActivity.current == nil, settings.mobile.notifyWhenAway else { return }
+        notifier.postApprovalNeeded(approval, includeText: settings.mobile.notificationPreview)
+    }
+
+    /// The activity log follows History: its retention, and staying in memory while History is off.
+    private func startActionLogUpkeep() {
+        let settings = settings
+        let actionLog = actionLog
+        Task { await actionLog.prune(now: Date()) }
+        let retentionLoop = ObservationLoop(read: { settings.history.retention }) { retention in
+            Task { await actionLog.setMaxAge(MobileToolCatalog.actionLogMaxAge(for: retention)) }
+        }
+        let historyEnabled = settings.history.enabled
+        Task { await actionLog.setPersisting(historyEnabled) }
+        let persistingLoop = ObservationLoop(read: { settings.history.enabled }) { enabled in
+            Task { await actionLog.setPersisting(enabled) }
+        }
+        cancellations += [{ retentionLoop.cancel() }, { persistingLoop.cancel() }]
     }
 
     /// iOS is about to suspend Otto with the reply still running: it stops where it is (Retry continues it), and
