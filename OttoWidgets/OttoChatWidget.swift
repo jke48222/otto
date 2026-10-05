@@ -1,5 +1,5 @@
 //
-//  AskOttoWidget.swift
+//  OttoChatWidget.swift
 //  Otto
 //
 //  A widget that only opens Otto with the composer ready: the orb on clay for the Home Screen, and compact
@@ -9,22 +9,22 @@
 import SwiftUI
 import WidgetKit
 
-struct AskOttoWidget: Widget {
+struct OttoChatWidget: Widget {
     static let kind = "com.jalenedusei.otto.widget.ask"
 
     var body: some WidgetConfiguration {
-        StaticConfiguration(kind: Self.kind, provider: AskOttoTimeline()) { _ in
-            AskOttoWidgetView()
+        StaticConfiguration(kind: Self.kind, provider: OttoChatTimeline()) { _ in
+            OttoChatWidgetView()
                 .widgetURL(OttoDeepLink.ask.url)
         }
-        .configurationDisplayName("Ask Otto")
+        .configurationDisplayName("Chat with Otto")
         .description("Opens Otto ready for your question.")
         .supportedFamilies([.systemSmall, .accessoryCircular, .accessoryRectangular, .accessoryInline])
     }
 }
 
 /// One entry that never changes: the widget is a door, not a feed.
-struct AskOttoTimeline: TimelineProvider {
+struct OttoChatTimeline: TimelineProvider {
     struct Entry: TimelineEntry {
         let date: Date
     }
@@ -42,7 +42,7 @@ struct AskOttoTimeline: TimelineProvider {
     }
 }
 
-struct AskOttoWidgetView: View {
+struct OttoChatWidgetView: View {
     @Environment(\.widgetFamily) private var family
 
     var body: some View {
@@ -55,7 +55,7 @@ struct AskOttoWidgetView: View {
                     .widgetAccentable()
             }
             .containerBackground(for: .widget) { Color.clear }
-            .accessibilityLabel("Ask Otto")
+            .accessibilityLabel("Chat with Otto")
         case .accessoryRectangular:
             HStack(spacing: 8) {
                 Image(systemName: "sparkle")
@@ -73,7 +73,7 @@ struct AskOttoWidgetView: View {
             }
             .containerBackground(for: .widget) { Color.clear }
         case .accessoryInline:
-            Label("Ask Otto", systemImage: "sparkle")
+            Label("Chat with Otto", systemImage: "sparkle")
                 .containerBackground(for: .widget) { Color.clear }
         default:
             VStack(alignment: .leading, spacing: 0) {

@@ -105,7 +105,7 @@ OttoiOS/          Otto for iPhone: MobileComposition (the graph), the chat scree
                   Activity controller, notifications, background time, the audio session; Shared/ holds what
                   the widget extension compiles too (intents, deep links, the Live Activity's attributes and
                   views)
-OttoWidgets/      the iPhone widget extension: the reply's Live Activity, the Ask Otto widget and control
+OttoWidgets/      the iPhone widget extension: the reply's Live Activity, the chat widget and control
 OttoiOSTests/     the iPhone tests, including the snapshot test that draws every screen
 scripts/          build.sh, run.sh, snapshot.sh, make_icon.swift, release.sh, publish.sh, make_media.sh
                   (+ video tools), audit_flavor.sh, check_commercial_config.sh; their tests in scripts/tests/

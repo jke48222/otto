@@ -178,8 +178,8 @@ the App Store; [build it from source](#otto-for-iphone-1) and run it on your pho
   Activity shows what Otto is doing in the Dynamic Island and on the Lock Screen, then the reply's first line;
   tap it to jump to the answer. If iOS pauses the reply first, the island says so and Retry picks it up.
   Optionally, a notification when a reply finishes while you're away.
-- **One tap away.** "Ask Otto" and "New chat in Otto" work from Siri, Shortcuts, Spotlight and the Action
-  button, and there's an Ask Otto widget for the Home and Lock Screen and a Control Center control.
+- **One tap away.** "Chat with Otto" and "New chat in Otto" work from Siri, Shortcuts, Spotlight and the
+  Action button, and there's a widget for the Home and Lock Screen and a Control Center control.
 - **Acts with your OK.** Turn on **Settings → Actions** and Claude can read and add calendar events and
   reminders. Adding one shows a card with exactly what will be added and the calendar or list it goes to,
   and waits for your tap; iOS asks for Calendars or Reminders access the first time. Added items can be
@@ -691,7 +691,7 @@ Otto/
 ├── UI/           SwiftUI views: notch, dock cards, pages, chat, glance, voice, Settings panes, theme
 └── Debug/        Debug-build tools: snapshot renderer, on-screen self-test, promo stage for the launch media
 OttoiOS/          Otto for iPhone: the chat screen, approvals, Recents, Settings, the Live Activity, notifications, intents
-OttoWidgets/      the iPhone widget extension: the reply's Live Activity, the Ask Otto widget and control
+OttoWidgets/      the iPhone widget extension: the reply's Live Activity, the chat widget and control
 ```
 
 The iPhone app compiles the platform-neutral part of `Otto/` (the chat, API, History, Usage and Voice modules,

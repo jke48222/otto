@@ -27,8 +27,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     the first time, added items have Undo for 10 minutes, and an action waiting while you're away lights up
     the Live Activity.
   - **Recents** with search, swipe to delete and Undo; **Continue** picks up the last conversation.
-  - **Siri and Shortcuts** ("Ask Otto", "New chat in Otto"), an **Ask Otto** widget for the Home and Lock
-    Screen, and a Control Center control.
+  - **Siri and Shortcuts** ("Chat with Otto", "New chat in Otto"), a widget for the Home and Lock Screen,
+    and a Control Center control.
   - **Settings** for the API key (kept in the iPhone's Keychain), demo mode, model, response style, web
     search, custom instructions, cost labels, actions, the Live Activity and notifications, voice, history,
     usage and haptics; a first-run welcome that asks for a key or offers the demo.
