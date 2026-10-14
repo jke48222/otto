@@ -43,7 +43,7 @@ with its number. `Config/Commercial.xcconfig` and `site/commerce.json` hold the 
 | Item | What you do | Where the value goes |
 | --- | --- | --- |
 | J1 | Polar production account and organization; note the organization ID and slug | `OTTO_POLAR_ORGANIZATION_ID`, `OTTO_POLAR_PORTAL_SLUG`; `commerce.json` `polar.portalURL` |
-| J2 | Product "Otto for Mac", one-time $19, visibility **private**, with a License Keys benefit: prefix `OTTO`, no expiry, activation limit 3, "Enable user to deactivate instances via Polar" on | `OTTO_POLAR_BENEFIT_ID` |
+| J2 | Product "Otto for Mac", one-time $5 (it was $19 until 2026-10-13), visibility **private**, with a License Keys benefit: prefix `OTTO`, no expiry, activation limit 3, "Enable user to deactivate instances via Polar" on | `OTTO_POLAR_BENEFIT_ID` |
 | J3 | The same organization, product and benefit in the Polar sandbox, plus one sandbox test key | the `[config=Debug]` values |
 | J4 | Checkout links (regular, and launch week with a preset discount), a 30% student code and a 100% code for your own orders; success URL `https://<site>/thanks`, return URL `https://<site>/buy`. Created at HM1, committed at HM3 | `commerce.json` `polar.checkoutURL`, `launch.checkoutURL` |
 | J5 | Polar payouts (Stripe Connect); the account review is submitted at HM3 | the Polar dashboard |
@@ -781,7 +781,7 @@ After H2, HM2 and HM4; blocks WMd part A and announcing the launch. In this orde
 3. Before the flip, check four things. `https://polar.sh/<slug>` lists no product (unless you now switch the
    product to public because you want the Polar page). The Gumroad product is unpublished or doesn't exist.
    The Polar launch discount's `ends_at` is the launch end you chose. The regular and the launch checkout
-   links show $19 and $14, and a US address shows sales tax added, matching the tax line on `/buy`.
+   links show the prices in `site/commerce.json` (`price.usd`, and `launch.usd` during a launch week), and a US address shows sales tax added, matching the tax line on `/buy`.
 4. Commit J4 (both checkout links) and J19 (`launch.startsAt` = today, `launch.endsAt` = the discount's
    `ends_at`, `launch.timeZone`) in `site/commerce.json`. `node scripts/site_render.mjs --check-commerce`
    exits 0.
