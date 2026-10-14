@@ -932,7 +932,7 @@ enum SetappAIFailure: Equatable, Sendable {
 
     /// What the reply's footer offers for this failure.
     enum Action: Equatable, Sendable {
-        /// "Get Credits": open Setapp's purchase page (`SetappAIAccountModel.openPurchasePage()`).
+        /// "Get Credits": open Setapp's purchase page (`SetappAIAccountModel.purchaseURL()`).
         case getCredits
         /// "Open Settings" on the Models tab, where the model and provider are.
         case openModelsSettings
