@@ -337,7 +337,8 @@ when only attachments). Append the user message and an assistant message (`state
    `.toolActivity` → upsert by id; `.sources` → append unique by URL; `.fallback` → model = toModel;
    `.completed(r)` → append `r.content` to `apiContent`, record stop reason.
 4. Stop reasons: `pause_turn` → re-request (≤ 5 times) with the partial assistant message included as the
-   last history entry (no new user message), continuing to accumulate into the same message;
+   last history entry (no new user message), continuing to accumulate into the same message (a Setapp AI pause
+   after pages read on the Mac also gets fresh limits and the "Safer" check, section 19, "Web fetch");
    `refusal` → `.refused("Otto can't help with that one.")` and set `includeInContext = false` on both
    this assistant message and its user message; `max_tokens` → `.complete` but append "\n\n_(Reply
    truncated.)_" to `text`; anything else → `.complete`.
@@ -1090,8 +1091,8 @@ sends `tool_choice: {"type":"none"}` and the reply ends with a short note.
 **Web budget.** Web search and fetch run on Anthropic's side with no card, so each reply gets at most 10
 searches and 10 fetches (`max_uses` at most 5 per request, the tool omitted at 0). Once the chat holds private
 data and fresh untrusted content, the rest of that reply carries no server tools, and a row says why. On Setapp AI
-the gateway searches and Otto reads pages on the Mac under the same budget and the same pause (section 19, "Web
-fetch").
+the gateway searches and Otto reads pages on the Mac under the same budget and the same pause, checked again before
+each step of a reply that reads pages (section 19, "Web fetch").
 
 **Executor** (`ToolExecutor.execute(round, store:)`):
 
@@ -1470,49 +1471,74 @@ starts the Setapp build on that key instead. The first launch of a build that of
   `reasoning {effort, summary: auto}`, with the encrypted reasoning replayed across a tool round, and `web_search`.
   The search cap goes two ways, `max_tool_calls` and `search_context_size` (`medium` with 5 or more searches left,
   else `low`), because LiteLLM ignores the first and turns the second into Anthropic's `max_uses`. Then comes Otto's
-  own `web_fetch` function (below), then the client tools as function tools. Server fallbacks, prompt-caching
-  controls and `pause_turn` have no gateway equivalent.
+  own `web_fetch` function (below), then the client tools as function tools. Server fallbacks and prompt-caching
+  controls have no gateway equivalent, and `pause_turn` comes only from Otto's own page reads (below).
 - **Web fetch.** The gateway has no fetch tool, so Otto reads pages itself and an attached browser tab is read as on
   Anthropic. `ResponsesRequestBuilder` offers a strict function tool `web_fetch` (`{"url": string}`, described the
   way Anthropic's fetch works). It goes out exactly when AnthropicClient would send its server `web_fetch` for the
   same request (`SetappWebFetch.isOffered`). That takes web access on, a fetch left in `serverToolLimits.webFetch`
   (none once the reply's 10 are spent, or during the "Safer" web pause), and a model with `webFetchToolType` (not
   Haiku 4.5). The user's own key keeps Anthropic's server tool and never gets the function. `ResponsesClient`
-  answers the calls itself, inside the same `stream`, the way Anthropic's server runs its fetch inside one response,
-  so ChatSession, the tool loop and the round count see no client call:
-  - Each call spends one of the request's `max_uses`, and a call past them is told the limit was reached. Only an
-    address already in the conversation sent to the model can be read (`SetappWebFetch.Allowlist`). That is
-    Anthropic's rule, and it keeps Claude from putting private data into an address. The addresses come from the
-    user's text and text documents, a browser tab's URL line, web search results, citations, and earlier fetched
-    pages (their final address and every address in their text, the listed links included). Claude's own text, tool
-    inputs, Otto's notes and other tools' output never count. The match is exact after normalization: scheme and
-    host lowercased, the default port, the fragment and an empty query dropped, an empty path as `/`. An http
-    address may be read over https, never the other way. Anything else gets the error "This URL isn't in the
-    conversation, so Otto can't open it."
+  answers the calls on the Mac and never sends a gateway request of its own:
+  - Each call spends one of the request's `max_uses`, and a call past them is told the limit was reached and reads
+    nothing. Only an address already in the conversation sent to the model can be read
+    (`SetappWebFetch.Allowlist`). That is Anthropic's rule, and it keeps Claude from putting private data into an
+    address. The addresses come from the user's text and text documents, a browser tab's URL line, web search
+    results, citations, and earlier fetched pages (their final address and every address in their text, the listed
+    links included). Claude's own text, tool inputs, Otto's notes and other tools' output never count. The match is
+    exact after normalization: scheme and host lowercased, the default port, the fragment and an empty query
+    dropped, an empty path as `/`, and an http address matches its https twin. Every page is read over https: Otto's
+    App Transport Security allows no plain http, and Otto adds no exception for it. Anything else gets the error
+    "This URL isn't in the conversation, so Otto can't open it."
   - `WebPageReader` reads the allowed addresses side by side. Each read is a GET from an ephemeral `URLSession` (no
     cookies, cache or credentials, every challenge but server trust cancelled) with `Accept-Language: en` and
-    `User-Agent: Otto/<version>`. It gets 20 s in all and downloads at most 5 MB (reading stops there; a PDF that big
-    is refused). Each hop is checked before it is requested: http or https only, never from https down to http, and
-    at most 5 redirects, followed one at a time. A host that is, or resolves to, a loopback, private, link-local,
-    CGNAT, multicast, unspecified or IPv6 unique-local address, or a local or single-label name, is refused with
-    URLGuard's ranges, and the address the connection actually reached is checked again. HTML becomes text with
-    `HTMLText`, as attachments do, with its title and up to 100 links; text, JSON and XML stay as they are; a PDF's
-    text comes from PDFKit (a locked or textless PDF is refused); other types are refused. Claude gets the final
-    address, the title and at most 100,000 characters, with a note when the page was cut.
-  - With no client call waiting, the client sends the conversation back with each call and its output
-    (`function_call` and `function_call_output`) and the reply goes on. With client calls waiting, the response ends
-    at `tool_use` and the tool loop runs them. A ChatSession request makes at most its `max_uses` plus 2 gateway
-    requests, the last with `tool_choice: "none"`. A call cut off by the output limit, in a refused response or in
-    the wrap-up request isn't run. Stop cancels the reads.
-  - Each call is stored as Anthropic's pair, a `server_tool_use` and a `web_fetch_tool_result` (the text as a text
-    document and `content.url` the final address, or a `web_fetch_tool_error` with its code). Both are marked
-    `"otto_provider": "setapp-ai"` and `"otto_reader": "mac"`. TrustLedger reads the pair as `webFetch(host)`, high,
-    like Anthropic's fetch, so the provenance line, the caution banner and arming, "Always allow" and the "Safer"
-    pause behave the same. The read counts as a fetch and no search, in the usage (`web_fetch_requests`) and in
-    `webBudgetLeft` after a relaunch. The reply shows "Reading <host>" and the page as a source, with no action row
-    or activity log line, as for Anthropic's fetch. Later gateway requests send each pair back as the call and its
-    output while they offer web fetch, and AnthropicClient strips them like every Setapp-only block. The
-    compatibility retry leaves the tool out too.
+    `User-Agent: Otto/<version>`. It gets 20 s in all. A data delegate counts the body as URLSession decodes it and
+    cancels the download once the count passes 5 MB, so a compressed body never inflates far past the cap; the page
+    is read up to there, and a PDF that big is refused. Each hop is checked before it is requested: never from https
+    down to http, and at most 5 redirects, followed one at a time. A host that is, or resolves to, a loopback,
+    private, link-local, CGNAT, multicast, unspecified, IPv6 unique-local or local-use NAT64 address, or a local or
+    single-label name, is refused with URLGuard's ranges.
+  - Every request is then checked against the address its connection reached, whatever came back: a page, a page cut
+    at the cap, a redirect, an error status, a PDF over the cap or a failure. The task's metrics are awaited for up to
+    a second. A local or private address is refused, and so is a request whose metrics or remote address are missing
+    or unreadable, so the check fails closed and Claude learns nothing about what answered. A connection through a
+    proxy reports the proxy's address (often on this Mac), so it is left to the lookup before the request. Only an
+    offline failure, which never leaves the Mac, skips the check.
+  - HTML becomes text with `HTMLText`, as attachments do, with its title (from the first 512 KB) and up to 100 links
+    (from the first 1 MB; an address over 4,096 characters is skipped). No title or link pattern can run past a `<`
+    or `>` it doesn't own, so a page of tags that never close costs one pass (5 MB in well under a second). The
+    conversion also stops between its steps, and every 100 links, once the read is stopped or out of time. Text, JSON
+    and XML stay as they are. A PDF is never parsed on the Mac: it must start like one (`%PDF-` in its first
+    kilobyte) and carry no `/Encrypt` entry, then it goes on whole for the model to read, as Anthropic's fetch
+    returns one. Other types are refused. Claude gets the final address, the title and at most 100,000 characters,
+    with a note when the page was cut, or the PDF.
+  - A response that asked only for pages ends, once they are read, with `pause_turn` and the reads in its usage, the
+    way Anthropic pauses a long server-tool turn. ChatSession's pause_turn path then sends the next request with the
+    partial turn, so every step of the reply is a ChatSession request. Each gets what's left of the reply's budget
+    (at most 5 fetches per request), the "Safer" check a tool round ends with
+    (`ToolExecuting.webPause(after:tools:knownTools:)`), compaction after an overflow, the stall bounds, the retries
+    and the compatibility retry. ChatSession's 5
+    continuations bound the steps, and the last one offers no fetch, so the reply ends with an answer from the pages
+    read rather than "Stopped after several web lookups." With client calls waiting too, the response ends at
+    `tool_use` and the tool loop sends the pages back with the results. A call cut off by the output limit, in a
+    refused response or in the action limit's wrap-up, or one reusing an earlier call's id, isn't run. Stop cancels
+    the reads.
+  - Each call is stored as Anthropic's pair, a `server_tool_use` and a `web_fetch_tool_result`: the text as a text
+    document, or a PDF as a base64 `application/pdf` document, with `content.url` the final address, or a
+    `web_fetch_tool_error` with its code. Both are marked `"otto_provider": "setapp-ai"` and `"otto_reader": "mac"`.
+    TrustLedger reads the pair as `webFetch(host)`, high, PDF or not, like Anthropic's fetch, so the provenance
+    line, the caution banner and arming, "Always allow" and the "Safer" pause behave the same. The read counts as a
+    fetch and no search, in the usage (`web_fetch_requests`) and in `webBudgetLeft` after a relaunch. The reply shows
+    "Reading <host>" and the page as a source, with no action row or activity log line, as for Anthropic's fetch.
+  - A gateway request that offers web fetch sends the pairs back the way client calls go: a response's calls first,
+    then all their outputs in call order, client results included. Anthropic behind the gateway takes a turn's tool
+    results together after all its calls, and a call followed by its own output would split the turn and lose its
+    thinking. A PDF's output reads "(The PDF follows.)" after its address and title, and the file goes as an
+    `input_file` in the user message after the outputs, as a tool result's images do. A request without web fetch
+    (the budget spent, the "Safer" pause, the last continuation, the compatibility retry) can't name the tool. The
+    pages of the turn it continues then go as data in a user message, each in a `<fetched_page … untrusted="true">`
+    fence escaped like an earlier action result. A fresh request leaves them out, as ToolHistory leaves Anthropic's
+    out. AnthropicClient strips the pairs like every Setapp-only block.
 - **Stream.** `ResponsesStreamAccumulator` turns the gateway's events into the same `StreamEvent`s, live when they
   arrive and reconciled from the terminal response when the SDK delivers only text deltas and the final response.
   Stored blocks stay Anthropic-shaped: text, client `tool_use`, and a `thinking` block for the summary plus the raw
@@ -1520,7 +1546,8 @@ starts the Setapp build on that key instead. The first launch of a build that of
   `web_search_tool_result` pair marked `"otto_provider": "setapp-ai"`, so TrustLedger, the web budget and History
   treat it like an Anthropic search. Citations with no search item still get such a pair, so web provenance never
   fails open. Every web call spends a search, and a page read also spends a fetch. Stop reasons map to `tool_use`,
-  `max_tokens` (which wins over a cut-off tool call), `refusal` and `end_turn`. A response that is `incomplete` with
+  `max_tokens` (which wins over a cut-off tool call), `refusal` and `end_turn`, and a response that only read pages
+  on the Mac ends in `pause_turn`. A response that is `incomplete` with
   no reason (LiteLLM's way of reporting both) is `max_tokens` at the output limit and `refusal` below it. Usage maps
   to Anthropic's keys. A call id repeated within a response, or reused from an earlier round, is ignored.
 - **Errors.** `ResponsesTransportError` maps to the existing `LLMError`s plus `LLMError.setappAI(SetappAIFailure)`:
@@ -1556,8 +1583,8 @@ starts the Setapp build on that key instead. The first launch of a build that of
 | `<site host>/appcast.xml` | at most once a day, and Check Now | paid |
 | the downloads host (Vercel Blob) | when an update downloads | paid |
 | Setapp, through the Setapp app | a usage event at most every 5 minutes while in use | setapp |
-| Setapp's AI Gateway (`api.macpaw.com/ai`), through the Setapp Framework | each message, only with Setapp AI chosen: the conversation, attachments and tool results, as the Anthropic request would carry them; the gateway passes it to Anthropic | setapp |
-| the site of a page Claude reads | only with Setapp AI chosen, when Claude reads a page already in the conversation (an attached browser tab, a search result). It is a GET from the user's Mac, and its redirects, with `User-Agent: Otto/<version>`, `Accept-Language: en` and no cookies or credentials. On the user's own key Anthropic fetches pages from its servers | setapp |
+| Setapp's AI Gateway (`api.macpaw.com/ai`), through the Setapp Framework | each message, only with Setapp AI chosen: the conversation, attachments and tool results, as the Anthropic request would carry them, with the pages Claude read on the Mac (a PDF whole); the gateway passes it to Anthropic | setapp |
+| the site of a page Claude reads | only with Setapp AI chosen, when Claude reads a page already in the conversation (an attached browser tab, a search result). It is a GET over https from the user's Mac, and its redirects, with `User-Agent: Otto/<version>`, `Accept-Language: en` and no cookies or credentials. On the user's own key Anthropic fetches pages from its servers | setapp |
 
 Every license and update request, and every page read for Setapp AI, uses an ephemeral `URLSession` (no cookies,
 cache or credentials) and pins `Accept-Language: en`, so none carries the Mac's language list. Logs use the categories `License`, `Updates` and
@@ -1575,8 +1602,8 @@ and updates scenes into `docs/snapshots/licensing/` and `docs/snapshots/paid/`; 
 because its framework starts at launch. Setapp AI's translation, stream, client and UI tests run in the source
 suite (`ResponsesRequestBuilderTests`, `ResponsesStreamAccumulatorTests`, `ResponsesClientTests`, the Setapp AI
 cases in the cost, settings and conversation tests, `SetappAIIntegrationTests`), and so do its web fetch's
-(`SetappWebFetchTests`, `ResponsesClientWebFetchTests`, and `WebPageReaderTests` on a URLProtocol stub and a resolver
-table, so no test reaches DNS or the network). Its Settings and reply scenes
+(`SetappWebFetchTests`, `ResponsesClientWebFetchTests`, and `WebPageReaderTests` on a URLProtocol stub, a resolver
+table and a connection table in place of URLSession's metrics, so no test reaches DNS or the network). Its Settings and reply scenes
 render in the source build from `StaticSetappAIAccount`, and the SDK side is covered by `--setapp-ai-check`. CONTRIBUTING.md lists the commands.
 
 ### 20. Otto for iPhone
