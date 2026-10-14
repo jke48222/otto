@@ -29,7 +29,9 @@ Both go in `Config/Local.xcconfig`, which git ignores and `Config/Signing.xcconf
 
 xcconfig reads `//` as a comment, so write `//` inside a value as `/$()/`. `project-setapp.yml` puts the values in
 Info.plist as `OttoSetappAIClientID` and `OttoSetappAIClientSecret`, and `SetappSDKTransport.configureIfNeeded()`
-hands them to the SDK the first time Otto needs Setapp AI. Nothing logs or prints the secret.
+hands them to the SDK the first time Otto needs Setapp AI. Otto never logs the secret, and the build's check phase
+runs with `showEnvVars: false`, so Xcode doesn't print build settings into the log. Other tools that dump build
+settings (`xcodebuild -showBuildSettings`) will show it, so don't paste those.
 
 The secret ships inside the app. That is Setapp's design for macOS: the SDK pairs the client with an authorization
 code from the member's Setapp app to get a token with scope `ai.openai`, so the secret alone reaches no one's

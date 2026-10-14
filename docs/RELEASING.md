@@ -432,6 +432,9 @@ Setapp build through Setapp's test flow ("Testing your apps" in Setapp's docs) a
   don't move; switching to your own key mid-conversation and asking again works;
 - Setapp AI failures: with no credits left the reply offers **Get Credits**; with Setapp quit the reply asks
   you to open Setapp, and Retry works once it's back.
+- the privacy page is ready: restore the Setapp section of `site/privacy.html` (the comment under "Other
+  requests") with its Setapp AI paragraph, add Setapp and MacPaw's AI gateway to "What every server sees", and
+  deploy that before the first upload.
 
 ## Support
 
