@@ -52,14 +52,17 @@ enum ResponsesTransportError: Error, Equatable, Sendable {
 }
 
 /// Knobs `ResponsesClient` turns down for its single compatibility retry (§19): when the gateway answers a request
-/// that carried reasoning or strict tool schemas with `badRequest` before any event, the client sends it once more
-/// without them, because the gateway's translation of those features for Anthropic models can't be checked offline.
+/// that carried reasoning, strict tool schemas or Otto's own web fetch tool with `badRequest` before any event, the
+/// client sends it once more without them, because the gateway's translation of those features for Anthropic models
+/// can't be checked offline.
 struct ResponsesRequestOptions: Equatable, Sendable {
     /// Send `reasoning` (effort and an auto summary) and replay stored `otto_responses_reasoning` items.
     var includeReasoning = true
     /// Pass each client tool's `"strict": true` through.
     var strictTools = true
+    /// Offer `SetappWebFetch`'s `web_fetch` function (when the request allows a fetch) and replay the pages Otto read.
+    var offersWebFetch = true
 
     static let standard = ResponsesRequestOptions()
-    static let compatible = ResponsesRequestOptions(includeReasoning: false, strictTools: false)
+    static let compatible = ResponsesRequestOptions(includeReasoning: false, strictTools: false, offersWebFetch: false)
 }

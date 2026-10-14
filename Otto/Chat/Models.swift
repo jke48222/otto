@@ -301,11 +301,22 @@ enum ProviderBlocks {
     /// shapes as an Anthropic web search; they have no `encrypted_content`, so Anthropic can't take them back.
     static let providerField = "otto_provider"
     static let setappAIMarker = "setapp-ai"
+    /// Set to `macReaderMarker`, next to `providerField`, on the `web_fetch` pair Otto stores for a page it read on
+    /// the Mac for Setapp AI (the gateway has no fetch tool of its own). Unlike the gateway's page reads, the pair
+    /// holds the page's text, which later gateway requests send back as the call's output, and it spends a fetch
+    /// but no search.
+    static let readerField = "otto_reader"
+    static let macReaderMarker = "mac"
 
     /// Whether `block` exists only for Setapp AI.
     static func isSetappAIOnly(_ block: JSONValue) -> Bool {
         if block["type"]?.stringValue == responsesReasoningType { return true }
         return block[providerField]?.stringValue == setappAIMarker
+    }
+
+    /// Whether `block` is half of a `web_fetch` pair for a page Otto read on the Mac (`readerField`).
+    static func isMacPageRead(_ block: JSONValue) -> Bool {
+        block[providerField]?.stringValue == setappAIMarker && block[readerField]?.stringValue == macReaderMarker
     }
 }
 

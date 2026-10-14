@@ -435,8 +435,9 @@ enum AttachmentLoader {
     }
 
     /// Decodes text, returning nil for binary data (NUL bytes outside BOM-marked UTF-16/32) or, when
-    /// `allowLegacyEncodings` is false, for anything that isn't valid UTF-8.
-    private static func decodeText(_ data: Data, fileURL: URL?, allowLegacyEncodings: Bool) -> String? {
+    /// `allowLegacyEncodings` is false, for anything that isn't valid UTF-8. Also reads the pages Otto fetches for
+    /// Setapp AI (`WebPageReader`).
+    static func decodeText(_ data: Data, fileURL: URL?, allowLegacyEncodings: Bool) -> String? {
         if hasUnicodeBOM(data) {
             guard let text = decodeWithBOM(data), !text.contains("\0") else { return nil }
             return text
@@ -634,9 +635,9 @@ enum AttachmentLoader {
         return try textAttachment(source, name: name, sourceURL: sourceURL)
     }
 
-    /// Decodes HTML bytes: a BOM wins, then the declared character set (web archive metadata or a
-    /// `<meta charset>`), then the usual text detection.
-    private static func decodeHTML(_ data: Data, declaredCharset: String?, fileURL: URL?) -> String? {
+    /// Decodes HTML bytes: a BOM wins, then the declared character set (web archive metadata, an HTTP
+    /// `Content-Type` or a `<meta charset>`), then the usual text detection.
+    static func decodeHTML(_ data: Data, declaredCharset: String?, fileURL: URL?) -> String? {
         if !hasUnicodeBOM(data),
            let encoding = declaredCharset.flatMap(HTMLText.encoding(ianaName:)) ?? HTMLText.declaredEncoding(in: data),
            !data.contains(0),

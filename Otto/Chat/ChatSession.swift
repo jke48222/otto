@@ -751,9 +751,10 @@ import os
         let calls = content.filter { $0.typeName == "server_tool_use" }
         let names = calls.compactMap { $0["name"]?.stringValue }
         // A Setapp AI page read came through the gateway's one web tool, so it spent a search as well as a fetch,
-        // the way the live usage counted it.
+        // the way the live usage counted it. A page Otto read on the Mac for Setapp AI spent only a fetch.
         let setappPageReads = calls.filter {
             $0["name"]?.stringValue == "web_fetch" && $0[ProviderBlocks.providerField]?.stringValue == ProviderBlocks.setappAIMarker
+                && !ProviderBlocks.isMacPageRead($0)
         }.count
         let searches = names.filter { $0 == "web_search" }.count + setappPageReads
         let fetches = names.filter { $0 == "web_fetch" }.count
