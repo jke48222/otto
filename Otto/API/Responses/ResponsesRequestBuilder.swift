@@ -54,9 +54,11 @@ enum ResponsesRequestBuilder {
         var tools: [JSONValue] = []
         let webSearchLimit = request.serverToolLimits.webSearch
         if request.webAccess && webSearchLimit > 0 && model.supportsSetappAIWebSearch {
-            tools.append(["type": "web_search"])
+            let contextSize = searchContextSize(limit: webSearchLimit)
+            tools.append(["type": "web_search", "search_context_size": .string(contextSize)])
             include.append("web_search_call.action.sources")
-            // Caps every built-in tool call in the response, which here means only searches.
+            // Caps every built-in tool call in the response, which here means only searches. A gateway that
+            // ignores it (LiteLLM does) caps Anthropic's searches by `search_context_size` instead.
             body["max_tool_calls"] = .int(Int64(webSearchLimit))
         }
         tools += request.clientTools.compactMap { functionTool(from: $0, options: options) }
@@ -74,6 +76,12 @@ enum ResponsesRequestBuilder {
     }
 
     // MARK: - Tools
+
+    /// The `search_context_size` whose search count stays within `limit`. LiteLLM, which the gateway most likely
+    /// runs, ignores `max_tool_calls` and turns this into Anthropic's `max_uses`: "low" 1, "medium" 5, "high" 10.
+    static func searchContextSize(limit: Int) -> String {
+        limit >= 5 ? "medium" : "low"
+    }
 
     /// `{"type": "function", "name", "description", "parameters", "strict"}` from a ToolRegistry definition, or nil
     /// for a definition without a name. `strict` is always sent: the Responses API treats a missing one as true,
@@ -230,15 +238,24 @@ enum ResponsesRequestBuilder {
             ]
         case "text":
             guard let data = source?["data"]?.stringValue else { return nil }
-            let opening = title.map { "<document title=\"\($0.replacingOccurrences(of: "\"", with: "&quot;"))\">" }
-                ?? "<document>"
-            // A file that itself contains "</document>" must not close the wrapper early.
-            let body = data.replacingOccurrences(of: "</document>", with: "&lt;/document&gt;")
-            return inputText("\(opening)\n\(body)\n</document>")
+            // The title is escaped the way ToolHistory fences an earlier action result, so it stays one attribute.
+            let opening = title.map { "<document title=\"\(ToolHistory.escaped($0))\">" } ?? "<document>"
+            return inputText("\(opening)\n\(neutralizingDocumentTags(data))\n</document>")
         default:
             return nil
         }
     }
+
+    /// Every `<document` and `</document` in a file's text, in any case and with any spacing ("</Document >",
+    /// "< /document\n>"), as `&lt;…`, so the file can neither close the wrapper early nor open a fake one with a
+    /// title of its own.
+    static func neutralizingDocumentTags(_ text: String) -> String {
+        let range = NSRange(text.startIndex..., in: text)
+        return documentTag.stringByReplacingMatches(in: text, range: range, withTemplate: "&lt;$1")
+    }
+
+    private static let documentTag = try! NSRegularExpression(pattern: #"<(\s*/?\s*document)"#,
+                                                              options: [.caseInsensitive])
 
     /// The trimmed title of a document block, nil when it has none.
     private static func documentTitle(of block: JSONValue) -> String? {
