@@ -206,7 +206,7 @@ final class ScriptedPageReader: WebPageReading, @unchecked Sendable {
     }
 }
 
-/// A one-page PDF whose page shows `text` (drawn with Core Text, so PDFKit can read it back), titled `title`, and
+/// A one-page PDF whose page shows `text` (drawn with Core Text, so a PDF reader finds it), titled `title`, and
 /// locked with `password` when one is given.
 func makePDF(text: String, title: String? = nil, password: String? = nil) -> Data {
     let data = NSMutableData()

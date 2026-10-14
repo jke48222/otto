@@ -10,13 +10,13 @@
 //  another private range (URLGuard's ranges) is refused, so a page can't point Otto at the user's router or a
 //  service on localhost. Every request is checked again against the address its connection reached, and refused
 //  when that address is local or can't be confirmed. HTML becomes readable text with HTMLText, as attachments do,
-//  plain text stays as it is, and a PDF's text comes out through PDFKit.
+//  plain text stays as it is, and a PDF is passed on whole, the way Anthropic's fetch returns one: nothing parses
+//  a PDF from the web on the Mac.
 //
 
 import Darwin
 import Foundation
 import os
-import PDFKit
 
 /// A link found on a page: its text (possibly empty) and absolute http or https address, without a fragment.
 struct WebLink: Equatable, Sendable {
@@ -24,7 +24,7 @@ struct WebLink: Equatable, Sendable {
     let url: URL
 }
 
-/// What a read returns: the address the content came from (after redirects), its title and readable text.
+/// What a read returns: the address the content came from (after redirects), its title and readable text, or a PDF.
 struct WebPage: Equatable, Sendable {
     let url: URL
     let title: String?
@@ -32,6 +32,8 @@ struct WebPage: Equatable, Sendable {
     var links: [WebLink] = []
     /// The page was longer than the download cap; `text` is what the first part held.
     var isPartial = false
+    /// The PDF the address returned, whole and unparsed (`text` is then empty): the model reads it as a document.
+    var pdf: Data?
 }
 
 /// Why a page couldn't be read. `message` is what Claude reads, after "Error: ".
@@ -54,8 +56,7 @@ enum WebPageReadError: Error, Equatable, Sendable {
     case unsupportedContent(String)
     case pdfTooLarge
     case pdfLocked
-    case pdfWithoutText
-    /// The bytes couldn't be decoded as text, or the PDF couldn't be opened.
+    /// The bytes couldn't be decoded as text, or what came back as a PDF isn't one.
     case unreadable
     case noText
     /// The connection's remote address was missing or unreadable, so Otto couldn't confirm it wasn't local.
@@ -67,7 +68,7 @@ enum WebPageReadError: Error, Equatable, Sendable {
     var code: String {
         switch self {
         case .blockedAddress: return "url_not_allowed"
-        case .unsupportedContent, .pdfTooLarge, .pdfLocked, .pdfWithoutText, .unreadable, .noText:
+        case .unsupportedContent, .pdfTooLarge, .pdfLocked, .unreadable, .noText:
             return "unsupported_content_type"
         case .offline: return "unavailable"
         case .hostNotFound, .insecureRedirect, .unsupportedRedirect, .tooManyRedirects, .httpStatus, .timedOut,
@@ -107,8 +108,6 @@ enum WebPageReadError: Error, Equatable, Sendable {
             return "The PDF is larger than 5 MB, so Otto didn't read it."
         case .pdfLocked:
             return "The PDF is protected with a password."
-        case .pdfWithoutText:
-            return "The PDF has no text Otto can read. Its pages may be scanned images."
         case .unreadable:
             return "Otto couldn't read the page's contents."
         case .noText:
@@ -446,15 +445,15 @@ struct WebPageReader: WebPageReading {
         }
     }
 
+    /// A PDF as it came, for the model to read: never opened on the Mac, where a hostile one could take minutes and
+    /// gigabytes to parse. Only two byte checks: it starts like a PDF (within the first kilobyte, as readers allow), and
+    /// it isn't encrypted (an `/Encrypt` entry), which the model couldn't open. Its title is the address's file name.
     private static func pdfPage(_ data: Data, url: URL) throws -> WebPage {
-        guard let document = PDFDocument(data: data) else { throw WebPageReadError.unreadable }
-        guard !document.isLocked else { throw WebPageReadError.pdfLocked }
-        let text = document.string ?? ""
-        guard text.contains(where: { !$0.isWhitespace }) else { throw WebPageReadError.pdfWithoutText }
-        let attributes = document.documentAttributes
-        let title = HTMLPageInfo.cleaned(attributes?[PDFDocumentAttribute.titleAttribute] as? String)
-            ?? HTMLPageInfo.cleaned(url.lastPathComponent == "/" ? nil : url.lastPathComponent)
-        return WebPage(url: url, title: title, text: text)
+        guard data.prefix(1_024).range(of: Data("%PDF-".utf8)) != nil else { throw WebPageReadError.unreadable }
+        if data.range(of: Data("/Encrypt".utf8)) != nil { throw WebPageReadError.pdfLocked }
+        let name = url.lastPathComponent
+        let title = HTMLPageInfo.cleaned(name == "/" || name.isEmpty ? nil : name)
+        return WebPage(url: url, title: title, text: "", pdf: data)
     }
 
     // MARK: - Errors

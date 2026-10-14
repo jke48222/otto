@@ -22,7 +22,7 @@ enum SetappWebFetch {
     static let maxLinksCharacters = 10_000
 
     static let description = "Fetches a web page or PDF and returns its final address, its title and its readable "
-        + "text, followed by the links on the page. Use it to read the page in a <browser_tab> block, an address the "
+        + "text (a PDF comes back as the document itself), followed by the links on the page. Use it to read the page in a <browser_tab> block, an address the "
         + "user gave, or a result from an earlier web search when the answer depends on what the page says. Only an "
         + "address that already appears in this conversation can be fetched, copied exactly: from the user's "
         + "messages, a browser tab, earlier search results, or a page fetched earlier (including its links). An "
@@ -233,12 +233,13 @@ enum SetappWebFetch {
     }
 
     /// A read page as Anthropic's `web_fetch_tool_result`: TrustLedger names the page by `content.url`, the reply's
-    /// source uses `content.content.title`, and the text is a text document History stores like a fetched one.
+    /// source uses `content.content.title`, and the text is a text document History stores like a fetched one. A PDF
+    /// is a base64 PDF document, as Anthropic's fetch returns one.
     static func resultBlock(id: String, page: WebPage) -> JSONValue {
-        var document: JSONValue = [
-            "type": "document",
-            "source": ["type": "text", "media_type": "text/plain", "data": .string(documentText(for: page))],
-        ]
+        let source: JSONValue = page.pdf.map {
+            ["type": "base64", "media_type": "application/pdf", "data": .string($0.base64EncodedString())]
+        } ?? ["type": "text", "media_type": "text/plain", "data": .string(documentText(for: page))]
+        var document: JSONValue = ["type": "document", "source": source]
         if let title = page.title {
             document = document.setting("title", to: .string(title))
         }
@@ -264,8 +265,11 @@ enum SetappWebFetch {
             .setting(ProviderBlocks.readerField, to: .string(ProviderBlocks.macReaderMarker))
     }
 
+    /// The call's output when the page was a PDF; the PDF itself follows in the next user message.
+    static let pdfFollows = "(The PDF follows.)"
+
     /// What the gateway gets as the call's output for a stored result: the page's final address, its title and its
-    /// text, or "Error: " and the reason. The live continuation and every later request build it from the same block.
+    /// text (or `pdfFollows`), or "Error: " and the reason. Every request builds it from the same block.
     static func outputText(ofResult block: JSONValue) -> String {
         let content = block["content"]
         guard content?.typeName == "web_fetch_result" else {
@@ -274,8 +278,30 @@ enum SetappWebFetch {
         }
         let url = content?["url"]?.stringValue ?? ""
         let title = content?["content"]?["title"]?.stringValue ?? "(none)"
-        let text = content?["content"]?["source"]?["data"]?.stringValue ?? ""
+        let source = content?["content"]?["source"]
+        let text = source?["type"]?.stringValue == "base64" ? pdfFollows : source?["data"]?.stringValue ?? ""
         return "URL: \(url)\nTitle: \(title)\n\n\(text)"
+    }
+
+    /// The PDF a stored result carries: its base64 data and a file name from the address's path ("report.pdf"), nil
+    /// for a text page or an error.
+    static func pdfDocument(ofResult block: JSONValue) -> (filename: String?, data: String)? {
+        let content = block["content"]
+        guard content?.typeName == "web_fetch_result",
+              let source = content?["content"]?["source"], source["type"]?.stringValue == "base64",
+              source["media_type"]?.stringValue == "application/pdf",
+              let data = source["data"]?.stringValue, !data.isEmpty else { return nil }
+        let name = content?["url"]?.stringValue.flatMap(URL.init(string:))?.lastPathComponent
+        return (name == "/" || name?.isEmpty == true ? nil : name, data)
+    }
+
+    /// A stored result as data for a request that offers no web fetch, so it can't go back as a call and its output
+    /// (the reply's fetches are spent, web access is paused, or the compatibility retry): the output text in a fence
+    /// with `&`, `<`, `>` and `"` escaped, so the page can't close it, marked untrusted like an earlier action result.
+    static func fencedText(ofResult block: JSONValue) -> String {
+        let url = block["content"]?["url"]?.stringValue ?? ""
+        return "<fetched_page url=\"\(ToolHistory.escaped(url))\" untrusted=\"true\">\n"
+            + ToolHistory.escaped(outputText(ofResult: block)) + "\n</fetched_page>"
     }
 
     // MARK: - Text

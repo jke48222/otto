@@ -512,27 +512,52 @@ final class WebPageReaderTests: XCTestCase {
         }
     }
 
-    func testAPDFsTextComesOutThroughPDFKit() async throws {
+    /// A PDF is passed on whole for the model to read, never opened on the Mac.
+    func testAPDFIsPassedOnWholeWithoutParsing() async throws {
         let pdf = makePDF(text: "Quarterly results were strong", title: "Q3 Report")
-        let reader = makeReader([Self.pageURL: PageStubProtocol.Page(headers: ["Content-Type": "application/pdf"],
-                                                                      body: pdf)])
-        let page = try await read(reader)
-        XCTAssertTrue(page.text.contains("Quarterly results were strong"), page.text)
-        XCTAssertEqual(page.title, "Q3 Report")
+        let url = "https://docs.example/files/q3.pdf"
+        let reader = makeReader([url: PageStubProtocol.Page(headers: ["Content-Type": "application/pdf"], body: pdf)])
+        let page = try await read(reader, url)
+        XCTAssertEqual(page.pdf, pdf, "the bytes as they came")
+        XCTAssertEqual(page.text, "")
+        XCTAssertTrue(page.links.isEmpty)
+        XCTAssertEqual(page.title, "q3.pdf", "the address's file name")
     }
 
     func testAPDFWithoutATypeIsRecognizedByItsBytes() async throws {
         let pdf = makePDF(text: "Untyped PDF")
         let reader = makeReader([Self.pageURL: PageStubProtocol.Page(headers: [:], body: pdf)])
         let page = try await read(reader)
-        XCTAssertTrue(page.text.contains("Untyped PDF"))
-        XCTAssertEqual(page.title, "guide", "without a title, the last part of the address")
+        XCTAssertEqual(page.pdf, pdf)
+        XCTAssertEqual(page.title, "guide", "the last part of the address")
     }
 
     func testALockedPDFIsRefused() async {
         let pdf = makePDF(text: "Private", password: "hunter2")
         await expectFailure(.pdfLocked, with: makeReader([Self.pageURL: PageStubProtocol.Page(
             headers: ["Content-Type": "application/pdf"], body: pdf)]))
+    }
+
+    func testSomethingThatIsntAPDFIsRefused() async {
+        await expectFailure(.unreadable, with: makeReader([Self.pageURL: PageStubProtocol.Page(
+            headers: ["Content-Type": "application/pdf"], body: Data("<html>Not a PDF</html>".utf8))]))
+    }
+
+    /// The PDFs that took PDFKit minutes and gigabytes (one 548 KB page, 45,000 pages) cost two byte searches now.
+    func testAHostilePDFCostsNothingToRead() throws {
+        let url = try XCTUnwrap(URL(string: "https://docs.example/bomb.pdf"))
+        let pages = "%PDF-1.7\n" + (0..<45_000).map { "\($0 + 3) 0 obj << /Type /Page /Parent 2 0 R >> endobj\n" }.joined()
+        let oneHugePage = "%PDF-1.7\n3 0 obj << /Length 9999999 >> stream\n"
+            + String(repeating: "0 0 m 1 1 l S q Q BT /F1 1 Tf (x) Tj ET\n", count: 13_000) + "endstream endobj\n"
+        for body in [pages, oneHugePage] {
+            let data = Data(body.utf8)
+            XCTAssertLessThanOrEqual(data.count, WebPageReader.maxBytes)
+            let start = ContinuousClock.now
+            let page = try WebPageReader.page(from: data, mimeType: "application/pdf", charset: nil, url: url,
+                                              isPartial: false)
+            XCTAssertLessThan(ContinuousClock.now - start, .milliseconds(200))
+            XCTAssertEqual(page.pdf?.count, data.count)
+        }
     }
 
     func testOtherContentTypesAreRefused() async {
