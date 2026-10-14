@@ -1258,6 +1258,20 @@ final class NotchViewModelTests: XCTestCase {
         XCTAssertEqual(vm.readingAnchor?.messageID, questionID)
     }
 
+    func testGetSetappCreditsClosesAndOpensThePurchasePage() {
+        let vm = CoreHarness(self).vm
+        // Without an account there is nothing to buy credits for: the notch stays as it is.
+        vm.open(reason: .click, focus: false)
+        vm.getSetappCredits()
+        XCTAssertTrue(vm.isOpen)
+
+        let account = StaticSetappAIAccount(creditState: .loaded(SetappCreditBalance(available: 0, granted: 6_000)))
+        vm.setappAI = account
+        vm.getSetappCredits()
+        XCTAssertEqual(account.calls, ["purchase"])
+        XCTAssertFalse(vm.isOpen)
+    }
+
     func testOpenSettingsClosesThenCallsTheTabHook() {
         let vm = CoreHarness(self).vm
         var requests: [String] = []

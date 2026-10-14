@@ -4,7 +4,9 @@
 //
 //  One conversation turn. User turns are right-aligned soft bubbles; assistant turns are unboxed text with
 //  thinking, Otto's notes and server activity, the reply interleaved with its action rows (MessageSegments),
-//  sources and a hover footer: paste back into the app, versions, copy, regenerate and what the answer cost.
+//  sources and a hover footer: paste back into the app, versions, copy, regenerate and what the answer cost. A
+//  failed reply leads with the fix it needs: Open Settings for the API key or the Setapp AI provider, Get Credits
+//  when Setapp AI credits ran out.
 //
 
 import AppKit
@@ -41,9 +43,33 @@ struct MessageView: View, Equatable {
         self.isSendBlocked = viewModel.isSendBlocked
     }
 
-    /// Where a failed reply's "Open Settings" goes when the API key is missing or rejected: the key field is on
-    /// Models, not on whichever tab Settings showed last.
+    /// Where a failed reply's "Open Settings" goes when the API key is missing or rejected, or when Setapp AI turned
+    /// the request away for a reason Settings fixes: the key field, the provider and the model are on Models, not on
+    /// whichever tab Settings showed last.
     static let apiKeySettingsTab: SettingsTab = .models
+
+    /// The button a failed reply offers ahead of Retry.
+    enum FailureAction: Equatable {
+        /// "Open Settings" on Models (`apiKeySettingsTab`).
+        case openSettings
+        /// "Get Credits": Setapp's purchase page (`NotchViewModel.getSetappCredits()`).
+        case getCredits
+    }
+
+    /// Pure. A missing or rejected API key opens Settings; a Setapp AI failure offers what
+    /// `SetappAIFailure.action(forCopy:)` says, with Get Credits only when there is an account to buy them for.
+    /// Anything else (Setapp AI unreachable included) offers Retry alone.
+    static func failureAction(for state: MessageState, hasSetappAIAccount: Bool) -> FailureAction? {
+        guard case .failed(let copy) = state else { return nil }
+        if copy == LLMError.missingAPIKey.errorDescription || copy == LLMError.invalidAPIKey.errorDescription {
+            return .openSettings
+        }
+        switch SetappAIFailure.action(forCopy: copy) {
+        case .getCredits: return hasSetappAIAccount ? .getCredits : nil
+        case .openModelsSettings: return .openSettings
+        case nil: return nil
+        }
+    }
 
     /// A reply that failed because the conversation outgrew the context: Retry would fail the same way, so the
     /// footer offers New Chat (⌘N) in its place.
@@ -411,9 +437,8 @@ private struct AssistantMessageView: View {
         }
     }
 
-    private var needsSettings: Bool {
-        guard case .failed(let copy) = message.state else { return false }
-        return copy == LLMError.missingAPIKey.errorDescription || copy == LLMError.invalidAPIKey.errorDescription
+    private var failureAction: MessageView.FailureAction? {
+        MessageView.failureAction(for: message.state, hasSetappAIAccount: viewModel.setappAI != nil)
     }
 
     private var isComplete: Bool { message.state == .complete }
@@ -437,11 +462,18 @@ private struct AssistantMessageView: View {
         if !isStreaming || versionInfo != nil {
             HStack(spacing: 4) {
                 if !isStreaming {
-                    if needsSettings {
-                        // The API key field is on Models, not whichever tab Settings last showed.
+                    switch failureAction {
+                    case .openSettings:
+                        // The API key field and the provider are on Models, not whichever tab Settings last showed.
                         FooterButton(title: "Open Settings", symbol: "gearshape", isProminent: true) {
                             viewModel.openSettings(tab: MessageView.apiKeySettingsTab)
                         }
+                    case .getCredits:
+                        FooterButton(title: "Get Credits", symbol: "plus.circle", isProminent: true) {
+                            viewModel.getSetappCredits()
+                        }
+                    case nil:
+                        EmptyView()
                     }
                     if MessageView.offersNewChat(for: message.state) {
                         FooterButton(title: "New Chat", symbol: "square.and.pencil", isProminent: true) {
@@ -450,7 +482,7 @@ private struct AssistantMessageView: View {
                         .disabled(viewModel.chat.isStreaming)
                         .help("New Chat (⌘N)")
                     } else if canRetry {
-                        FooterButton(title: "Retry", symbol: "arrow.clockwise", isProminent: !needsSettings) {
+                        FooterButton(title: "Retry", symbol: "arrow.clockwise", isProminent: failureAction == nil) {
                             guard !viewModel.blockIfSendingPaused() else { return }
                             viewModel.chat.retry(messageID: message.id)
                         }
@@ -535,8 +567,9 @@ private struct AssistantMessageView: View {
         }
     }
 
+    /// "Opus 5", or "Opus 5 · Setapp AI" for a reply served through Setapp AI.
     private static func modelLabel(_ model: String) -> String {
-        ModelOption(rawValue: model)?.shortName ?? model
+        CostFormatter.modelName(model)
     }
 
     private func copyText() {
