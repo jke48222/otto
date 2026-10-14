@@ -1459,35 +1459,44 @@ starts the Setapp build on that key instead. The first launch of a build that of
   offers Get Credits with a quieter **Open Settings**; a balance that failed to load offers Try Again and Get Credits.
 - **Haiku 4.5** doesn't search through the gateway: on Setapp AI the header menu's Web search is off with "No web
   search on Haiku 4.5 with Setapp AI", Settings says the same, and ⌘3's notice adds "no web search".
-
 - **Request.** `makeClient` returns `ResponsesClient(transport: SetappSDKTransport())`. `ResponsesRequestBuilder`
   turns the `MessagesRequest` into an OpenAI Responses body with `model` `anthropic/<id>` (the gateway serves
   `anthropic/claude-opus-5`, `-sonnet-5` and `-haiku-4-5`), `instructions`, `"store": false` and `"stream": true`.
   The `input` items are user text, `input_image` data URLs, PDFs as `input_file`, text documents wrapped in
-  `<document>`, and `function_call` and `function_call_output` for tool rounds. Opus 5 and Sonnet 5 also get
-  `reasoning {effort, summary: auto}`, with the encrypted reasoning replayed across a tool round, and `web_search`
-  capped by `max_tool_calls`; the client tools go as function tools. Web fetch, server fallbacks, prompt-caching controls and
-  `pause_turn` have no gateway equivalent.
+  `<document>`, and `function_call` and `function_call_output` for tool rounds. Every spelling of the document tag
+  inside a file is neutralized, and the title is escaped like an earlier action result. Opus 5 and Sonnet 5 also get
+  `reasoning {effort, summary: auto}`, with the encrypted reasoning replayed across a tool round, and `web_search`.
+  The search cap goes two ways, `max_tool_calls` and `search_context_size` (`medium` with 5 or more searches left,
+  else `low`), because LiteLLM ignores the first and turns the second into Anthropic's `max_uses`. The client tools
+  go as function tools. Web fetch, server fallbacks, prompt-caching controls and `pause_turn` have no gateway
+  equivalent, so an attached browser tab gives Claude only its title and address.
 - **Stream.** `ResponsesStreamAccumulator` turns the gateway's events into the same `StreamEvent`s, live when they
   arrive and reconciled from the terminal response when the SDK delivers only text deltas and the final response.
   Stored blocks stay Anthropic-shaped: text, client `tool_use`, and a `thinking` block for the summary plus the raw
   reasoning item (`otto_responses_reasoning`). Each gateway web search is stored as a `server_tool_use` and
   `web_search_tool_result` pair marked `"otto_provider": "setapp-ai"`, so TrustLedger, the web budget and History
-  treat it like an Anthropic search. Stop reasons map to `tool_use`, `max_tokens` (which wins over a cut-off tool
-  call), `refusal` and `end_turn`; usage maps to Anthropic's keys.
+  treat it like an Anthropic search. Citations with no search item still get such a pair, so web provenance never
+  fails open. Every web call spends a search, and a page read also spends a fetch. Stop reasons map to `tool_use`,
+  `max_tokens` (which wins over a cut-off tool call), `refusal` and `end_turn`. A response that is `incomplete` with
+  no reason (LiteLLM's way of reporting both) is `max_tokens` at the output limit and `refusal` below it. Usage maps
+  to Anthropic's keys. A call id repeated within a response, or reused from an earlier round, is ignored.
 - **Errors.** `ResponsesTransportError` maps to the existing `LLMError`s plus `LLMError.setappAI(SetappAIFailure)`:
   out of credits (footer **Get Credits**), model not on the plan or J22 missing (**Open Settings**), Setapp
   unreachable (Retry). A context overflow reads as "prompt is too long" so ChatSession compacts as it does for
-  Anthropic. Retries happen only before the first event; a `badRequest` on a body that carried reasoning or strict
-  tools is retried once without them, because the gateway's handling of those for Anthropic models can't be checked
-  offline.
+  Anthropic. In-stream error codes map by family (invalid request, forbidden, rate limit, overloaded, credits).
+  Retries happen only before the first output. A refusal before any output (a `badRequest`, or an invalid-request
+  error right after the acknowledgement) is retried once without reasoning and strict tools when the body carried
+  them, because the gateway's handling of those for Anthropic models can't be checked offline. A reply waits at most
+  45 s for its first event and 300 s between events, then fails as Setapp unreachable.
 - **SDK.** `SetappSDKTransport` configures the SDK once from the Info.plist keys `OttoSetappAIClientID` and
   `OttoSetappAIClientSecret` (J22, from the git-ignored `Config/Local.xcconfig`; the secret ships in the app, which is
   Setapp's documented design) with errors propagated to Otto's own UI. The SDK's typed Codable needs the connector's
   snake_case settings and loses or refuses several OpenAI fields, so every input item and tool goes through as the
   SDK's raw `.unsupported` value, and nullable enums are sent as `anyOf` with a null type. Events the SDK can't decode
-  end its stream; the transport recovers the raw event from the connector's error text when it can and otherwise
-  rebuilds the terminal response from the finished items. `LiveSetappAIAccount` reads the balance (15 s timeout,
+  end its stream. The transport recovers the raw event from the connector's error text when it can and otherwise,
+  for an undecodable terminal event only, rebuilds it from the finished items (as `incomplete` when one of them is,
+  logged as an error). A stream that simply ends early is an error, and LiteLLM's typeless `{"error": …}` frame
+  becomes an error event. `LiveSetappAIAccount` reads the balance (15 s timeout,
   rounded down) and hands over Setapp's purchase link (5 s timeout).
 - **Cost.** A Setapp AI reply keeps the gateway's model id, so it is never priced in dollars: its label reads
   "Opus 5 · Setapp AI" and dollar totals count only replies on the user's own key.
