@@ -16,7 +16,8 @@
 //
 //  The bodies and events are hand-written in OpenAI's documented Responses format (synthesized, not captured: the
 //  live gateway needs J22), all in `SetappAdapterSamples`, so ResponsesRequestBuilder output and ResponsesFixtures
-//  can replace them.
+//  can replace them. A few are in the shapes LiteLLM's Responses bridge sends instead (read from its source, also
+//  synthesized), since the gateway most likely runs it.
 //
 
 #if DEBUG && OTTO_SETAPP
@@ -111,7 +112,7 @@ enum SetappAdapterSamples {
             "input": [user(text("What happened at WWDC this year?"))],
             "reasoning": ["effort": "medium", "summary": "auto"],
             "include": ["reasoning.encrypted_content", "web_search_call.action.sources"],
-            "tools": [["type": "web_search"], musicTool],
+            "tools": [["type": "web_search", "search_context_size": "medium"], musicTool],
             "max_tool_calls": 5,
             "max_output_tokens": 64000,
             "stream": true,
@@ -261,7 +262,16 @@ enum SetappAdapterSamples {
         ("error without param", #"{"type":"error","sequence_number":2,"code":"rate_limit_exceeded","message":"Slow down."}"#, "param"),
         ("error without sequence_number", #"{"type":"error","code":"server_error","message":"Boom.","param":"x"}"#, "sequenceNumber"),
         ("output_text.delta without item_id", #"{"type":"response.output_text.delta","delta":"Hi"}"#, "itemId"),
+        // LiteLLM's terminal reasoning item: `content` instead of `summary` (the reviewer's probe line, as LiteLLM
+        // builds it).
+        ("LiteLLM's final reasoning item", litellmReasoningTerminal, "summary"),
+        // LiteLLM's mid-stream failure: an error object with no `type` around it.
+        ("an error frame without a type", litellmErrorFrame, "type"),
     ]
+
+    static let litellmReasoningTerminal = #"{"type":"response.completed","sequence_number":20,"response":{"id":"resp_1","object":"response","created_at":1760400000,"status":"completed","model":"anthropic/claude-opus-5","parallel_tool_calls":true,"output":[{"type":"reasoning","id":"rs_1","status":"completed","role":"assistant","content":[{"type":"output_text","text":"Thinking about it.","annotations":[]}],"encrypted_content":"W3sidHlwZSI6InRoaW5raW5nIn1d"},{"type":"message","id":"msg_1","status":"completed","role":"assistant","content":[{"type":"output_text","text":"Hi","annotations":[]}]}],"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15,"input_tokens_details":{"cached_tokens":0},"output_tokens_details":{"reasoning_tokens":2}}}}"#
+
+    static let litellmErrorFrame = #"{"error":{"message":"litellm.InternalServerError: AnthropicException - Overloaded","type":"internal_server_error","param":null,"code":"529"}}"#
 
     /// A web search answer with a citation, in OpenAI's format (synthesized): its terminal event carries the
     /// `url_citation` the SDK can't decode, so the transport stands in for it with the finished items.
@@ -552,7 +562,11 @@ final class SetappAICheck {
         await step("cancelling the consumer cancels the SDK stream", cancellation)
         await step("an undecodable terminal event is rebuilt from the finished items", rebuiltTerminal)
         await step("a stream cut mid-item still fails", cutMidItem)
-        await step("a stream that ends after its items gets a terminal event", endsAfterItems)
+        await step("a stream that ends without a terminal event gets none", endsWithoutTerminal)
+        await step("a stand-in for a cut-off reply is response.incomplete", incompleteStandIn)
+        await step("finished items at one output index are all kept", sameIndexItems)
+        await step("LiteLLM's final reasoning item through the transport and client", litellmReasoningTerminal)
+        await step("an error frame without a type becomes an error event", typelessErrorFrame)
         await step("a thrown error event becomes an error event", thrownErrorEvent)
         await step("an error event with a null param", nullParamErrorEvent)
         await step("SetappAIError codes map", setappAIErrorCodes)
@@ -734,6 +748,8 @@ final class SetappAICheck {
                     "include")
         expectEqual(parameters.reasoning, SetappAIAPI.Responses.Reasoning(effort: .medium, summary: .auto), "reasoning")
         expectEqual(parameters.tools?.map(\.type.rawValue), ["web_search", "function"], "tools")
+        expectEqual(try SetappSDKRequest.wireBody(parameters)["tools"]?[0]?["search_context_size"], "medium",
+                    "search_context_size, which LiteLLM turns into Anthropic's max_uses")
         expectEqual(parameters.input.count, 1, "input count")
         expectEqual(parameters.input.first?.type.rawValue, "message", "input type")
         let tools = try SetappSDKRequest.parameters(from: Self.body("tools"))
@@ -1038,16 +1054,130 @@ final class SetappAICheck {
                     .server(status: 0, message: SetappSDKEventMapper.unreadableMessage), "an open item fails")
     }
 
-    private func endsAfterItems() async throws {
-        let lines = Array(SetappAdapterSamples.webSearchCited.dropLast())
-        let (events, error) = await collect(ScriptedSetappSDK(lines: lines).transport().events(for: Self.body("webSearch")))
-        expect(error == nil, "no error")
-        expectEqual(events.last?.typeName, "response.completed", "a stand-in terminal event")
-
+    /// Only a terminal event the SDK couldn't decode is ever stood in for: a stream that simply ends early, with its
+    /// items finished or not, ends without one, and ResponsesClient reports the early end.
+    private func endsWithoutTerminal() async throws {
+        let finished = Array(SetappAdapterSamples.webSearchCited.dropLast())
         let open = Array(SetappAdapterSamples.webSearchCited.prefix(5))
-        let (openEvents, _) = await collect(ScriptedSetappSDK(lines: open).transport().events(for: Self.body("webSearch")))
-        expectEqual(openEvents.last?.typeName, "response.output_text.delta",
-                    "an open item gets no stand-in; ResponsesClient reports the early end")
+        for (name, lines) in [("every item finished", finished), ("an item still open", open)] {
+            let (events, error) = await collect(ScriptedSetappSDK(lines: lines).transport().events(for: Self.body("webSearch")))
+            expect(error == nil, "\(name): no error")
+            expectEqual(events.count, lines.count, "\(name): every event, nothing added")
+            expect(!events.contains { SetappSDKEventMapper.terminalTypes.contains($0.typeName ?? "") },
+                   "\(name): no stand-in terminal event")
+            let thrown = await clientError(lines: lines)
+            expectEqual(thrown as? LLMError, .network(ResponsesClient.prematureEOFMessage), "\(name): the early end")
+        }
+    }
+
+    /// The error ResponsesClient ends a request with when the scripted SDK plays `lines`; nil when it finished.
+    private func clientError(lines: [String], failsLikeTheConnector: Bool = false) async -> Error? {
+        let sdk = ScriptedSetappSDK(lines: lines, failsLikeTheConnector: failsLikeTheConnector)
+        let client = ResponsesClient(transport: sdk.transport(), retryDelays: [])
+        do {
+            for try await _ in client.stream(Self.checkRequest) {}
+            return nil
+        } catch {
+            return error
+        }
+    }
+
+    private static let checkRequest = MessagesRequest(
+        model: .opus5, system: "You are Otto.", messages: [["role": "user", "content": [["type": "text", "text": "Hi"]]]],
+        maxTokens: 64_000, effort: .medium, webAccess: true)
+
+    /// The result ResponsesClient finishes with when the scripted SDK plays `lines`.
+    private func clientResult(lines: [String], failsLikeTheConnector: Bool = false) async throws -> StreamResult {
+        let sdk = ScriptedSetappSDK(lines: lines, failsLikeTheConnector: failsLikeTheConnector)
+        let client = ResponsesClient(transport: sdk.transport(), retryDelays: [])
+        var result: StreamResult?
+        for try await event in client.stream(Self.checkRequest) {
+            if case .completed(let completed) = event { result = completed }
+        }
+        return try unwrap(result, "a result")
+    }
+
+    private func incompleteStandIn() async throws {
+        let lines = [
+            #"{"type":"response.created","sequence_number":0,"response":{"id":"resp_20","object":"response","created_at":1760400000,"status":"in_progress","model":"anthropic/claude-opus-5","output":[],"parallel_tool_calls":true}}"#,
+            #"{"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":{"type":"function_call","id":"fc_20","call_id":"call_20","name":"music_control","arguments":"","status":"in_progress"}}"#,
+            #"{"type":"response.output_item.done","sequence_number":2,"output_index":0,"item":{"type":"function_call","id":"fc_20","call_id":"call_20","name":"music_control","arguments":"{\"action\":\"pl","status":"incomplete"}}"#,
+            #"{"type":"response.incomplete","sequence_number":3,"response":{"id":"resp_20","object":"response","created_at":1760400000,"status":"incomplete","model":"anthropic/claude-opus-5","parallel_tool_calls":true,"incomplete_details":{"reason":"max_output_tokens"},"output":[{"type":"reasoning","id":"rs_20","content":[{"type":"output_text","text":"x","annotations":[]}]},{"type":"function_call","id":"fc_20","call_id":"call_20","name":"music_control","arguments":"{\"action\":\"pl","status":"incomplete"}],"usage":{"input_tokens":10,"output_tokens":64000,"total_tokens":64010}}}"#,
+        ]
+        let (events, error) = await collect(ScriptedSetappSDK(lines: lines).transport().events(for: Self.body("tools")))
+        expect(error == nil, "no error: \(String(describing: error))")
+        let terminal = try unwrap(events.last, "a last event")
+        expectEqual(terminal.typeName, "response.incomplete", "an incomplete item makes an incomplete response")
+        expectEqual(terminal["response"]?["status"], "incomplete", "its status")
+        expectEqual(terminal["response"]?["incomplete_details"], ["reason": "max_output_tokens"], "its reason")
+        let result = try await clientResult(lines: lines)
+        expectEqual(result.stopReason, "max_tokens", "the cut-off call isn't run")
+
+        let complete = Array(SetappAdapterSamples.webSearchCited.dropLast()) + [SetappAdapterSamples.undecodable[0].line]
+        let (completeEvents, _) = await collect(ScriptedSetappSDK(lines: complete).transport().events(for: Self.body("webSearch")))
+        expectEqual(completeEvents.last?.typeName, "response.completed", "finished items make a completed response")
+        note("a stand-in is response.incomplete (max_output_tokens) when a finished item says incomplete")
+    }
+
+    /// Older LiteLLM puts every item at output index 0: the stand-in keeps each finished item, in the order they
+    /// finished, instead of the last one.
+    private func sameIndexItems() async throws {
+        let lines = ResponsesFixtures.litellmReasoning
+        let (events, error) = await collect(ScriptedSetappSDK(lines: lines).transport().events(for: Self.body("text")))
+        expect(error == nil, "no error: \(String(describing: error))")
+        let output = try unwrap(events.last?["response"]?["output"]?.arrayValue, "a stand-in with an output")
+        expectEqual(output.map { $0["id"]?.stringValue ?? "?" }, ["rs_5f1d8e2a-0c4b-4f7e-9a61-3b2c7d9e0f12", "msg_12think"],
+                    "both items at output index 0")
+        let result = try await clientResult(lines: lines)
+        expectEqual(result.content.compactMap(\.typeName), ["thinking", "otto_responses_reasoning", "text"], "blocks")
+        expectEqual(result.content.first?["thinking"], "The user asks for the time in Tokyo. Tokyo is UTC+9.", "thinking")
+        expectEqual(result.stopReason, "end_turn", "stop reason")
+    }
+
+    private func litellmReasoningTerminal() async throws {
+        let line = SetappAdapterSamples.litellmReasoningTerminal
+        let raw = SetappAdapterJSON.decode(line)
+        // Its text survives (the connector's parse error carries it): yielded as the gateway sent it.
+        let (events, error) = await collect(ScriptedSetappSDK(lines: [line], failsLikeTheConnector: true).transport()
+            .events(for: Self.body("text")))
+        expect(error == nil, "no error: \(String(describing: error))")
+        expectEqual(events, [raw], "the raw terminal event")
+        let result = try await clientResult(lines: [line], failsLikeTheConnector: true)
+        expectEqual(result.content, [
+            ["type": "thinking", "thinking": "Thinking about it.", "signature": ""],
+            ["type": "otto_responses_reasoning", "item": raw["response"]?["output"]?[0] ?? .null],
+            ["type": "text", "text": "Hi"],
+        ], "the reasoning summary comes from its content")
+        // Its text lost, nothing finished before it: no stand-in, so the reply fails instead of ending empty.
+        let (_, lost) = await collect(ScriptedSetappSDK(lines: [line]).transport().events(for: Self.body("text")))
+        expectEqual(lost as? ResponsesTransportError, .server(status: 0, message: SetappSDKEventMapper.unreadableMessage),
+                    "unreadable")
+    }
+
+    private func typelessErrorFrame() async throws {
+        let line = SetappAdapterSamples.litellmErrorFrame
+        let expected: JSONValue = ["type": "error", "code": "529",
+                                   "message": "litellm.InternalServerError: AnthropicException - Overloaded"]
+        let (events, error) = await collect(ScriptedSetappSDK(lines: [line], failsLikeTheConnector: true).transport()
+            .events(for: Self.body("text")))
+        expect(error == nil, "no error: \(String(describing: error))")
+        expectEqual(events, [expected], "the error event it means")
+        expectEqual(await clientError(lines: [line], failsLikeTheConnector: true) as? LLMError, .overloaded,
+                    "ResponsesClient reads it as an overload")
+        let rejected = #"{"error":{"message":"messages.0: Could not process image","type":"invalid_request_error","param":null,"code":null}}"#
+        expectEqual(await clientError(lines: [rejected], failsLikeTheConnector: true) as? LLMError,
+                    .http(status: 400, type: "invalid_request_error", message: "messages.0: Could not process image"),
+                    "the type stands in for a missing code")
+        // As an `.unsupported` event (a later SDK might pass it on), the mapper converts it the same way.
+        var mapper = SetappSDKEventMapper()
+        let unsupported = SetappAIAPI.StreamingEvent.unsupported(SetappAIAPI.UnsupportedObject(
+            type: .unsupported(""), object: try unwrap(SendableJSON.object(SetappAdapterJSON.decode(line)), "an object")))
+        expectEqual(mapper.map(unsupported), [expected], "an unsupported frame")
+        expect(mapper.isFinished, "it ends the stream")
+        // Its text lost: unreadable.
+        let (_, lost) = await collect(ScriptedSetappSDK(lines: [line]).transport().events(for: Self.body("text")))
+        expectEqual(lost as? ResponsesTransportError, .server(status: 0, message: SetappSDKEventMapper.unreadableMessage),
+                    "unreadable without its text")
     }
 
     private func thrownErrorEvent() async throws {
