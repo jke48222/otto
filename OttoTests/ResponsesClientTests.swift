@@ -281,8 +281,11 @@ final class ResponsesClientTests: XCTestCase {
                                                      firstEventTimeout: 0.2, eventGapTimeout: 0.2)
         XCTAssertNil(error)
         XCTAssertEqual(received.last.map(eventLabel), "completed(end_turn)")
+        // No stall bound fired: one attempt, and every event arrived. (The transport may still count a cancellation
+        // when the client stops reading after the terminal event, which depends on timing and is harmless.)
         XCTAssertEqual(transport.bodies.count, 1)
-        XCTAssertEqual(transport.cancellations, 0)
+        XCTAssertEqual(received.filter { if case .textDelta = $0 { return true } else { return false } }.count,
+                       ResponsesFixtures.text.filter { $0.contains("response.output_text.delta") }.count)
     }
 
     func testDefaultStallBounds() {
@@ -293,21 +296,48 @@ final class ResponsesClientTests: XCTestCase {
 
     // MARK: - In-stream errors
 
-    /// A request the gateway refuses for its content mid-stream fails at once, so ChatSession can drop the turn;
-    /// the compatibility retry is only for a request refused outright.
+    /// A request the gateway refuses for its content mid-stream, with nothing negotiable to turn off, fails at once
+    /// so ChatSession can drop the turn.
     func testInStreamRejectedRequestIsNotRetried() async {
         let created = ScriptedResponsesTransport.decode(ResponsesFixtures.text[0])
-        for (model, tools) in [(ModelOption.haiku45, [JSONValue]()), (.opus5, [Self.strictTool])] {
-            let (events, error, transport) = await run([
-                .events([created, ["type": "error", "code": "invalid_request_error", "message": "Could not process image"]]),
-                .lines(ResponsesFixtures.text),
-            ], request: makeRequest(model: model, clientTools: tools))
-            XCTAssertTrue(events.isEmpty, model.rawValue)
-            XCTAssertEqual(error as? LLMError,
-                           .http(status: 400, type: "invalid_request_error", message: "Could not process image"), model.rawValue)
-            XCTAssertEqual(transport.bodies.count, 1, model.rawValue)
-            XCTAssertTrue(sleeper.delays.isEmpty)
-        }
+        // Haiku with no tools sends nothing negotiable, so a mid-stream refusal is the user's to see.
+        let (events, error, transport) = await run([
+            .events([created, ["type": "error", "code": "invalid_request_error", "message": "Could not process image"]]),
+            .lines(ResponsesFixtures.text),
+        ], request: makeRequest(model: .haiku45))
+        XCTAssertTrue(events.isEmpty)
+        XCTAssertEqual(error as? LLMError,
+                       .http(status: 400, type: "invalid_request_error", message: "Could not process image"))
+        XCTAssertEqual(transport.bodies.count, 1)
+        XCTAssertTrue(sleeper.delays.isEmpty)
+    }
+
+    /// LiteLLM can refuse after acknowledging the request (`response.created`, then an error event). With nothing
+    /// shown yet, that gets the same single compatibility retry as a refusal before any event, and if the plain
+    /// request is refused too, that refusal is the error.
+    func testInStreamRefusalBeforeOutputGetsTheCompatibilityRetry() async {
+        let created = ScriptedResponsesTransport.decode(ResponsesFixtures.text[0])
+        let refusal: JSONValue = ["type": "error", "code": "invalid_request_error",
+                                  "message": "messages.1.content.0.type: Expected `thinking`"]
+        let request = makeRequest(clientTools: [Self.strictTool])
+
+        let (events, error, transport) = await run([
+            .events([created, refusal]),
+            .lines(ResponsesFixtures.text),
+        ], request: request, retryDelays: [])
+        XCTAssertNil(error)
+        XCTAssertEqual(events.last.map(eventLabel), "completed(end_turn)")
+        XCTAssertEqual(transport.bodies, [ResponsesRequestBuilder.body(for: request, options: .standard),
+                                          ResponsesRequestBuilder.body(for: request, options: .compatible)])
+
+        let (_, secondError, again) = await run([
+            .events([created, refusal]),
+            .events([created, ["type": "error", "code": "invalid_request_error", "message": "Could not process image"]]),
+            .lines(ResponsesFixtures.text),
+        ], request: request, retryDelays: [])
+        XCTAssertEqual(secondError as? LLMError,
+                       .http(status: 400, type: "invalid_request_error", message: "Could not process image"))
+        XCTAssertEqual(again.bodies.count, 2)
     }
 
     /// LiteLLM's typeless error frame reaches the client as the failure it names: an overload before any output is

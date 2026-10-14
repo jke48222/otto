@@ -748,8 +748,14 @@ import os
     /// The web search and fetch budget a reply's content leaves, counting its server-tool calls (for a reply this
     /// process no longer has the numbers of).
     static func webBudgetLeft(in content: [JSONValue]) -> (searches: Int, fetches: Int) {
-        let names = content.filter { $0.typeName == "server_tool_use" }.compactMap { $0["name"]?.stringValue }
-        let searches = names.filter { $0 == "web_search" }.count
+        let calls = content.filter { $0.typeName == "server_tool_use" }
+        let names = calls.compactMap { $0["name"]?.stringValue }
+        // A Setapp AI page read came through the gateway's one web tool, so it spent a search as well as a fetch,
+        // the way the live usage counted it.
+        let setappPageReads = calls.filter {
+            $0["name"]?.stringValue == "web_fetch" && $0[ProviderBlocks.providerField]?.stringValue == ProviderBlocks.setappAIMarker
+        }.count
+        let searches = names.filter { $0 == "web_search" }.count + setappPageReads
         let fetches = names.filter { $0 == "web_fetch" }.count
         return (max(0, ToolLimits.webSearchesPerTurn - searches), max(0, ToolLimits.webFetchesPerTurn - fetches))
     }

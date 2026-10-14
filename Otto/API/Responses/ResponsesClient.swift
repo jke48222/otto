@@ -98,7 +98,7 @@ struct ResponsesClient: LLMClient {
                 // The gateway's translation of reasoning and strict schemas for Anthropic models can't be checked
                 // offline: a request carrying them that is refused outright is sent once more without them. An
                 // overflow is left alone; ChatSession compacts the conversation for that.
-                if !progress.receivedEvent, !triedCompatible, case .badRequest(_, let message)? = failure.transportError,
+                if !triedCompatible, let message = Self.refusalBeforeOutput(failure, progress: progress),
                    !ResponsesStreamAccumulator.isContextOverflow(code: nil, message: message),
                    Self.usesNegotiableFeatures(body) {
                     triedCompatible = true
@@ -214,6 +214,21 @@ struct ResponsesClient: LLMClient {
                 watchdog.cancel()
             }
         }
+    }
+
+    /// The gateway's message when it refused the request before anything reached the user: a `badRequest` before any
+    /// event, or an invalid-request error event after only the acknowledgement (LiteLLM can refuse mid-stream, once
+    /// it has answered `response.created`). Nil for every other failure.
+    private static func refusalBeforeOutput(_ failure: Failure, progress: AttemptProgress) -> String? {
+        if !progress.receivedEvent, case .badRequest(_, let message)? = failure.transportError {
+            return message
+        }
+        if !progress.didYield, failure.transportError == nil,
+           case .http(let status, let type, let message) = failure.error,
+           status == 400, type == "invalid_request_error" {
+            return message
+        }
+        return nil
     }
 
     /// Whether `body` carries what `.compatible` leaves out: reasoning, a replayed reasoning item or a strict tool.

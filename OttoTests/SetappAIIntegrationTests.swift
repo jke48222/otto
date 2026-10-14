@@ -555,9 +555,10 @@ final class SetappAIIntegrationTests: XCTestCase {
         XCTAssertEqual(reply.activities.map(\.label), ["Searching \u{201C}Swift 6.2 release notes\u{201D}", "Reading swift.example"])
         XCTAssertTrue(reply.activities.allSatisfy(\.isDone))
 
-        // One search and one page read leave the reply's web budget one lower each.
+        // One search and one page read: the page read came through the gateway's one web tool, so the rebuilt budget
+        // spends two searches and one fetch, as the live usage did.
         let left = ChatSession.webBudgetLeft(in: reply.apiContent)
-        XCTAssertEqual(left.searches, ToolLimits.webSearchesPerTurn - 1)
+        XCTAssertEqual(left.searches, ToolLimits.webSearchesPerTurn - 2)
         XCTAssertEqual(left.fetches, ToolLimits.webFetchesPerTurn - 1)
         XCTAssertEqual(recorder.records.count, 1)
         // The page read went through the search tool, so it spends a search too.
@@ -605,8 +606,9 @@ final class SetappAIIntegrationTests: XCTestCase {
         XCTAssertEqual(reply.toolCalls.map(\.status), [.succeeded, .succeeded])
         XCTAssertEqual(transport.bodies.map { $0["max_tool_calls"] }, [5, 5, 3])
         XCTAssertEqual(transport.bodies.map { $0["tools"]?[0]?["search_context_size"] }, ["medium", "medium", "low"])
+        // Rebuilt from the stored blocks it matches what the live requests spent: 7 calls before the third request.
         let left = ChatSession.webBudgetLeft(in: reply.apiContent)
-        XCTAssertEqual(left.searches, ToolLimits.webSearchesPerTurn - 6)
+        XCTAssertEqual(left.searches, ToolLimits.webSearchesPerTurn - 7)
         XCTAssertEqual(left.fetches, ToolLimits.webFetchesPerTurn - 1)
 
         await send(chat, "Thanks")
@@ -773,9 +775,12 @@ final class SetappAIIntegrationTests: XCTestCase {
     /// message out of the context so the next turn isn't refused the same way.
     func testGatewayRejectingTheRequestMidStreamDropsTheTurn() async throws {
         let created = ScriptedResponsesTransport.decode(ResponsesFixtures.text[0])
+        let refusal: JSONValue = ["error": ["message": "messages.0.content.1.image: Could not process image",
+                                            "type": "invalid_request_error", "param": nil, "code": "400"]]
+        // The first refusal gets the one compatibility retry (the body carried reasoning); the image is refused again.
         let transport = ScriptedResponsesTransport([
-            .events([created, ["error": ["message": "messages.0.content.1.image: Could not process image",
-                                         "type": "invalid_request_error", "param": nil, "code": "400"]]]),
+            .events([created, refusal]),
+            .events([created, refusal]),
             .lines(ResponsesFixtures.text),
         ])
         let chat = makeSession(settings: makeSettings()) { ResponsesClient(transport: transport) }
@@ -786,7 +791,8 @@ final class SetappAIIntegrationTests: XCTestCase {
         XCTAssertTrue(description.hasSuffix(ChatSession.excludedFromContextNote), description)
         XCTAssertFalse(chat.messages[0].includeInContext)
         XCTAssertFalse(reply.includeInContext)
-        XCTAssertEqual(transport.bodies.count, 1, "not retried")
+        XCTAssertEqual(transport.bodies.count, 2, "one compatibility retry, no backoff retries")
+        XCTAssertNil(transport.bodies.last?["reasoning"])
 
         await send(chat, "Never mind, what's new in Swift 6.2?")
         XCTAssertEqual(try lastReply(chat).state, .complete)

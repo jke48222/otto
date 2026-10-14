@@ -851,7 +851,8 @@ final class ResponsesStreamAccumulatorTests: XCTestCase {
     func testWebBudgetCountsSynthesizedCalls() throws {
         let content = try replay(ResponsesFixtures.webSearch).result.content
         let left = ChatSession.webBudgetLeft(in: content)
-        XCTAssertEqual(left.searches, ToolLimits.webSearchesPerTurn - 1)
+        // The page read spent a search too (the gateway has one web tool), matching the usage the reply reported.
+        XCTAssertEqual(left.searches, ToolLimits.webSearchesPerTurn - 2)
         XCTAssertEqual(left.fetches, ToolLimits.webFetchesPerTurn - 1)
     }
 
