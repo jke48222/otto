@@ -44,13 +44,15 @@ struct SettingsModelsPane: View {
     /// Under Usage when the build has a Setapp AI account (the ledger never counts those replies).
     static let setappAIUsageNote = "Setapp AI replies use credits and aren't counted here."
 
-    /// Setapp AI answers, as far as this pane goes: the build has a Setapp AI account and it is the chosen provider.
+    /// Setapp AI answers, as far as this pane goes: the build has a Setapp AI account that is set up, and it is the
+    /// chosen provider.
     private var usesSetappAI: Bool { Self.usesSetappAI(settings: settings, account: services.setappAI) }
 
     /// Pure. Decided from the account rather than `AIProvider.available`, so the Setapp AI pane can be drawn
-    /// (snapshots, tests) in builds that don't offer the provider.
+    /// (snapshots, tests) in builds that don't offer the provider. A build without the Setapp OAuth client (J22)
+    /// answers on the user's own key, so the key field shows.
     static func usesSetappAI(settings: AppSettings, account: (any SetappAIAccountModel)?) -> Bool {
-        account != nil && settings.aiProvider == .setappAI
+        account?.isConfigured == true && settings.aiProvider == .setappAI
     }
 
     // MARK: Model

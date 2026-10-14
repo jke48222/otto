@@ -119,7 +119,10 @@ enum SnapshotRenderer {
             await stage.prepareSettings()
             stage.settings.aiProvider = scene.provider
             var services = stage.settingsServices()
-            services.setappAI = scene.account()
+            let account = scene.account()
+            services.setappAI = account
+            // As the Setapp build's composition sets it from the live account.
+            stage.settings.isSetappAIConfigured = account.isConfigured
             await render(
                 SettingsView(settings: stage.settings, tab: .models, services: services)
                     .environment(SettingsNavigation()),
@@ -516,7 +519,8 @@ private enum SetappAISettingsScene: String, CaseIterable {
         case .failed:
             return StaticSetappAIAccount(creditState: .failed("Couldn't load your credits. Make sure Setapp is open."))
         case .notSetUp:
-            // A build without the Setapp OAuth client (J22), on a fresh install's default provider.
+            // A build without the Setapp OAuth client (J22), on a fresh install's default provider: it answers on
+            // the user's own key, so that row is checked and the key field shows.
             return StaticSetappAIAccount(isConfigured: false)
         }
     }

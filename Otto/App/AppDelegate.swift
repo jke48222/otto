@@ -12,7 +12,9 @@ import os
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private static let onboardingDefaultsKey = "otto.didShowOnboarding"
+    static let onboardingDefaultsKey = "otto.didShowOnboarding"
+    /// Set once the Setapp build has shown a member the provider choice (§19 Setapp AI).
+    static let setappAIIntroducedKey = "otto.setappAI.introduced"
     /// SPEC-v2 §3.5: the launch guard looks for other Ottos; this is the id when the bundle doesn't say.
     private static let fallbackBundleIdentifier = "com.jalenedusei.otto"
     /// How long a second Otto waits for the first one to quit (a relaunch after "Quit & Reopen").
@@ -170,14 +172,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .first { $0.processIdentifier != ownPID && !$0.isTerminated }
     }
 
-    /// First launch that can't send yet (no API key, and not on Setapp AI, which needs none): Settings opens on
-    /// Models, where the key goes.
+    /// Opens Settings on Models when `opensModelsOnLaunch` says so. Only the live app and `--demo` get here, and the
+    /// demo never opens it.
     private func showOnboardingIfNeeded(_ composition: AppComposition) {
-        guard !LaunchOptions.demo, !composition.settings.isProviderReady else { return }
-        let defaults = UserDefaults.standard
-        guard !defaults.bool(forKey: Self.onboardingDefaultsKey) else { return }
-        defaults.set(true, forKey: Self.onboardingDefaultsKey)
+        guard Self.opensModelsOnLaunch(defaults: .standard, isDemo: LaunchOptions.demo,
+                                       isProviderReady: composition.settings.isProviderReady) else { return }
         composition.settingsWindowController.show(tab: .models)
+    }
+
+    /// Whether this launch opens Settings → Models, recording what it showed so it happens once: the first launch
+    /// that can't send yet (no API key, and not on Setapp AI, which needs none), where the key goes; and in a build
+    /// that offers Setapp AI, the first launch at all, so the member sees the provider choice and where Setapp AI
+    /// sends messages before they ask anything (it is the default, so nothing else would show them). Never in the
+    /// demo.
+    static func opensModelsOnLaunch(defaults: UserDefaults, isDemo: Bool, isProviderReady: Bool,
+                                    providers: [AIProvider] = AIProvider.available) -> Bool {
+        guard !isDemo else { return false }
+        let needsKey = !isProviderReady && !defaults.bool(forKey: onboardingDefaultsKey)
+        let introducesSetappAI = providers.contains(.setappAI) && !defaults.bool(forKey: setappAIIntroducedKey)
+        guard needsKey || introducesSetappAI else { return false }
+        if needsKey { defaults.set(true, forKey: onboardingDefaultsKey) }
+        if providers.contains(.setappAI) { defaults.set(true, forKey: setappAIIntroducedKey) }
+        return true
     }
 
     // MARK: - Snapshots

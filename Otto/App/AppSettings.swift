@@ -48,8 +48,23 @@ import os
         didSet { defaults.set(aiProvider.rawValue, forKey: Key.aiProvider) }
     }
 
-    /// `aiProvider` when this build offers it, else the user's own Anthropic key.
-    var effectiveProvider: AIProvider { aiProvider.isAvailable ? aiProvider : .anthropic }
+    /// Whether this build's Setapp AI can sign in (its OAuth client, J22, is present). The Setapp build's composition
+    /// sets it from the live account at launch; true everywhere else, where Setapp AI isn't offered anyway. Not
+    /// persisted.
+    var isSetappAIConfigured = true
+
+    /// `aiProvider` when this build offers it and can reach it, else the user's own Anthropic key.
+    var effectiveProvider: AIProvider {
+        Self.effectiveProvider(chosen: aiProvider, isSetappAIConfigured: isSetappAIConfigured)
+    }
+
+    /// Pure. `chosen` unless the build doesn't offer it, or it is Setapp AI in a build without the OAuth client.
+    static func effectiveProvider(chosen: AIProvider, isSetappAIConfigured: Bool,
+                                  available: [AIProvider] = AIProvider.available) -> AIProvider {
+        guard available.contains(chosen) else { return .anthropic }
+        if chosen == .setappAI && !isSetappAIConfigured { return .anthropic }
+        return chosen
+    }
 
     /// Whether a message can be sent without first visiting Settings: Setapp AI needs no key.
     var isProviderReady: Bool { effectiveProvider == .setappAI || hasAPIKey }
@@ -144,12 +159,19 @@ import os
     @ObservationIgnored private var isRevertingLaunchAtLogin = false
     #endif
 
-    init(defaults: UserDefaults = .standard, usesKeychain: Bool = true) {
+    /// `environment` is where `ANTHROPIC_API_KEY` is read (tests pass their own).
+    init(defaults: UserDefaults = .standard, usesKeychain: Bool = true,
+         environment: [String: String] = ProcessInfo.processInfo.environment) {
         self.defaults = defaults
         self.usesKeychain = usesKeychain
 
+        let storedKey = !usesKeychain ? "" : KeychainStore.read(account: KeychainStore.apiKeyAccount)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let environmentKey = environment["ANTHROPIC_API_KEY"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
         model = defaults.string(forKey: Key.model).flatMap(ModelOption.init(rawValue:)) ?? .opus5
-        aiProvider = defaults.string(forKey: Key.aiProvider).flatMap(AIProvider.init(rawValue:)) ?? AIProvider.defaultProvider
+        aiProvider = Self.initialProvider(stored: defaults.string(forKey: Key.aiProvider),
+                                          hasAPIKey: !storedKey.isEmpty || !environmentKey.isEmpty)
         effort = defaults.string(forKey: Key.effort).flatMap(EffortLevel.init(rawValue:)) ?? .medium
         webAccess = Self.bool(defaults, Key.webAccess, default: true)
         suggestBrowserTab = Self.bool(defaults, Key.suggestBrowserTab, default: true)
@@ -184,14 +206,18 @@ import os
         }
         #endif
 
-        let storedKey = !usesKeychain ? "" : KeychainStore.read(account: KeychainStore.apiKeyAccount)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         apiKey = storedKey
         persistedAPIKey = storedKey
-
-        let environmentKey = ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"]?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         environmentAPIKey = environmentKey.isEmpty ? nil : environmentKey
+    }
+
+    /// Pure. The stored choice when there is one; else the build's default, except that someone who already has an
+    /// API key (a direct-build customer moving to the Setapp build, or `ANTHROPIC_API_KEY`) keeps using it. Nothing
+    /// is written, so the choice stays theirs to make in Settings.
+    static func initialProvider(stored: String?, hasAPIKey: Bool,
+                                defaultProvider: AIProvider = AIProvider.defaultProvider) -> AIProvider {
+        if let stored = stored.flatMap(AIProvider.init(rawValue:)) { return stored }
+        return hasAPIKey ? .anthropic : defaultProvider
     }
 
     // MARK: - API key

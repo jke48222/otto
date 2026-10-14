@@ -23,7 +23,7 @@ struct SettingsProviderSection: View {
 
     var body: some View {
         Section {
-            Picker("Provider", selection: $settings.aiProvider) {
+            Picker("Provider", selection: providerSelection) {
                 ForEach(Self.providers) { provider in
                     let isSelectable = Self.isSelectable(provider, isConfigured: account.isConfigured)
                     VStack(alignment: .leading, spacing: 1) {
@@ -64,6 +64,20 @@ struct SettingsProviderSection: View {
     }
 
     /// Pure. The row's caption: what the provider costs, or why Setapp AI can't be picked.
+    /// The radio choice: what answers. A build where Setapp AI isn't set up answers on the user's own key whatever
+    /// is stored (`AppSettings.effectiveProvider`), so that row is the one checked.
+    private var providerSelection: Binding<AIProvider> {
+        Binding(
+            get: { Self.shownProvider(stored: settings.aiProvider, isConfigured: account.isConfigured) },
+            set: { settings.aiProvider = $0 }
+        )
+    }
+
+    /// Pure. The provider the radio group checks.
+    static func shownProvider(stored: AIProvider, isConfigured: Bool) -> AIProvider {
+        isSelectable(stored, isConfigured: isConfigured) ? stored : .anthropic
+    }
+
     static func subtitle(for provider: AIProvider, isConfigured: Bool) -> String {
         switch provider {
         case .setappAI:

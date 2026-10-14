@@ -386,6 +386,11 @@ final class AppComposition {
         self.viewModel = viewModel
         #if OTTO_SETAPP
         viewModel.setappAI = flavor.setappAI
+        // Without the Setapp OAuth client (J22) Setapp AI can't answer: the user's own key does
+        // (`AppSettings.effectiveProvider`).
+        if let account = flavor.setappAI {
+            settings.isSetappAIConfigured = account.isConfigured
+        }
         #endif
         if !isLive {
             viewModel.openExternalURL = { externalURLs.record($0) }

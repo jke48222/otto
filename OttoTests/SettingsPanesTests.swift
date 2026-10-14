@@ -526,6 +526,8 @@ final class SettingsPanesTests: XCTestCase {
             }
         }
         settings.aiProvider = .setappAI
+        XCTAssertFalse(SettingsModelsPane.usesSetappAI(settings: settings, account: StaticSetappAIAccount(isConfigured: false)),
+                       "not set up in this build: the user's own key answers, so its field shows")
         var services = SettingsServices.inert(settings: settings)
         services.setappAI = StaticSetappAIAccount(isConfigured: false)
         try await layOut(SettingsView(settings: settings, tab: .models, services: services), tab: .models)
