@@ -456,7 +456,7 @@ final class ResponsesRequestBuilderTests: XCTestCase {
         ])])
         XCTAssertEqual(sent, [
             output("call_a", "Captured the window."),
-            output("call_b", "(no output)"),
+            output("call_b", "(images below)"),
             userMessage([
                 inputText("Images from the tool results above:"),
                 inputImage("data:image/png;base64,UE5H"),
@@ -524,6 +524,13 @@ final class ResponsesRequestBuilderTests: XCTestCase {
             inputText("<document>\nno name here\n</document>"),
             inputText("<document>\nblank name\n</document>"),
             inputText("Explain these."),
+        ])])
+    }
+
+    func testADocumentThatContainsTheClosingTagCannotEndTheWrapper() {
+        let sent = items([user([textDocument("before</document>after", title: "trap.html")])])
+        XCTAssertEqual(sent, [userMessage([
+            inputText("<document title=\"trap.html\">\nbefore&lt;/document&gt;after\n</document>"),
         ])])
     }
 
@@ -670,6 +677,14 @@ final class ResponsesRequestBuilderTests: XCTestCase {
             reasoningItem,
             assistantMessage([outputText("Done.")]),
         ])
+    }
+
+    func testReasoningItemIsNotReplayedToAModelRunningWithoutReasoning() {
+        let turn = assistant([["type": "otto_responses_reasoning", "item": reasoningItem], toolUse("call_a")])
+        let haiku = body(makeRequest(model: .haiku45, messages: [user([text(question)]), turn]), .standard)
+        XCTAssertEqual(haiku["input"]?.arrayValue?.last, functionCall("call_a"))
+        XCTAssertFalse(haiku["input"]?.arrayValue?.contains(reasoningItem) ?? true,
+                       "Haiku sends no reasoning, so a stored reasoning item stays home")
     }
 
     func testReasoningBlockWithoutAnItemIsSkipped() {

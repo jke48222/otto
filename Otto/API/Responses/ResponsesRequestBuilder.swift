@@ -15,6 +15,8 @@ enum ResponsesRequestBuilder {
     static let toolResultImagesIntro = "Images from the tool results above:"
     /// A `function_call_output` whose tool returned no text.
     static let emptyToolOutput = "(no output)"
+    /// A `function_call_output` whose tool returned only images, which follow in the next user message.
+    static let imageOnlyToolOutput = "(images below)"
     /// Marks a failed tool's output: Responses has no `is_error` flag.
     static let toolErrorPrefix = "Error: "
     /// The filename of a PDF that has no title.
@@ -28,7 +30,8 @@ enum ResponsesRequestBuilder {
         let model = request.model
         var body: [String: JSONValue] = [
             "model": .string(model.setappAIModelID),
-            "input": .array(inputItems(from: request.messages, options: options)),
+            "input": .array(inputItems(from: request.messages,
+                                       replaysReasoning: options.includeReasoning && model.supportsAdaptiveThinking)),
             "max_output_tokens": .int(Int64(request.maxTokens)),
             "stream": true,
             // The gateway keeps nothing between requests; each one carries the whole conversation.
@@ -92,11 +95,13 @@ enum ResponsesRequestBuilder {
 
     // MARK: - Input items
 
-    private static func inputItems(from messages: [JSONValue], options: ResponsesRequestOptions) -> [JSONValue] {
+    /// `replaysReasoning` is true only when the request itself asks for reasoning: a stored reasoning item sent to a
+    /// model running without it (Haiku, or the compatibility retry) would be out of place.
+    private static func inputItems(from messages: [JSONValue], replaysReasoning: Bool) -> [JSONValue] {
         messages.flatMap { message -> [JSONValue] in
             switch message["role"]?.stringValue {
             case "user": return userItems(contentBlocks(of: message))
-            case "assistant": return assistantItems(contentBlocks(of: message), options: options)
+            case "assistant": return assistantItems(contentBlocks(of: message), replaysReasoning: replaysReasoning)
             default: return []
             }
         }
@@ -128,7 +133,8 @@ enum ResponsesRequestBuilder {
                 outputs.append([
                     "type": "function_call_output",
                     "call_id": .string(callID),
-                    "output": .string(outputText(result.texts, isError: block["is_error"]?.boolValue == true)),
+                    "output": .string(outputText(result.texts, hasImages: !result.images.isEmpty,
+                                                 isError: block["is_error"]?.boolValue == true)),
                 ])
                 resultImages += result.images
             } else if let part = userPart(block) {
@@ -164,10 +170,10 @@ enum ResponsesRequestBuilder {
 
     /// The text a `function_call_output` carries. An empty one would read as nothing happened, and a failure needs
     /// saying in words because Responses has no `is_error`.
-    private static func outputText(_ texts: [String], isError: Bool) -> String {
+    private static func outputText(_ texts: [String], hasImages: Bool, isError: Bool) -> String {
         var output = texts.joined(separator: "\n\n")
         if output.isEmpty {
-            output = emptyToolOutput
+            output = hasImages ? imageOnlyToolOutput : emptyToolOutput
         }
         if isError && !output.hasPrefix(toolErrorPrefix) {
             output = toolErrorPrefix + output
@@ -226,7 +232,9 @@ enum ResponsesRequestBuilder {
             guard let data = source?["data"]?.stringValue else { return nil }
             let opening = title.map { "<document title=\"\($0.replacingOccurrences(of: "\"", with: "&quot;"))\">" }
                 ?? "<document>"
-            return inputText("\(opening)\n\(data)\n</document>")
+            // A file that itself contains "</document>" must not close the wrapper early.
+            let body = data.replacingOccurrences(of: "</document>", with: "&lt;/document&gt;")
+            return inputText("\(opening)\n\(body)\n</document>")
         default:
             return nil
         }
@@ -253,7 +261,7 @@ enum ResponsesRequestBuilder {
     /// Consecutive text blocks (Anthropic splits text around citations) share one assistant message, and each
     /// `function_call` or replayed reasoning item ends the message before it, so the items keep the model's order.
     /// Blocks that are left out don't split a message.
-    private static func assistantItems(_ blocks: [JSONValue], options: ResponsesRequestOptions) -> [JSONValue] {
+    private static func assistantItems(_ blocks: [JSONValue], replaysReasoning: Bool) -> [JSONValue] {
         var items: [JSONValue] = []
         var texts: [JSONValue] = []
 
@@ -275,8 +283,8 @@ enum ResponsesRequestBuilder {
                 closeMessage()
                 items.append(call)
             case ProviderBlocks.responsesReasoningType:
-                // Dropped by the compatibility retry along with `reasoning` itself.
-                guard options.includeReasoning, let item = block["item"], item.objectValue != nil else { continue }
+                // Dropped whenever the request sends no `reasoning` (Haiku, or the compatibility retry).
+                guard replaysReasoning, let item = block["item"], item.objectValue != nil else { continue }
                 closeMessage()
                 items.append(item)
             default:
