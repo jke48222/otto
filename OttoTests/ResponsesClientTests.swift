@@ -393,12 +393,34 @@ final class ResponsesClientTests: XCTestCase {
         let (_, error, transport) = await run([
             .failure(ResponsesTransportError.badRequest(status: 400, message: "Unknown item type."), after: []),
             .lines(ResponsesFixtures.text),
-        ], request: makeRequest(model: .haiku45, messages: messages))
+        ], request: makeRequest(model: .sonnet5, messages: messages))
 
         XCTAssertNil(error)
         XCTAssertEqual(transport.bodies.count, 2)
-        XCTAssertTrue(ResponsesClient.usesNegotiableFeatures(transport.bodies[0]))
+        guard transport.bodies.count == 2 else { return }
+        XCTAssertTrue(transport.bodies[0]["input"]?.arrayValue?.contains(reasoningItem) ?? false)
+        XCTAssertFalse(transport.bodies[1]["input"]?.arrayValue?.contains(reasoningItem) ?? true)
         XCTAssertFalse(ResponsesClient.usesNegotiableFeatures(transport.bodies[1]))
+    }
+
+    /// Haiku sends no reasoning, so a stored reasoning item never reaches the gateway, and a bad request on a body
+    /// with nothing negotiable is the user's error to see, not a retry.
+    func testHaikuNeverReplaysReasoningSoItsBadRequestIsNotRetried() async throws {
+        let reasoningItem: JSONValue = ["id": "rs_1", "type": "reasoning", "summary": [], "encrypted_content": "gAAAA"]
+        let messages: [JSONValue] = [
+            ["role": "user", "content": [["type": "text", "text": "Hi"]]],
+            ["role": "assistant", "content": [["type": "otto_responses_reasoning", "item": reasoningItem],
+                                              ["type": "text", "text": "Hello."]]],
+            ["role": "user", "content": [["type": "text", "text": "And now?"]]],
+        ]
+        let (_, error, transport) = await run([
+            .failure(ResponsesTransportError.badRequest(status: 400, message: "Unknown item type."), after: []),
+            .lines(ResponsesFixtures.text),
+        ], request: makeRequest(model: .haiku45, messages: messages))
+
+        XCTAssertEqual(error as? LLMError, .http(status: 400, type: "invalid_request_error", message: "Unknown item type."))
+        XCTAssertEqual(transport.bodies.count, 1)
+        XCTAssertFalse(transport.bodies.first.map(ResponsesClient.usesNegotiableFeatures) ?? true)
     }
 
     func testCompatibilityRetryOnlyBeforeTheFirstEvent() async {

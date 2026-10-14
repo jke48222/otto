@@ -130,14 +130,14 @@ struct ResponsesStreamAccumulator {
 
         let incompleteReason = terminal?["incomplete_details"]?["reason"]?.stringValue
         let stopReason: String
-        if refused {
+        // A response cut off by the output limit reports that even when it got as far as a tool call: the call's
+        // arguments are probably cut off too, and Anthropic says `max_tokens` in the same spot.
+        if refused || incompleteReason == "content_filter" {
             stopReason = "refusal"
-        } else if calledTools {
-            stopReason = "tool_use"
         } else if incompleteReason == "max_output_tokens" {
             stopReason = "max_tokens"
-        } else if incompleteReason == "content_filter" {
-            stopReason = "refusal"
+        } else if calledTools {
+            stopReason = "tool_use"
         } else {
             stopReason = "end_turn"
         }
@@ -502,8 +502,11 @@ struct ResponsesStreamAccumulator {
         if let reported = terminal?["usage"], reported.objectValue != nil {
             let input = max(0, reported["input_tokens"]?.intValue ?? 0)
             let cached = max(0, reported["input_tokens_details"]?["cached_tokens"]?.intValue ?? 0)
-            usage["input_tokens"] = .int(Int64(max(0, input - cached)))
+            let written = max(0, reported["input_tokens_details"]?["cache_write_tokens"]?.intValue ?? 0)
+            // Responses counts cache reads and writes inside input_tokens; Anthropic's usage keeps them apart.
+            usage["input_tokens"] = .int(Int64(max(0, input - cached - written)))
             usage["cache_read_input_tokens"] = .int(Int64(cached))
+            if written > 0 { usage["cache_creation_input_tokens"] = .int(Int64(written)) }
             usage["output_tokens"] = .int(Int64(max(0, reported["output_tokens"]?.intValue ?? 0)))
         }
         if searches > 0 || fetches > 0 {

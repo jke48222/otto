@@ -308,6 +308,22 @@ final class ResponsesStreamAccumulatorTests: XCTestCase {
         XCTAssertEqual(run.result.model, "anthropic/claude-haiku-4-5")
     }
 
+    func testACallCutOffByTheOutputLimitIsTruncationNotAToolRound() throws {
+        let lines = [
+            #"{"type":"response.created","sequence_number":0,"response":{"id":"resp_cut","object":"response","model":"anthropic/claude-opus-5","status":"in_progress","output":[]}}"#,
+            #"{"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":{"id":"fc_cut","type":"function_call","call_id":"call_cut","name":"calendar_add_event","arguments":"","status":"in_progress"}}"#,
+            #"{"type":"response.incomplete","sequence_number":2,"response":{"id":"resp_cut","object":"response","model":"anthropic/claude-opus-5","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[{"id":"fc_cut","type":"function_call","call_id":"call_cut","name":"calendar_add_event","arguments":"{\"title\":\"Dent","status":"incomplete"}],"usage":{"input_tokens":900,"input_tokens_details":{"cached_tokens":100,"cache_write_tokens":300},"output_tokens":64000}}}"#,
+        ]
+        let run = try replay(lines)
+
+        XCTAssertEqual(run.result.stopReason, "max_tokens")
+        let usage = try XCTUnwrap(run.result.usage)
+        XCTAssertEqual(usage["input_tokens"]?.intValue, 500, "cache reads and writes come out of input_tokens")
+        XCTAssertEqual(usage["cache_read_input_tokens"]?.intValue, 100)
+        XCTAssertEqual(usage["cache_creation_input_tokens"]?.intValue, 300)
+        XCTAssertEqual(TokenUsage(json: usage).promptTokens, 900)
+    }
+
     func testRefusalScenario() throws {
         let run = try replay(ResponsesFixtures.refusal)
 
