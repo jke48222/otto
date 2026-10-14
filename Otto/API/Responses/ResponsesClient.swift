@@ -9,10 +9,12 @@
 //  footer already understands.
 //
 //  It also stands in for the server tool the gateway lacks: when Claude calls `web_fetch` (SetappWebFetch), the
-//  client reads the page on the Mac and, unless the response also asked for client tools, sends the conversation
-//  back with the page so the reply goes on, all within one `stream`, the way Anthropic runs its web fetch inside one
-//  response. ChatSession sees "Reading example.com", the page as a source, an Anthropic-shaped `web_fetch` pair in
-//  the result and the read in the usage's `server_tool_use`, as after an Anthropic fetch.
+//  client reads the pages on the Mac and ends the response with `pause_turn`, the way Anthropic pauses a long
+//  server-tool turn, so ChatSession sends the next request with the pages read, under its own per-request web
+//  budget, "Safer" pause, compaction, stall bounds and retries. Beside client calls the response ends at `tool_use`
+//  as usual and the tool loop sends the pages back with the results. Either way ChatSession sees "Reading
+//  example.com", the page as a source, an Anthropic-shaped `web_fetch` pair in the result and the read in the
+//  usage's `server_tool_use`, as after an Anthropic fetch. The client never sends a gateway request of its own.
 //
 
 import Foundation
@@ -89,82 +91,51 @@ struct ResponsesClient: LLMClient {
         var didYield = false
     }
 
-    /// What one reply has gathered over its gateway requests (more than one when Claude reads pages).
-    private struct ReplyProgress {
-        var content: [JSONValue] = []
-        var model: String?
-        /// The gateway's usage, summed over the requests.
-        var usage: JSONValue?
-        /// Web fetch calls that spent a fetch from the request's `max_uses`.
-        var pageReads = 0
-
-        /// The usage ChatSession and the ledger see: the gateway's, plus the pages read as `web_fetch_requests`.
-        var reportedUsage: JSONValue? {
-            guard pageReads > 0 else { return usage }
-            return ResponsesClient.addingUsage(usage, ["server_tool_use": ["web_fetch_requests": .int(Int64(pageReads))]])
-        }
-    }
-
     private func run(_ request: MessagesRequest, continuation: AsyncThrowingStream<StreamEvent, Error>.Continuation) async throws {
         var options = ResponsesRequestOptions.standard
-        var reply = ReplyProgress()
-        var readsLeft = request.serverToolLimits.webFetch
-        // Each read can take a request of its own; after that many (and one more for a call past the limit) the
-        // last request asks for an answer, so a model that keeps calling can't run the reply on.
-        let maxRequests = max(0, request.serverToolLimits.webFetch) + 2
-        var next = request
-        var requestsSent = 0
-        while true {
-            let accumulator = try await respond(to: next, options: &options, isContinuation: requestsSent > 0,
-                                                usageBase: reply.reportedUsage, continuation: continuation)
-            requestsSent += 1
-            let result = accumulator.result()
-            if reply.model == nil { reply.model = result.model }
-            reply.usage = Self.addingUsage(reply.usage, result.usage)
-            var content = result.content
+        let accumulator = try await respond(to: request, options: &options, continuation: continuation)
+        let result = accumulator.result()
+        var content = result.content
 
-            let calls = accumulator.localToolCalls()
-            // A call cut off by the output limit, in a refused response or in a wrap-up request isn't run; its half of
-            // the pair goes too, as History would drop it anyway.
-            let runsCalls = !calls.isEmpty && next.toolChoice?["type"]?.stringValue != "none"
-                && (result.stopReason == "end_turn" || result.stopReason == "tool_use")
-            guard runsCalls else {
-                let ids = Set(calls.map(\.id))
-                content.removeAll { block in
-                    ProviderBlocks.isMacPageRead(block) && block["id"]?.stringValue.map(ids.contains) == true
-                }
-                reply.content += content
-                try finish(reply, stopReason: result.stopReason, continuation: continuation)
-                return
-            }
-
-            // What the model has been sent so far, this response included.
-            let allowlist = SetappWebFetch.Allowlist(
-                messages: request.messages + [Self.assistantEntry(reply.content + content)]
-            )
-            let results = try await readPages(calls, allowlist: allowlist, readsLeft: &readsLeft, reply: &reply,
-                                              continuation: continuation)
-            reply.content += Self.pairing(content, with: results)
-            try Self.yield(.usage(reply.reportedUsage ?? [:]), to: continuation)
-
-            // Client tools are waiting too: the tool loop runs them and sends everything back in its next request.
-            if result.stopReason == "tool_use" {
-                try finish(reply, stopReason: "tool_use", continuation: continuation)
-                return
-            }
-            // Only pages were read: the reply goes on with them, as after an Anthropic server tool.
-            next = request
-            next.messages = request.messages + [Self.assistantEntry(reply.content)]
-            if requestsSent >= maxRequests - 1 {
-                next.toolChoice = ["type": "none"]
-            }
+        // A call reusing the id of one the conversation already holds (a gateway can send any id) is never run: its
+        // pair would share an id with the earlier one.
+        let earlierIDs = Self.callIDs(in: request.messages)
+        var calls = accumulator.localToolCalls()
+        let reused = Set(calls.map(\.id)).intersection(earlierIDs)
+        calls.removeAll { reused.contains($0.id) }
+        // A call cut off by the output limit, in a refused response or in a wrap-up request isn't run; its half of the
+        // pair goes too, as History would drop it anyway.
+        let runsCalls = !calls.isEmpty && request.toolChoice?["type"]?.stringValue != "none"
+            && (result.stopReason == "end_turn" || result.stopReason == "tool_use")
+        let dropped = runsCalls ? reused : reused.union(calls.map(\.id))
+        content.removeAll { block in
+            ProviderBlocks.isMacPageRead(block) && block["id"]?.stringValue.map(dropped.contains) == true
         }
+        guard runsCalls else {
+            try finish(content, stopReason: result.stopReason, model: result.model, usage: result.usage,
+                       continuation: continuation)
+            return
+        }
+
+        // What the model has been sent so far, this response included.
+        let allowlist = SetappWebFetch.Allowlist(messages: request.messages + [Self.assistantEntry(content)])
+        let (results, reads) = try await readPages(calls, allowlist: allowlist,
+                                                   limit: request.serverToolLimits.webFetch, continuation: continuation)
+        content = Self.pairing(content, with: results)
+        // The reads count as fetches, as Anthropic counts its own in `server_tool_use`.
+        let usage = reads > 0
+            ? Self.addingUsage(result.usage, ["server_tool_use": ["web_fetch_requests": .int(Int64(reads))]])
+            : result.usage
+        if let usage { try Self.yield(.usage(usage), to: continuation) }
+        // Client tools are waiting too: the tool loop runs them and sends the pages back with their results. Otherwise
+        // the turn pauses after the pages, and ChatSession's next request carries them so the reply goes on.
+        try finish(content, stopReason: result.stopReason == "tool_use" ? "tool_use" : "pause_turn",
+                   model: result.model, usage: usage, continuation: continuation)
     }
 
-    private func finish(_ reply: ReplyProgress, stopReason: String?,
+    private func finish(_ content: [JSONValue], stopReason: String?, model: String?, usage: JSONValue?,
                         continuation: AsyncThrowingStream<StreamEvent, Error>.Continuation) throws {
-        let result = StreamResult(content: reply.content, stopReason: stopReason, stopDetails: nil,
-                                  model: reply.model, usage: reply.reportedUsage)
+        let result = StreamResult(content: content, stopReason: stopReason, stopDetails: nil, model: model, usage: usage)
         try Self.yield(.completed(result), to: continuation)
     }
 
@@ -179,17 +150,26 @@ struct ResponsesClient: LLMClient {
         ["role": "assistant", "content": .array(content)]
     }
 
-    /// One gateway request, retried the way AnthropicClient retries, until it completes. The first request of a reply
-    /// may also be sent once with `.compatible` options; a later one (the reply going on after a page was read) keeps
-    /// the options the first one succeeded with.
+    /// The ids of every call in `messages`' assistant turns, client and server alike.
+    private static func callIDs(in messages: [JSONValue]) -> Set<String> {
+        var ids: Set<String> = []
+        for message in messages where message["role"]?.stringValue == "assistant" {
+            for block in message["content"]?.arrayValue ?? [] where block.typeName == "tool_use"
+                || block.typeName == "server_tool_use" {
+                if let id = block["id"]?.stringValue { ids.insert(id) }
+            }
+        }
+        return ids
+    }
+
+    /// One gateway request, retried the way AnthropicClient retries, until it completes. A request carrying reasoning,
+    /// strict tools or web fetch that the gateway refuses outright is also sent once with `.compatible` options.
     private func respond(
         to request: MessagesRequest,
         options: inout ResponsesRequestOptions,
-        isContinuation: Bool,
-        usageBase: JSONValue?,
         continuation: AsyncThrowingStream<StreamEvent, Error>.Continuation
     ) async throws -> ResponsesStreamAccumulator {
-        var triedCompatible = isContinuation
+        var triedCompatible = false
         var retriesUsed = 0
         while true {
             try Task.checkCancellation()
@@ -198,7 +178,6 @@ struct ResponsesClient: LLMClient {
             var progress = AttemptProgress()
             do {
                 return try await performAttempt(body: body, request: request, localTools: localTools,
-                                                isContinuation: isContinuation, usageBase: usageBase,
                                                 continuation: continuation, progress: &progress)
             } catch {
                 if Task.isCancelled || Self.isCancellation(error) {
@@ -241,14 +220,11 @@ struct ResponsesClient: LLMClient {
         return retryDelays[min(retry, retryDelays.count - 1)]
     }
 
-    /// Streams one gateway response into `continuation` and returns it complete. A later request of the reply sends
-    /// no second `.messageStart`, and every `.usage` counts what the reply's earlier requests used (`usageBase`).
+    /// Streams one gateway response into `continuation` and returns it complete.
     private func performAttempt(
         body: JSONValue,
         request: MessagesRequest,
         localTools: Set<String>,
-        isContinuation: Bool,
-        usageBase: JSONValue?,
         continuation: AsyncThrowingStream<StreamEvent, Error>.Continuation,
         progress: inout AttemptProgress
     ) async throws -> ResponsesStreamAccumulator {
@@ -271,12 +247,9 @@ struct ResponsesClient: LLMClient {
         for try await event in boundedEvents(for: body) {
             progress.receivedEvent = true
             for streamEvent in try accumulator.handle(event) {
-                switch streamEvent {
-                case .messageStart:
-                    if !isContinuation { heldStart = streamEvent }
-                case .usage(let usage):
-                    try deliver(.usage(Self.addingUsage(usageBase, usage) ?? usage))
-                default:
+                if case .messageStart = streamEvent {
+                    heldStart = streamEvent
+                } else {
                     try deliver(streamEvent)
                 }
             }
@@ -295,26 +268,25 @@ struct ResponsesClient: LLMClient {
 
     // MARK: - Web fetch
 
-    /// Answers the response's web fetch calls: each spends one of the request's reads (a call past them is told so),
-    /// must name an address already in the conversation (`allowlist`), and is read on the Mac. The reads run side by
-    /// side; each call's row finishes, with its page as a source, as soon as its read does. Returns the result block of
-    /// every call, by call id. Stopping the reply cancels the reads.
+    /// Answers the response's web fetch calls: each spends one of the request's `limit` reads (a call past them is
+    /// told so and spends nothing), must name an address already in the conversation (`allowlist`), and is read on the
+    /// Mac. The reads run side by side; each call's row finishes, with its page as a source, as soon as its read does.
+    /// Returns the result block of every call, by call id, and the reads spent. Stopping the reply cancels the reads.
     private func readPages(
         _ calls: [ResponsesStreamAccumulator.LocalToolCall],
         allowlist: SetappWebFetch.Allowlist,
-        readsLeft: inout Int,
-        reply: inout ReplyProgress,
+        limit: Int,
         continuation: AsyncThrowingStream<StreamEvent, Error>.Continuation
-    ) async throws -> [String: JSONValue] {
+    ) async throws -> (results: [String: JSONValue], spent: Int) {
         var results: [String: JSONValue] = [:]
         var reads: [(call: ResponsesStreamAccumulator.LocalToolCall, url: URL)] = []
+        var spent = 0
         for call in calls {
             let failure: SetappWebFetch.Failure
-            if readsLeft <= 0 {
+            if spent >= limit {
                 failure = .maxUsesExceeded
             } else {
-                readsLeft -= 1
-                reply.pageReads += 1
+                spent += 1
                 guard let raw = call.input?["url"]?.stringValue else {
                     results[call.id] = SetappWebFetch.errorBlock(id: call.id, failure: .invalidInput)
                     try Self.yield(.toolActivity(Self.finishedActivity(call)), to: continuation)
@@ -349,7 +321,7 @@ struct ResponsesClient: LLMClient {
                 let call = reads[index].call
                 switch outcome {
                 case .success(let page):
-                    Self.logger.info("Read a page for Setapp AI: \(page.text.count, privacy: .public) characters from \(page.url.host ?? "", privacy: .private)")
+                    Self.logger.info("Read a page for Setapp AI: \(page.text.count, privacy: .public) characters, \(page.pdf?.count ?? 0, privacy: .public) PDF bytes from \(page.url.host ?? "", privacy: .private)")
                     results[call.id] = SetappWebFetch.resultBlock(id: call.id, page: page)
                     try Self.yield(.toolActivity(Self.finishedActivity(call)), to: continuation)
                     if let url = StreamAccumulator.webURL(page.url.absoluteString) {
@@ -364,7 +336,7 @@ struct ResponsesClient: LLMClient {
             }
         }
         try Task.checkCancellation()
-        return results
+        return (results, spent)
     }
 
     /// The call's "Reading example.com" row, finished.

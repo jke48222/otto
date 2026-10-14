@@ -2,10 +2,11 @@
 //  ResponsesClientWebFetchTests.swift
 //  OttoTests
 //
-//  How `ResponsesClient` answers Claude's `web_fetch` calls on Setapp AI (SPEC §19): within one stream, like an
-//  Anthropic server tool. The read on the Mac, the reply going on with the page, the per-request limit, refusals
-//  Claude reads, a call beside client tools, a call that won't run, the compatibility retry, cancellation, and the
-//  usage. Gateway streams are synthesized in OpenAI's documented Responses format; pages come from a
+//  How `ResponsesClient` answers Claude's `web_fetch` calls on Setapp AI (SPEC §19): it reads the pages on the Mac
+//  and ends the response with `pause_turn` (or `tool_use` beside client calls), and never sends a gateway request of
+//  its own; ChatSession's next request carries the pages (SetappAIIntegrationTests). The read, the per-request limit,
+//  refusals Claude reads, a call beside client tools, calls that won't run, the compatibility retry, cancellation,
+//  and the usage. Gateway streams are synthesized in OpenAI's documented Responses format; pages come from a
 //  `ScriptedPageReader`, so nothing reaches the network.
 //
 
@@ -135,26 +136,25 @@ final class ResponsesClientWebFetchTests: XCTestCase {
         return result
     }
 
-    // MARK: The reply goes on with the page
+    // MARK: The response pauses after the pages
 
-    func testAPageReadContinuesTheReplyInOneStream() async throws {
+    func testAPageReadEndsTheResponseWithPauseTurn() async throws {
         let page = ScriptedPageReader.page("https://docs.example/guide/v2", title: "The Guide", text: "Install it with Homebrew.",
                                            links: [WebLink(text: "FAQ", url: URL(string: "https://docs.example/faq")!)])
         let reader = ScriptedPageReader([tabURL: .page(page)])
         let (events, error, transport) = await run([
             gatewayStream("resp_1", [message("msg_1", "Reading your tab."), fetchCall("call_page", url: tabURL)],
                           inputTokens: 1_000, outputTokens: 30),
-            gatewayStream("resp_2", [message("msg_2", " It says to install it with Homebrew.")],
-                          inputTokens: 1_500, outputTokens: 20),
+            gatewayStream("resp_2", [message("msg_2", "Never requested.")]),
         ], reader: reader)
 
         XCTAssertNil(error)
         XCTAssertEqual(events.map(label), [
             "start", "text(Reading your tab.)", "Reading docs.example", "usage",
-            "Reading docs.example (done)", "sources(https://docs.example/guide/v2)", "usage",
-            "text( It says to install it with Homebrew.)", "usage", "completed(end_turn)",
+            "Reading docs.example (done)", "sources(https://docs.example/guide/v2)", "usage", "completed(pause_turn)",
         ])
         XCTAssertEqual(reader.reads, [tabURL])
+        XCTAssertEqual(transport.bodies.count, 1, "the client sends no request of its own; ChatSession sends the next")
 
         let completed = try result(events)
         XCTAssertEqual(completed.model, "anthropic/claude-opus-5")
@@ -162,111 +162,90 @@ final class ResponsesClientWebFetchTests: XCTestCase {
             ["type": "text", "text": "Reading your tab."],
             SetappWebFetch.callBlock(id: "call_page", input: ["url": .string(tabURL)]),
             SetappWebFetch.resultBlock(id: "call_page", page: page),
-            ["type": "text", "text": " It says to install it with Homebrew."],
         ])
         XCTAssertEqual(completed.usage, [
-            "input_tokens": 2_500, "cache_read_input_tokens": 0, "output_tokens": 50,
+            "input_tokens": 1_000, "cache_read_input_tokens": 0, "output_tokens": 30,
             "server_tool_use": ["web_fetch_requests": 1],
-        ], "both requests' tokens, and the read as a fetch")
+        ], "the gateway's tokens, and the read as a fetch")
+        if case .usage(let usage)? = events.dropLast().last {
+            XCTAssertEqual(usage, completed.usage, "the last usage before the end counts the read too")
+        }
         if case .sources(let links)? = events.first(where: { if case .sources = $0 { return true }; return false }) {
             XCTAssertEqual(links.first?.title, "The Guide")
         }
-
-        // The second request is the first plus the call and the page, so Claude reads the page and goes on.
-        let bodies = transport.bodies
-        XCTAssertEqual(bodies.count, 2)
-        let first = inputItems(bodies.first)
-        let second = inputItems(bodies.last)
-        XCTAssertEqual(Array(second.prefix(first.count)), first)
-        XCTAssertEqual(Array(second.dropFirst(first.count)), [
-            ["type": "message", "role": "assistant", "content": [["type": "output_text", "text": "Reading your tab."]]],
-            ["type": "function_call", "call_id": "call_page", "name": "web_fetch",
-             "arguments": .string(#"{"url":"\#(tabURL)"}"#)],
-            ["type": "function_call_output", "call_id": "call_page",
-             "output": "URL: https://docs.example/guide/v2\nTitle: The Guide\n\nInstall it with Homebrew.\n\nLinks on the page:\n- FAQ: https://docs.example/faq"],
-        ])
-        for body in bodies {
-            XCTAssertEqual(toolNames(body), ["web_search", "web_fetch"])
-            XCTAssertNil(body["tool_choice"])
-        }
+        XCTAssertEqual(toolNames(transport.bodies.first), ["web_search", "web_fetch"])
     }
 
     func testAnAddressNotInTheConversationIsRefusedAndClaudeIsToldWhy() async throws {
         let reader = ScriptedPageReader()
-        let (events, error, transport) = await run([
+        let (events, error, _) = await run([
             gatewayStream("resp_1", [fetchCall("call_made_up", url: "https://docs.example/guide?user=jalen")]),
-            gatewayStream("resp_2", [message("msg_2", "I can only read pages from this chat.")]),
         ], reader: reader)
 
         XCTAssertNil(error)
         XCTAssertTrue(reader.reads.isEmpty, "nothing was requested")
         XCTAssertFalse(events.contains { if case .sources = $0 { return true }; return false })
-        let output = inputItems(transport.bodies.last).last
-        XCTAssertEqual(output, ["type": "function_call_output", "call_id": "call_made_up",
-                                "output": .string("Error: " + SetappWebFetch.Failure.notInConversation.message)])
-        XCTAssertEqual(output?["output"]?.stringValue?.hasPrefix(
-            "Error: This URL isn't in the conversation, so Otto can't open it."), true)
         let completed = try result(events)
+        XCTAssertEqual(completed.stopReason, "pause_turn")
         XCTAssertEqual(completed.content[1]["content"]?["error_code"], "url_not_allowed")
+        XCTAssertEqual(SetappWebFetch.outputText(ofResult: completed.content[1]),
+                       "Error: " + SetappWebFetch.Failure.notInConversation.message)
         XCTAssertEqual(completed.usage?["server_tool_use"]?["web_fetch_requests"], 1, "a refused call spends its fetch")
     }
 
     func testAPageThatCantBeReadIsReportedToClaude() async throws {
         let reader = ScriptedPageReader([tabURL: .failure(.blockedAddress)])
-        let (events, error, transport) = await run([
-            gatewayStream("resp_1", [fetchCall("call_page", url: tabURL)]),
-            gatewayStream("resp_2", [message("msg_2", "That page is on your local network.")]),
-        ], reader: reader)
+        let (events, error, _) = await run([gatewayStream("resp_1", [fetchCall("call_page", url: tabURL)])], reader: reader)
 
         XCTAssertNil(error)
         XCTAssertEqual(reader.reads, [tabURL])
-        XCTAssertEqual(inputItems(transport.bodies.last).last?["output"],
-                       .string("Error: " + WebPageReadError.blockedAddress.message))
         XCTAssertTrue(events.contains { label($0) == "Reading docs.example (done)" })
-        XCTAssertEqual(try result(events).content.count, 3)
+        let completed = try result(events)
+        XCTAssertEqual(completed.content.count, 2)
+        XCTAssertEqual(SetappWebFetch.outputText(ofResult: completed.content[1]),
+                       "Error: " + WebPageReadError.blockedAddress.message)
     }
 
     // MARK: Limits
 
     func testCallsPastTheRequestsLimitAreToldSoWithoutSpendingAFetch() async throws {
-        let other = "https://docs.example/faq"
-        let reader = ScriptedPageReader([tabURL: .page(ScriptedPageReader.page(tabURL, text: "Guide text. See \(other)"))])
+        let reader = ScriptedPageReader([tabURL: .page(ScriptedPageReader.page(tabURL, text: "Guide text."))])
         let (events, error, transport) = await run([
-            gatewayStream("resp_1", [fetchCall("call_1", url: tabURL), fetchCall("call_2", url: tabURL)]),
-            gatewayStream("resp_2", [fetchCall("call_3", url: other)]),
-            gatewayStream("resp_3", [message("msg_3", "Here's the gist.")]),
-        ], reader: reader, request: makeRequest(limits: ServerToolLimits(webSearch: 5, webFetch: 1)))
+            gatewayStream("resp_1", [fetchCall("call_1", url: tabURL), fetchCall("call_2", url: tabURL),
+                                     fetchCall("call_3", url: tabURL)]),
+        ], reader: reader, request: makeRequest(limits: ServerToolLimits(webSearch: 5, webFetch: 2)))
 
         XCTAssertNil(error)
-        XCTAssertEqual(reader.reads, [tabURL], "only the first call was read")
-        let second = inputItems(transport.bodies[1])
-        XCTAssertEqual(second.last, ["type": "function_call_output", "call_id": "call_2",
-                                     "output": .string("Error: " + SetappWebFetch.Failure.maxUsesExceeded.message)])
-        XCTAssertEqual(inputItems(transport.bodies[2]).last?["output"],
-                       .string("Error: " + SetappWebFetch.Failure.maxUsesExceeded.message))
-        XCTAssertEqual(try result(events).usage?["server_tool_use"]?["web_fetch_requests"], 1)
+        XCTAssertEqual(reader.reads, [tabURL, tabURL], "only the first two calls were read")
+        XCTAssertEqual(transport.bodies.count, 1)
+        let completed = try result(events)
+        XCTAssertEqual(completed.stopReason, "pause_turn")
+        XCTAssertEqual(completed.content.map { $0["content"]?.typeName ?? $0.typeName ?? "" },
+                       ["server_tool_use", "web_fetch_result", "server_tool_use", "web_fetch_result",
+                        "server_tool_use", "web_fetch_tool_error"])
+        XCTAssertEqual(completed.content[5]["content"]?["error_code"], "max_uses_exceeded")
+        XCTAssertEqual(SetappWebFetch.outputText(ofResult: completed.content[5]),
+                       "Error: " + SetappWebFetch.Failure.maxUsesExceeded.message)
+        XCTAssertEqual(completed.usage?["server_tool_use"]?["web_fetch_requests"], 2)
     }
 
-    func testAReplyThatKeepsCallingIsAskedToAnswer() async throws {
+    /// A call reusing the id of one the conversation already holds is never run, so no two pairs share an id.
+    func testACallReusingAnEarlierIDIsNotRun() async throws {
         let reader = ScriptedPageReader([tabURL: .page(ScriptedPageReader.page(tabURL, text: "Guide text."))])
-        let limit = 2
-        let calls = (0..<(limit + 2)).map { index in
-            gatewayStream("resp_\(index)", [fetchCall("call_\(index)", url: tabURL)])
-        }
-        let (events, error, transport) = await run(calls + [gatewayStream("resp_end", [message("msg_end", "Done.")])],
-                                                   reader: reader,
-                                                   request: makeRequest(limits: ServerToolLimits(webSearch: 5, webFetch: limit)))
-
-        XCTAssertNil(error)
-        XCTAssertEqual(reader.reads.count, limit)
-        XCTAssertEqual(transport.bodies.count, limit + 2, "the limit's requests, one more, then the last one")
-        XCTAssertEqual(transport.bodies.map { $0["tool_choice"] },
-                       Array(repeating: nil, count: limit + 1) + ["none"], "the last request asks for an answer")
+        let earlier = makeRequest().messages + [
+            ["role": "assistant", "content": [
+                SetappWebFetch.callBlock(id: "call_page", input: ["url": .string(tabURL)]),
+                SetappWebFetch.resultBlock(id: "call_page", page: ScriptedPageReader.page(tabURL, text: "Guide text.")),
+            ]],
+        ]
+        let (events, _, _) = await run([
+            gatewayStream("resp_2", [fetchCall("call_page", url: tabURL), message("msg_2", "Done.")]),
+        ], reader: reader, request: makeRequest(messages: earlier))
+        XCTAssertTrue(reader.reads.isEmpty)
         let completed = try result(events)
         XCTAssertEqual(completed.stopReason, "end_turn")
-        XCTAssertFalse(completed.content.contains { $0.typeName == "server_tool_use" && $0["id"]?.stringValue == "call_\(limit + 1)" },
-                       "a call the forced answer still made is dropped, not run")
-        XCTAssertEqual(completed.usage?["server_tool_use"]?["web_fetch_requests"], .int(Int64(limit)))
+        XCTAssertEqual(completed.content, [["type": "text", "text": "Done."]])
+        XCTAssertNil(completed.usage?["server_tool_use"])
     }
 
     // MARK: Beside client tools, and calls that don't run
@@ -378,7 +357,7 @@ final class ResponsesClientWebFetchTests: XCTestCase {
             try await Task.sleep(nanoseconds: 5_000_000)
         }
         XCTAssertEqual(reader.cancellations, 1, "the read was cancelled")
-        XCTAssertEqual(transport.bodies.count, 1, "the reply didn't go on")
+        XCTAssertEqual(transport.bodies.count, 1)
     }
 
     // MARK: Usage

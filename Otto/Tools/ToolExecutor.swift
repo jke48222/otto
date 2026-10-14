@@ -44,6 +44,8 @@ import os
 
     @ObservationIgnored private var declines = 0
     @ObservationIgnored private var declinesBeforeRound = 0
+    /// What the reply's calls that succeeded with private data read ("your calendar"), for the web pause.
+    @ObservationIgnored private var turnPrivateSources: [String] = []
     /// Per-reply counters as each reply's last round left them, so Retry continues a failed reply with its
     /// spent limits and declines (`resumeTurn`). Only the latest `maxRememberedTurns` replies are kept.
     @ObservationIgnored private var turnCounters: [(messageID: UUID, counters: TurnCounters)] = []
@@ -80,6 +82,7 @@ import os
         limiter.beginTurn()
         declines = 0
         declinesBeforeRound = 0
+        turnPrivateSources = []
     }
 
     func resumeTurn(messageID: UUID, calls: [ToolCall]) {
@@ -88,6 +91,7 @@ import os
         limiter.resumeTurn(runs: counters.runs)
         declines = counters.declines
         declinesBeforeRound = counters.declines
+        turnPrivateSources = []
     }
 
     func registerUndoTools(_ tools: [any OttoTool]) {
@@ -279,14 +283,26 @@ import os
 
     // MARK: - The round
 
-    private func executeRound(_ round: ToolRound, store: ToolCallStore, state: ActiveRound) async throws -> ToolRoundOutcome {
-        // Earlier results of tools not offered this turn are still in the transcript, so they are classified too.
-        let classifying = round.classifyingTools
+    func webPause(after transcript: [JSONValue], tools: [String: any OttoTool],
+                  knownTools: [String: any OttoTool]) -> WebPauseReason? {
+        let classifying = knownTools.merging(tools) { _, offered in offered }
+        let (trust, privates) = Self.assess(transcript, classifying: classifying)
+        return webPause(trust: trust, privates: privates, succeededPrivateSources: turnPrivateSources).webPause
+    }
+
+    /// TrustLedger and EchoDetector over `transcript`, every tool in `classifying` counted.
+    private static func assess(_ transcript: [JSONValue], classifying: [String: any OttoTool])
+        -> (trust: TrustAssessment, privates: [(phrase: String, source: String)]) {
         let untrusted = classifying.values.filter(\.producesUntrustedOutput)
             .reduce(into: [String: ProvenanceSource.Severity]()) { $0[$1.name] = Self.severity(of: $1) }
-        let trust = TrustLedger.assess(transcript: round.transcript, untrustedTools: untrusted)
-        let privateSources = classifying.compactMapValues(\.privateDataSource)
-        let privates = EchoDetector.privateStrings(in: round.transcript, sources: privateSources)
+        let trust = TrustLedger.assess(transcript: transcript, untrustedTools: untrusted)
+        let privates = EchoDetector.privateStrings(in: transcript, sources: classifying.compactMapValues(\.privateDataSource))
+        return (trust, privates)
+    }
+
+    private func executeRound(_ round: ToolRound, store: ToolCallStore, state: ActiveRound) async throws -> ToolRoundOutcome {
+        // Earlier results of tools not offered this turn are still in the transcript, so they are classified too.
+        let (trust, privates) = Self.assess(round.transcript, classifying: round.classifyingTools)
 
         var seen = Set<String>()
         var plans: [CallPlan] = []
@@ -341,7 +357,7 @@ import os
             }
         }
 
-        return webPause(trust: trust, privates: privates, state: state)
+        return webPause(trust: trust, privates: privates, succeededPrivateSources: state.succeededPrivateSources)
     }
 
     // MARK: - Pre-check (§5.4 step 2)
@@ -705,7 +721,10 @@ import os
                 outcomeText = "ok"
                 doneTitle = runResult.doneTitle
                 undo = runResult.undo
-                if let source = tool.privateDataSource { state.succeededPrivateSources.append(source) }
+                if let source = tool.privateDataSource {
+                    state.succeededPrivateSources.append(source)
+                    turnPrivateSources.append(source)
+                }
             }
         case .failed(let error as ToolError):
             result = ToolOutput.error(error.toolResultText).normalized()
@@ -824,9 +843,9 @@ import os
     // MARK: - Outcome
 
     private func webPause(trust: TrustAssessment, privates: [(phrase: String, source: String)],
-                          state: ActiveRound) -> ToolRoundOutcome {
+                          succeededPrivateSources: [String]) -> ToolRoundOutcome {
         guard trust.caution, safetyMode() == .safer,
-              let privateSource = privates.first?.source ?? state.succeededPrivateSources.first else {
+              let privateSource = privates.first?.source ?? succeededPrivateSources.first else {
             return ToolRoundOutcome()
         }
         let reason = WebPauseReason(privateSource: privateSource,

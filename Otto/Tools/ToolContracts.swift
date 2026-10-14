@@ -480,9 +480,19 @@ struct ToolRound: Sendable {
     /// The queued notes about actions of the given assistant messages (the conversation being continued); only
     /// those are cleared, so a note never reaches another conversation. The default returns every note.
     func consumeContextNotes(forMessages messageIDs: Set<UUID>) -> [String]
+    /// The web pause a reply needs before its next request when no tool round ran in between (Setapp AI's turn going
+    /// on after pages Otto read on the Mac): the check `execute` makes after a round, over `transcript` (the request's
+    /// messages and the response), with `tools` the turn's snapshot over `knownTools`. The default never pauses.
+    func webPause(after transcript: [JSONValue], tools: [String: any OttoTool],
+                  knownTools: [String: any OttoTool]) -> WebPauseReason?
 }
 
 extension ToolExecuting {
+    func webPause(after transcript: [JSONValue], tools: [String: any OttoTool],
+                  knownTools: [String: any OttoTool]) -> WebPauseReason? {
+        nil
+    }
+
     func consumeContextNotes(forMessages messageIDs: Set<UUID>) -> [String] {
         consumeContextNotes()
     }
