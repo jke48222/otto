@@ -135,10 +135,12 @@ extension JSONValue {
         return nil
     }
 
+    /// The value as an Int, a double cut toward zero. Nil when it doesn't fit (1e20, infinity, NaN), where
+    /// `Int(_:)` would trap on a number a server sent.
     var intValue: Int? {
         switch self {
-        case .int(let value): return Int(value)
-        case .double(let value): return Int(value)
+        case .int(let value): return Int(exactly: value)
+        case .double(let value): return Int(exactly: value.rounded(.towardZero))
         default: return nil
         }
     }
