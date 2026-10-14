@@ -44,24 +44,34 @@ enum SetappCreditState: Equatable, Sendable {
     /// Loads the balance. `force` skips the SDK's cache (after a reply, or "Try Again"). The live model bounds
     /// the call at 15 s, since a stalled Setapp handshake would otherwise never return.
     func refreshCredits(force: Bool)
-    /// Opens Setapp's page for buying AI credits (the SDK's `links.purchaseURL()`, fetched when asked because
-    /// Setapp may change it), or `SetappCreditFormatter.fallbackPurchaseURL` when that fails.
-    func openPurchasePage()
+    /// Setapp's page for buying AI credits: the SDK's `links.purchaseURL()`, asked for each time because Setapp may
+    /// change it, when that is an https link; else `SetappCreditFormatter.fallbackPurchaseURL`. Never throws. The
+    /// caller opens it the way its window opens links (Settings drops its floating panel first; the notch closes).
+    func purchaseURL() async -> URL
 }
 
-/// Tests, previews and snapshots. Records calls ("refresh", "refresh(force)", "purchase") and changes nothing else.
+/// Tests, previews and snapshots. Records calls ("refresh", "refresh(force)", "purchaseURL") and changes nothing
+/// else.
 @MainActor @Observable final class StaticSetappAIAccount: SetappAIAccountModel {
     var isConfigured: Bool
     var creditState: SetappCreditState
+    /// What `purchaseURL()` returns.
+    var purchaseLink: URL
     private(set) var calls: [String] = []
 
-    init(isConfigured: Bool = true, creditState: SetappCreditState = .idle) {
+    init(isConfigured: Bool = true, creditState: SetappCreditState = .idle,
+         purchaseLink: URL = SetappCreditFormatter.fallbackPurchaseURL) {
         self.isConfigured = isConfigured
         self.creditState = creditState
+        self.purchaseLink = purchaseLink
     }
 
     func refreshCredits(force: Bool) { calls.append(force ? "refresh(force)" : "refresh") }
-    func openPurchasePage() { calls.append("purchase") }
+
+    func purchaseURL() async -> URL {
+        calls.append("purchaseURL")
+        return purchaseLink
+    }
 }
 
 enum SetappCreditFormatter {

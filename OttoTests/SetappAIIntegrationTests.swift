@@ -724,6 +724,52 @@ final class SetappAIIntegrationTests: XCTestCase {
         XCTAssertEqual(transport.bodies[2], transport.bodies[0])
     }
 
+    // MARK: 6b. Credit balance
+
+    /// The balance is fetched again once a reply has finished: once for a reply with a tool round (two gateway
+    /// requests), not per request, and at once when the gateway said the credits ran out.
+    func testTheBalanceRefreshesOnceAfterEachReplyAndAtOnceWhenCreditsRunOut() async throws {
+        let transport = ScriptedResponsesTransport([
+            .events(Gateway.stream("resp_round", [
+                Gateway.message("msg_round", "I'll echo that."),
+                Gateway.functionCall("fc_round", callID: "call_echo1", name: "echo", arguments: #"{"text":"hi"}"#),
+            ])),
+            .lines(ResponsesFixtures.text),
+            .failure(ResponsesTransportError.insufficientCredits, after: []),
+            .lines(ResponsesFixtures.text),
+        ])
+        let settings = makeSettings()
+        let chat = makeSession(settings: settings, tools: [EchoTool()], executor: makeExecutor(settings)) {
+            ResponsesClient(transport: transport)
+        }
+        let account = StaticSetappAIAccount()
+        var usesSetappAI = true
+        let refresher = SetappCreditRefresher(account: account, chat: chat, isUsingSetappAI: { usesSetappAI },
+                                              settleDelay: .milliseconds(150))
+        defer { refresher.cancel() }
+
+        await send(chat, "Echo hi")
+        XCTAssertEqual(transport.bodies.count, 2, "a tool round")
+        XCTAssertEqual(account.calls, [], "the refresh waits for the reply to settle")
+        await waitUntil { !account.calls.isEmpty }
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(account.calls, ["refresh(force)"], "one refresh for the whole reply")
+
+        await send(chat, "Once more")
+        XCTAssertEqual(try lastReply(chat).state, .failed(SetappAIFailure.insufficientCredits.copy))
+        await waitUntil { account.calls.count == 2 }
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(account.calls, ["refresh(force)", "refresh(force)"], "out of credits: right away, and only once")
+
+        // On the user's own key the balance doesn't move.
+        usesSetappAI = false
+        chat.retry(messageID: try lastReply(chat).id)
+        await waitUntil { !chat.isStreaming }
+        XCTAssertEqual(try lastReply(chat).state, .complete)
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(account.calls.count, 2)
+    }
+
     // MARK: 7. Cost
 
     func testSetappAIReplyLeavesDollarTotalsAloneAndIsLabeledSetappAI() async throws {

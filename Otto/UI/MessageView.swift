@@ -54,6 +54,12 @@ struct MessageView: View, Equatable {
         case openSettings
         /// "Get Credits": Setapp's purchase page (`NotchViewModel.getSetappCredits()`).
         case getCredits
+
+        /// A quieter button beside this one. Running out of credits has two fixes, and the copy names both: buy
+        /// more, or switch to the user's own key in Settings.
+        var companion: FailureAction? {
+            self == .getCredits ? .openSettings : nil
+        }
     }
 
     /// Pure. A missing or rejected API key opens Settings; a Setapp AI failure offers what
@@ -474,6 +480,11 @@ private struct AssistantMessageView: View {
                         }
                     case nil:
                         EmptyView()
+                    }
+                    if failureAction?.companion == .openSettings {
+                        FooterButton(title: "Open Settings", symbol: "gearshape") {
+                            viewModel.openSettings(tab: MessageView.apiKeySettingsTab)
+                        }
                     }
                     if MessageView.offersNewChat(for: message.state) {
                         FooterButton(title: "New Chat", symbol: "square.and.pencil", isProminent: true) {

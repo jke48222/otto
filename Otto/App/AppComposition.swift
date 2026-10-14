@@ -812,16 +812,14 @@ final class AppComposition {
     #endif
 
     #if OTTO_SETAPP
-    /// A reply that ran out of Setapp AI credits makes the balance in Settings stale, so it is fetched again
-    /// (past the SDK's cache) as soon as that failure shows.
+    /// Each Setapp AI reply spends credits, so the balance Settings and the ⋮ menu show is fetched again (past the
+    /// SDK's cache) once the reply has finished, tool rounds and all, and at once when a reply ran out of credits.
     private func installSetappCreditRefresh() {
         guard let account = flavor.setappAI else { return }
-        let chat = chat
-        let creditsLoop = ObservationLoop(read: { chat.messages.last?.state }) { state in
-            guard case .failed(let copy)? = state, copy == SetappAIFailure.insufficientCredits.copy else { return }
-            account.refreshCredits(force: true)
-        }
-        cancellations.append { creditsLoop.cancel() }
+        let settings = settings
+        let refresher = SetappCreditRefresher(account: account, chat: chat,
+                                              isUsingSetappAI: { settings.effectiveProvider == .setappAI })
+        cancellations.append { refresher.cancel() }
     }
     #endif
 

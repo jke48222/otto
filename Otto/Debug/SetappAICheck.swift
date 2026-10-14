@@ -1185,11 +1185,10 @@ final class SetappAICheck {
         configured: Bool = true,
         balance: @escaping LiveSetappAIAccount.BalanceFetcher,
         link: @escaping LiveSetappAIAccount.PurchaseLinkFetcher = { nil },
-        opened: ((URL) -> Void)? = nil,
         timeout: Duration = .seconds(2)
     ) -> LiveSetappAIAccount {
         LiveSetappAIAccount(isConfigured: configured, fetchBalances: balance, fetchPurchaseLink: link,
-                            openURL: { opened?($0) }, balanceTimeout: timeout, purchaseLinkTimeout: .milliseconds(300))
+                            balanceTimeout: timeout, purchaseLinkTimeout: .milliseconds(300))
     }
 
     private func waitUntil(_ what: String, _ condition: () -> Bool) async {
@@ -1293,13 +1292,13 @@ final class SetappAICheck {
             ("an error", { throw URLError(.notConnectedToInternet) }, fallback),
             ("a stall", { await Self.stall(seconds: 2); return URL(string: "https://late.example.com") }, fallback),
             ("not a web page", { URL(string: "file:///etc/hosts") }, fallback),
+            ("plain http", { URL(string: "http://store.setapp.com/ai/credits") }, fallback),
         ]
         for (name, link, expected) in cases {
-            var opened: [URL] = []
-            let account = account(balance: { _ in Self.balances(1, of: 1) }, link: link, opened: { opened.append($0) })
-            account.openPurchasePage()
-            await waitUntil(name) { !opened.isEmpty }
-            expectEqual(opened, [expected], name)
+            let account = account(balance: { _ in Self.balances(1, of: 1) }, link: link)
+            let start = ContinuousClock.now
+            expectEqual(await account.purchaseURL(), expected, name)
+            expect(ContinuousClock.now - start < .seconds(1), "\(name): the deadline doesn't wait for the call")
         }
     }
 }

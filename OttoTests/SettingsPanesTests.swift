@@ -494,6 +494,8 @@ final class SettingsPanesTests: XCTestCase {
         XCTAssertTrue(SettingsModelsPane.usesSetappAI(settings: settings, account: account))
         XCTAssertFalse(SettingsModelsPane.usesSetappAI(settings: settings, account: nil),
                        "no account: the pane as today, whatever is stored")
+        XCTAssertFalse(SettingsModelsPane.usesSetappAI(settings: settings, account: StaticSetappAIAccount(isConfigured: false)),
+                       "not set up in this build: the user's own key answers, so its field shows")
         settings.aiProvider = .anthropic
         XCTAssertFalse(SettingsModelsPane.usesSetappAI(settings: settings, account: account))
 
@@ -501,6 +503,47 @@ final class SettingsPanesTests: XCTestCase {
         XCTAssertTrue(SettingsProviderSection.showsCredits(provider: .setappAI, isConfigured: true))
         XCTAssertFalse(SettingsProviderSection.showsCredits(provider: .setappAI, isConfigured: false))
         XCTAssertFalse(SettingsProviderSection.showsCredits(provider: .anthropic, isConfigured: true))
+
+        // Not set up: the radio group checks the user's own key, which is what answers.
+        XCTAssertEqual(SettingsProviderSection.shownProvider(stored: .setappAI, isConfigured: false), .anthropic)
+        XCTAssertEqual(SettingsProviderSection.shownProvider(stored: .setappAI, isConfigured: true), .setappAI)
+        XCTAssertEqual(SettingsProviderSection.shownProvider(stored: .anthropic, isConfigured: false), .anthropic)
+    }
+
+    func testTheCreditsRowOffersGetCreditsWhenLoadedOrFailed() {
+        XCTAssertEqual(SetappAICreditsRow.controls(for: .idle), [])
+        XCTAssertEqual(SetappAICreditsRow.controls(for: .loading), [])
+        XCTAssertEqual(SetappAICreditsRow.controls(for: .loaded(SetappCreditBalance(available: 1, granted: 6_000))),
+                       [.getCredits])
+        XCTAssertEqual(SetappAICreditsRow.controls(for: .failed("Couldn't load your credits.")), [.tryAgain, .getCredits],
+                       "a member who can't see the balance may still know they're out")
+    }
+
+    func testGetCreditsOpensSetappsPageThroughSettingsOwnOpener() async {
+        let link = URL(string: "https://store.setapp.com/ai/credits?app=otto")!
+        let account = StaticSetappAIAccount(creditState: .loaded(SetappCreditBalance(available: 0, granted: 6_000)),
+                                            purchaseLink: link)
+        var opened: [URL] = []
+        await SetappAICreditsRow.openPurchasePage(of: account, with: SettingsExternalOpener { opened.append($0) })
+        XCTAssertEqual(opened, [link])
+        XCTAssertEqual(account.calls, ["purchaseURL"])
+        let fallback = await StaticSetappAIAccount().purchaseURL()
+        XCTAssertEqual(fallback, SetappCreditFormatter.fallbackPurchaseURL,
+                       "the static account hands over Setapp's AI page unless told otherwise")
+    }
+
+    func testSettingsBecomingKeyRefreshesTheBalanceOnSetappAI() {
+        for (provider, isConfigured, expected) in [(AIProvider.setappAI, true, ["refresh(force)"]),
+                                                    (.anthropic, true, []), (.setappAI, false, [])] {
+            let account = StaticSetappAIAccount(isConfigured: isConfigured)
+            settings.aiProvider = provider
+            var services = SettingsServices.inert(settings: settings)
+            services.setappAI = account
+            let controller = SettingsWindowController(settings: settings, services: services)
+            controller.preferences = defaults
+            controller.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification))
+            XCTAssertEqual(account.calls, expected, "\(provider) configured: \(isConfigured)")
+        }
     }
 
     func testModelRowsDropTheirListPricesOnSetappAI() {
@@ -526,8 +569,6 @@ final class SettingsPanesTests: XCTestCase {
             }
         }
         settings.aiProvider = .setappAI
-        XCTAssertFalse(SettingsModelsPane.usesSetappAI(settings: settings, account: StaticSetappAIAccount(isConfigured: false)),
-                       "not set up in this build: the user's own key answers, so its field shows")
         var services = SettingsServices.inert(settings: settings)
         services.setappAI = StaticSetappAIAccount(isConfigured: false)
         try await layOut(SettingsView(settings: settings, tab: .models, services: services), tab: .models)
@@ -539,9 +580,9 @@ final class SettingsPanesTests: XCTestCase {
         var services = SettingsServices.inert(settings: settings)
         services.setappAI = account
         try await layOut(SettingsView(settings: settings, tab: .models, services: services), tab: .models)
-        XCTAssertEqual(account.calls.first, "refresh", "the cached balance is fine on appear")
-        XCTAssertFalse(account.calls.contains("refresh(force)"))
-        XCTAssertFalse(account.calls.contains("purchase"))
+        XCTAssertEqual(account.calls.first, "refresh(force)", "past the SDK's cache: credits may have moved since")
+        XCTAssertFalse(account.calls.contains("refresh"))
+        XCTAssertFalse(account.calls.contains("purchaseURL"))
 
         // Nothing to load on the user's own key, or in a build where Setapp AI isn't set up.
         for (provider, isConfigured) in [(AIProvider.anthropic, true), (.setappAI, false)] {

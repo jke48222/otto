@@ -3,12 +3,11 @@
 //  Otto
 //
 //  The member's Setapp AI account in the Setapp build (SPEC §19, "Setapp AI"): the credit balance from
-//  `SetappManager.shared.ai.credits` and the purchase page from `ai.links`. Settings → Models and the reply footer
-//  see it as `SetappAIAccountModel`; tests and snapshots use `StaticSetappAIAccount`.
+//  `SetappManager.shared.ai.credits` and the purchase page's address from `ai.links`. Settings → Models and the reply
+//  footer see it as `SetappAIAccountModel`; tests and snapshots use `StaticSetappAIAccount`.
 //
 
 #if OTTO_SETAPP
-import AppKit
 import Foundation
 import Observation
 import os
@@ -22,7 +21,7 @@ import SetappAI
     /// A forced refresh is a bare XPC round trip to Setapp with no bound of its own; a stalled handshake would
     /// otherwise leave the row loading for the rest of the session.
     nonisolated static let balanceTimeout: Duration = .seconds(15)
-    /// "Get Credits" falls back to `SetappCreditFormatter.fallbackPurchaseURL` after this long.
+    /// `purchaseURL()` falls back to `SetappCreditFormatter.fallbackPurchaseURL` after this long.
     nonisolated static let purchaseLinkTimeout: Duration = .seconds(5)
 
     nonisolated static let loadFailedCopy = "Couldn't load your credits. Make sure Setapp is open."
@@ -34,7 +33,6 @@ import SetappAI
     @ObservationIgnored private var isRefreshing = false
     @ObservationIgnored private let fetchBalances: BalanceFetcher
     @ObservationIgnored private let fetchPurchaseLink: PurchaseLinkFetcher
-    @ObservationIgnored private let openURL: @MainActor (URL) -> Void
     @ObservationIgnored private let balanceTimeout: Duration
     @ObservationIgnored private let purchaseLinkTimeout: Duration
 
@@ -45,24 +43,21 @@ import SetappAI
         self.init(
             isConfigured: SetappSDKTransport.configureIfNeeded(),
             fetchBalances: { try await SetappManager.shared.ai.credits.balances(forceUpdate: $0) },
-            fetchPurchaseLink: { try await SetappManager.shared.ai.links.purchaseURL() },
-            openURL: { NSWorkspace.shared.open($0) }
+            fetchPurchaseLink: { try await SetappManager.shared.ai.links.purchaseURL() }
         )
     }
 
-    /// Tests: scripted SDK calls, a recorder for opened pages, short timeouts.
+    /// Tests: scripted SDK calls and short timeouts.
     init(
         isConfigured: Bool,
         fetchBalances: @escaping BalanceFetcher,
         fetchPurchaseLink: @escaping PurchaseLinkFetcher,
-        openURL: @escaping @MainActor (URL) -> Void,
         balanceTimeout: Duration = LiveSetappAIAccount.balanceTimeout,
         purchaseLinkTimeout: Duration = LiveSetappAIAccount.purchaseLinkTimeout
     ) {
         self.isConfigured = isConfigured
         self.fetchBalances = fetchBalances
         self.fetchPurchaseLink = fetchPurchaseLink
-        self.openURL = openURL
         self.balanceTimeout = balanceTimeout
         self.purchaseLinkTimeout = purchaseLinkTimeout
     }
@@ -92,18 +87,15 @@ import SetappAI
         }
     }
 
-    /// Asks the SDK for the current purchase link when asked (Setapp may change it) and opens it; Setapp's AI page
-    /// when the SDK has none, fails, or takes longer than `purchaseLinkTimeout`.
-    func openPurchasePage() {
+    /// Asks the SDK for the current purchase link (Setapp may change it); Setapp's AI page when the SDK has none,
+    /// fails, hands over something other than an https page, or takes longer than `purchaseLinkTimeout`.
+    func purchaseURL() async -> URL {
         let fetch = fetchPurchaseLink
-        let timeout = purchaseLinkTimeout
-        let open = openURL
-        Task {
-            let result = await SetappCallTimeout.race(timeout: timeout) { try await fetch() }
-            let link = (try? result.get()) ?? nil
-            if link == nil { Self.logger.info("No purchase link from Setapp; opening the fallback page") }
-            open(Self.purchaseURL(link))
-        }
+        let result = await SetappCallTimeout.race(timeout: purchaseLinkTimeout) { try await fetch() }
+        let link = (try? result.get()) ?? nil
+        let url = Self.purchaseURL(link)
+        if url != link { Self.logger.info("No usable purchase link from Setapp; using the fallback page") }
+        return url
     }
 
     // MARK: - Pure mapping
@@ -117,9 +109,10 @@ import SetappAI
         return .loaded(SetappCreditBalance(available: balances.totalAvailable.amount, granted: granted))
     }
 
-    /// The SDK's link when it is a web page, else the fallback.
+    /// The SDK's link when it is an https page, else the fallback. Plain http is refused: a purchase page has no
+    /// business arriving unencrypted.
     nonisolated static func purchaseURL(_ link: URL?) -> URL {
-        guard let link, let scheme = link.scheme?.lowercased(), scheme == "https" || scheme == "http" else {
+        guard let link, link.scheme?.lowercased() == "https", link.host?.isEmpty == false else {
             return SetappCreditFormatter.fallbackPurchaseURL
         }
         return link

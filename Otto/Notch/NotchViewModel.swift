@@ -1207,11 +1207,14 @@ struct NotchDebugSeed {
     }
 
     /// "Get Credits" on a reply Setapp AI turned away for lack of credits: closes the notch and opens Setapp's page
-    /// for buying more. Does nothing without a Setapp AI account.
+    /// for buying more, the way the notch opens every outside link. Does nothing without a Setapp AI account.
     func getSetappCredits() {
         guard let setappAI else { return }
         close(.programmatic)
-        setappAI.openPurchasePage()
+        Task { [weak self] in
+            let url = await setappAI.purchaseURL()
+            self?.openExternalURL(url)
+        }
     }
 
     // MARK: - Attachments

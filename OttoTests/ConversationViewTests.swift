@@ -110,6 +110,13 @@ final class ConversationViewTests: XCTestCase {
         XCTAssertEqual(action(.notConfigured, account: false), .openSettings)
     }
 
+    func testGetCreditsComesWithAQuieterOpenSettings() {
+        // "Get more, or switch to your own Anthropic key in Settings": both fixes get a button.
+        XCTAssertEqual(MessageView.FailureAction.getCredits.companion, .openSettings)
+        XCTAssertNil(MessageView.FailureAction.openSettings.companion)
+        XCTAssertTrue(SetappAIFailure.insufficientCredits.copy.contains("Settings"))
+    }
+
     func testOtherRepliesOfferNothingAheadOfRetry() {
         XCTAssertNil(MessageView.failureAction(for: .failed(LLMError.overloaded.errorDescription ?? ""),
                                                hasSetappAIAccount: true))

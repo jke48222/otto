@@ -63,7 +63,6 @@ struct SettingsProviderSection: View {
         .onChange(of: settings.aiProvider) { _, _ in refreshCredits() }
     }
 
-    /// Pure. The row's caption: what the provider costs, or why Setapp AI can't be picked.
     /// The radio choice: what answers. A build where Setapp AI isn't set up answers on the user's own key whatever
     /// is stored (`AppSettings.effectiveProvider`), so that row is the one checked.
     private var providerSelection: Binding<AIProvider> {
@@ -78,6 +77,7 @@ struct SettingsProviderSection: View {
         isSelectable(stored, isConfigured: isConfigured) ? stored : .anthropic
     }
 
+    /// Pure. The row's caption: what the provider costs, or why Setapp AI can't be picked.
     static func subtitle(for provider: AIProvider, isConfigured: Bool) -> String {
         switch provider {
         case .setappAI:
@@ -97,19 +97,38 @@ struct SettingsProviderSection: View {
         provider == .setappAI && isConfigured
     }
 
-    /// Loads the balance (the SDK's cached value is fine here) whenever it is about to show.
+    /// Loads the balance whenever it is about to show, past the SDK's cache: the member may have spent or bought
+    /// credits since Settings last asked.
     private func refreshCredits() {
         guard Self.showsCredits(provider: settings.aiProvider, isConfigured: account.isConfigured) else { return }
-        account.refreshCredits(force: false)
+        account.refreshCredits(force: true)
     }
 }
 
 /// The member's balance under the provider choice: what's left with a quiet bar and Get Credits, a loading line,
-/// or why it couldn't load with Try Again.
+/// or why it couldn't load with Try Again and Get Credits.
 struct SetappAICreditsRow: View {
     let account: any SetappAIAccountModel
 
+    @Environment(\.settingsOpenExternal) private var openExternal
+
     static let loadingText = "Loading your credits…"
+
+    /// The row's buttons, in order.
+    enum Control: Equatable {
+        case tryAgain
+        case getCredits
+    }
+
+    /// Pure. Get Credits whenever the balance has loaded or failed to (a member who can't see the balance may
+    /// still know they're out), with Try Again first after a failure; nothing while it loads.
+    static func controls(for state: SetappCreditState) -> [Control] {
+        switch state {
+        case .idle, .loading: return []
+        case .loaded: return [.getCredits]
+        case .failed: return [.tryAgain, .getCredits]
+        }
+    }
 
     var body: some View {
         switch account.creditState {
@@ -136,7 +155,7 @@ struct SetappAICreditsRow: View {
                 }
                 .accessibilityElement(children: .combine)
                 Spacer(minLength: 8)
-                Button("Get Credits") { account.openPurchasePage() }
+                buttons
             }
         case .failed(let copy):
             HStack(alignment: .firstTextBaseline, spacing: 6) {
@@ -146,9 +165,34 @@ struct SetappAICreditsRow: View {
                     .foregroundStyle(SettingsTone.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 8)
-                Button("Try Again") { account.refreshCredits(force: true) }
+                buttons
             }
             .font(.callout)
         }
+    }
+
+    private var buttons: some View {
+        HStack(spacing: 8) {
+            ForEach(Self.controls(for: account.creditState), id: \.self) { control in
+                switch control {
+                case .tryAgain:
+                    Button("Try Again") { account.refreshCredits(force: true) }
+                case .getCredits:
+                    Button("Get Credits", action: getCredits)
+                }
+            }
+        }
+    }
+
+    private func getCredits() {
+        let account = account
+        let openExternal = openExternal
+        Task { await Self.openPurchasePage(of: account, with: openExternal) }
+    }
+
+    /// "Get Credits": Setapp's page through Settings' own opener, which drops the floating panel first so the page
+    /// doesn't open behind it.
+    static func openPurchasePage(of account: any SetappAIAccountModel, with openExternal: SettingsExternalOpener) async {
+        openExternal(await account.purchaseURL())
     }
 }

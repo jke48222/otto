@@ -1258,18 +1258,24 @@ final class NotchViewModelTests: XCTestCase {
         XCTAssertEqual(vm.readingAnchor?.messageID, questionID)
     }
 
-    func testGetSetappCreditsClosesAndOpensThePurchasePage() {
+    func testGetSetappCreditsClosesAndOpensThePurchasePage() async {
         let vm = CoreHarness(self).vm
+        var opened: [URL] = []
+        vm.openExternalURL = { opened.append($0) }
         // Without an account there is nothing to buy credits for: the notch stays as it is.
         vm.open(reason: .click, focus: false)
         vm.getSetappCredits()
         XCTAssertTrue(vm.isOpen)
 
-        let account = StaticSetappAIAccount(creditState: .loaded(SetappCreditBalance(available: 0, granted: 6_000)))
+        let link = URL(string: "https://store.setapp.com/ai/credits?app=otto")!
+        let account = StaticSetappAIAccount(creditState: .loaded(SetappCreditBalance(available: 0, granted: 6_000)),
+                                            purchaseLink: link)
         vm.setappAI = account
         vm.getSetappCredits()
-        XCTAssertEqual(account.calls, ["purchase"])
-        XCTAssertFalse(vm.isOpen)
+        XCTAssertFalse(vm.isOpen, "the notch closes first, so the page isn't opened behind it")
+        await waitUntil { !opened.isEmpty }
+        XCTAssertEqual(opened, [link], "through the notch's own way out")
+        XCTAssertEqual(account.calls, ["purchaseURL"])
     }
 
     func testOpenSettingsClosesThenCallsTheTabHook() {
