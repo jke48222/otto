@@ -483,9 +483,41 @@ final class SettingsPanesTests: XCTestCase {
     func testSetappAICopyIsTheSpecifiedCopy() {
         XCTAssertEqual(SettingsProviderSection.gatewayCaption, "Your messages go to Setapp's AI gateway, run by MacPaw, "
                        + "which passes them to Anthropic. Setapp counts credits for each reply.")
-        XCTAssertEqual(SettingsProviderSection.webSearchCaption, "Web search works with Opus 5 and Sonnet 5.")
+        XCTAssertEqual(SettingsProviderSection.webSearchCaption, "Web search works with Opus 5 and Sonnet 5. Setapp AI "
+                       + "can't open web pages, so an attached browser tab gives Claude only its title and address.")
         XCTAssertEqual(SettingsModelsPane.setappAIUsageNote, "Setapp AI replies use credits and aren't counted here.")
         XCTAssertEqual(SetappAICreditsRow.loadingText, "Loading your credits…")
+        XCTAssertEqual(SettingsModelsPane.showCostSubtitle(usesSetappAI: true),
+                       "Replies on your own key show an estimate when you point at them.")
+        XCTAssertEqual(SettingsModelsPane.showCostSubtitle(usesSetappAI: false),
+                       "An estimate appears next to a reply when you point at it.")
+    }
+
+    func testTheWebToggleSaysHaikuDoesntSearchOnSetappAI() {
+        XCTAssertEqual(SettingsModelsPane.setappAIWebSearchSubtitle(for: .haiku45),
+                       "No web search on Haiku 4.5 with Setapp AI")
+        XCTAssertEqual(SettingsModelsPane.setappAIWebSearchSubtitle(for: .haiku45),
+                       HeaderModelMenu.webSearchCaption(model: .haiku45, provider: .setappAI),
+                       "Settings and the header menu say the same")
+        for model in [ModelOption.opus5, .sonnet5] {
+            XCTAssertEqual(SettingsModelsPane.setappAIWebSearchSubtitle(for: model), "Let Claude look things up.")
+        }
+    }
+
+    func testTheAnthropicInvoiceShowsOnlyWithOwnKeyUsage() {
+        XCTAssertTrue(SettingsModelsPane.showsAnthropicBilling(usesSetappAI: false, hasOwnKeyUsage: false),
+                      "on the user's own key, always")
+        XCTAssertTrue(SettingsModelsPane.showsAnthropicBilling(usesSetappAI: false, hasOwnKeyUsage: true))
+        XCTAssertFalse(SettingsModelsPane.showsAnthropicBilling(usesSetappAI: true, hasOwnKeyUsage: false),
+                       "on Setapp AI with nothing billed to a key, there is no invoice to point at")
+        XCTAssertTrue(SettingsModelsPane.showsAnthropicBilling(usesSetappAI: true, hasOwnKeyUsage: true))
+
+        let ledger = UsageLedger(fileURL: nil)
+        XCTAssertFalse(SettingsModelsPane.hasOwnKeyUsage(ledger))
+        ledger.debugSeed(answers: [], days: ["2025-01-02": [
+            "claude-haiku-4-5": UsageTotals(usage: TokenUsage(input: 10, output: 5), costNanos: 35_000, replies: 1),
+        ]])
+        XCTAssertTrue(SettingsModelsPane.hasOwnKeyUsage(ledger), "any day counts, however long ago")
     }
 
     func testTheModelsPaneDecidesFromTheAccountNotTheBuild() {

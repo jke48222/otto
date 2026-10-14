@@ -27,16 +27,17 @@ struct SettingsModelsPane: View {
                 Toggle(isOn: $settings.webAccess) {
                     // The gateway has web search but no web fetch.
                     if usesSetappAI {
-                        labeled("Web search", "Let Claude look things up.")
+                        labeled("Web search", Self.setappAIWebSearchSubtitle(for: settings.model))
                     } else {
                         labeled("Web search & fetch", "Let Claude look things up and read pages.")
                     }
                 }
                 Toggle(isOn: Bindable(settings.usage).showCost) {
-                    labeled("Show cost on replies", "An estimate appears next to a reply when you point at it.")
+                    labeled("Show cost on replies", Self.showCostSubtitle(usesSetappAI: usesSetappAI))
                 }
             }
-            SettingsUsageSection(ledger: services.ledger, hasSetappAI: services.setappAI != nil)
+            SettingsUsageSection(ledger: services.ledger, hasSetappAI: services.setappAI != nil,
+                                 usesSetappAI: usesSetappAI)
                 .id(SettingsAnchor.usage.rawValue)
         }
     }
@@ -53,6 +54,21 @@ struct SettingsModelsPane: View {
     /// answers on the user's own key, so the key field shows.
     static func usesSetappAI(settings: AppSettings, account: (any SetappAIAccountModel)?) -> Bool {
         account?.isConfigured == true && settings.aiProvider == .setappAI
+    }
+
+    /// Pure. "Show cost on replies": only replies on the user's own key have a dollar estimate.
+    static func showCostSubtitle(usesSetappAI: Bool) -> String {
+        usesSetappAI
+            ? "Replies on your own key show an estimate when you point at them."
+            : "An estimate appears next to a reply when you point at it."
+    }
+
+    /// The web search caption for Haiku 4.5 on Setapp AI (the header's model menu says the same).
+    static let setappAIHaikuWebSearchCaption = HeaderModelMenu.setappAINoWebSearchCaption
+
+    /// Pure. The web toggle's subtitle on Setapp AI: the gateway searches with Opus 5 and Sonnet 5 only.
+    static func setappAIWebSearchSubtitle(for model: ModelOption) -> String {
+        model.supportsSetappAIWebSearch ? "Let Claude look things up." : setappAIHaikuWebSearchCaption
     }
 
     // MARK: Model
@@ -93,6 +109,18 @@ struct SettingsModelsPane: View {
     static func subtitle(for option: ModelOption, showsPrice: Bool = true) -> String {
         guard showsPrice, let price = ModelPricing.price(for: option.rawValue) else { return option.subtitle }
         return "\(option.subtitle) · \(perMillion(price.input)) / \(perMillion(price.output)) per million tokens"
+    }
+
+    /// Pure. The Anthropic invoice sentence and "Open Anthropic Console": on the user's own key, or on Setapp AI once
+    /// the ledger holds replies that key paid for.
+    static func showsAnthropicBilling(usesSetappAI: Bool, hasOwnKeyUsage: Bool) -> Bool {
+        !usesSetappAI || hasOwnKeyUsage
+    }
+
+    /// Whether the ledger holds anything at all. It only ever counts replies on the user's own key (Setapp AI
+    /// replies are paid in credits and never enter it), so anything there is own-key usage.
+    static func hasOwnKeyUsage(_ ledger: UsageLedger) -> Bool {
+        ledger.totals(from: .distantPast, to: .distantFuture) != UsageTotals()
     }
 
     /// Nano-dollars per token as dollars per million tokens: 5,000 → "$5", 2,500 → "$2.50".
@@ -265,6 +293,8 @@ private struct SettingsUsageSection: View {
     let ledger: UsageLedger
     /// The build has a Setapp AI account: say why its replies are missing from the totals.
     let hasSetappAI: Bool
+    /// Setapp AI is the provider: the Anthropic invoice only matters once there is own-key usage to bill.
+    let usesSetappAI: Bool
 
     @Environment(\.settingsOpenExternal) private var openExternal
     @State private var confirmsReset = false
@@ -321,10 +351,12 @@ private struct SettingsUsageSection: View {
             if hasSetappAI {
                 SettingsCaption(SettingsModelsPane.setappAIUsageNote)
             }
+            let showsBilling = SettingsModelsPane.showsAnthropicBilling(
+                usesSetappAI: usesSetappAI, hasOwnKeyUsage: SettingsModelsPane.hasOwnKeyUsage(ledger))
             SettingsCaption("Estimates at list prices (updated \(Self.pricesMonth)). Web search is $10 per 1,000 "
-                            + "searches. Your invoice in the Anthropic Console is authoritative.")
+                            + "searches." + (showsBilling ? " Your invoice in the Anthropic Console is authoritative." : ""))
             HStack {
-                if let url = SettingsLinks.anthropicConsole {
+                if showsBilling, let url = SettingsLinks.anthropicConsole {
                     Button("Open Anthropic Console") { openExternal(url) }
                 }
                 Spacer()

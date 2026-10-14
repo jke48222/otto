@@ -402,4 +402,14 @@ final class UsageComponentsTests: XCTestCase {
                        "This month  12.4k tokens")
         XCTAssertEqual(UsageMenuItems.detailsTitle, "Usage Details…")
     }
+
+    func testUsageMenuShowsCreditsInPlaceOfDollarsOnSetappAI() {
+        XCTAssertEqual(UsageMenuItems.setappAITitle(.loaded(SetappCreditBalance(available: 1_234.9, granted: 6_000))),
+                       "1,234 of 6,000 credits left")
+        XCTAssertEqual(UsageMenuItems.setappAITitle(.loaded(SetappCreditBalance(available: 40, granted: 0))),
+                       "40 credits left")
+        for state in [SetappCreditState.idle, .loading, .failed("Couldn't load your credits.")] {
+            XCTAssertEqual(UsageMenuItems.setappAITitle(state), "Setapp AI uses credits, not dollars", "\(state)")
+        }
+    }
 }

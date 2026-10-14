@@ -19,7 +19,8 @@ struct SettingsProviderSection: View {
 
     static let gatewayCaption = "Your messages go to Setapp's AI gateway, run by MacPaw, which passes them to "
         + "Anthropic. Setapp counts credits for each reply."
-    static let webSearchCaption = "Web search works with Opus 5 and Sonnet 5."
+    static let webSearchCaption = "Web search works with Opus 5 and Sonnet 5. Setapp AI can't open web pages, so an "
+        + "attached browser tab gives Claude only its title and address."
 
     var body: some View {
         Section {

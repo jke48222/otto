@@ -1234,6 +1234,36 @@ final class NotchViewModelTests: XCTestCase {
                        "Haiku 4.5 from your next message · a PDF here is too long for Haiku 4.5")
     }
 
+    func testSwitchingToHaikuOnSetappAISaysItWontSearch() {
+        XCTAssertEqual(NotchViewModel.modelSwitchNotice(.haiku45, wasStreaming: false, provider: .setappAI,
+                                                        pdfTooLong: false),
+                       "Switched to Haiku 4.5 · no web search")
+        XCTAssertEqual(NotchViewModel.modelSwitchNotice(.haiku45, wasStreaming: true, provider: .setappAI,
+                                                        pdfTooLong: true),
+                       "Haiku 4.5 from your next message · no web search · a PDF here is too long for Haiku 4.5")
+        XCTAssertEqual(NotchViewModel.modelSwitchNotice(.haiku45, wasStreaming: false, provider: .anthropic,
+                                                        pdfTooLong: false),
+                       "Switched to Haiku 4.5", "Haiku searches on the user's own key")
+        for model in [ModelOption.opus5, .sonnet5] {
+            XCTAssertEqual(NotchViewModel.modelSwitchNotice(model, wasStreaming: false, provider: .setappAI,
+                                                            pdfTooLong: false),
+                           "Switched to \(model.shortName)")
+        }
+    }
+
+    func testTheMenuShowsCreditsOnlyWhileSetappAIAnswers() {
+        let loaded = SetappCreditState.loaded(SetappCreditBalance(available: 1_234, granted: 6_000))
+        let account = StaticSetappAIAccount(creditState: loaded)
+        XCTAssertEqual(NotchViewModel.setappAICredits(provider: .setappAI, account: account), loaded)
+        XCTAssertNil(NotchViewModel.setappAICredits(provider: .anthropic, account: account), "own key: dollars")
+        XCTAssertNil(NotchViewModel.setappAICredits(provider: .setappAI, account: nil))
+
+        let vm = CoreHarness(self).vm
+        vm.setappAI = account
+        vm.settings.aiProvider = .setappAI
+        XCTAssertNil(vm.setappAICredits, "this build doesn't offer Setapp AI, so its key answers")
+    }
+
     func testReadingAnchorLandsOnAReplyThatFinishedWhileClosed() async {
         let client = ScriptedLLMClient([reply("Long answer.")])
         let harness = CoreHarness(self, client: client)

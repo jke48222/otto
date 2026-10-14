@@ -384,6 +384,14 @@ final class ShortcutSheetTests: XCTestCase {
                        "Model: Opus 5. Change model, response style and web search.")
     }
 
+    func testHeaderWebToggleIsOffForHaikuOnSetappAI() {
+        XCTAssertEqual(HeaderModelMenu.webSearchCaption(model: .haiku45, provider: .setappAI),
+                       "No web search on Haiku 4.5 with Setapp AI")
+        XCTAssertNil(HeaderModelMenu.webSearchCaption(model: .haiku45, provider: .anthropic))
+        XCTAssertNil(HeaderModelMenu.webSearchCaption(model: .opus5, provider: .setappAI))
+        XCTAssertNil(HeaderModelMenu.webSearchCaption(model: .sonnet5, provider: .setappAI))
+    }
+
     /// The sheet's rows end between two rows and never leave a section header in view without its first row.
     func testSheetViewportEndsBetweenRowsWithoutAnOrphanedHeader() {
         typealias Mark = ShortcutSheetView.Mark
