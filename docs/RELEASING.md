@@ -43,7 +43,7 @@ with its number. `Config/Commercial.xcconfig` and `site/commerce.json` hold the 
 | Item | What you do | Where the value goes |
 | --- | --- | --- |
 | J1 | Polar production account and organization; note the organization ID and slug | `OTTO_POLAR_ORGANIZATION_ID`, `OTTO_POLAR_PORTAL_SLUG`; `commerce.json` `polar.portalURL` |
-| J2 | Product "Otto for Mac", one-time $5 (it was $19 until 2026-10-13), visibility **private**, with a License Keys benefit: prefix `OTTO`, no expiry, activation limit 3, "Enable user to deactivate instances via Polar" on | `OTTO_POLAR_BENEFIT_ID` |
+| J2 | Product "Otto for Mac", one-time $19, visibility **private**, with a License Keys benefit: prefix `OTTO`, no expiry, activation limit 3, "Enable user to deactivate instances via Polar" on | `OTTO_POLAR_BENEFIT_ID` |
 | J3 | The same organization, product and benefit in the Polar sandbox, plus one sandbox test key | the `[config=Debug]` values |
 | J4 | Checkout links (regular, and launch week with a preset discount), a 30% student code and a 100% code for your own orders; success URL `https://<site>/thanks`, return URL `https://<site>/buy`. Created at HM1, committed at HM3 | `commerce.json` `polar.checkoutURL`, `launch.checkoutURL` |
 | J5 | Polar payouts (Stripe Connect); the account review is submitted at HM3 | the Polar dashboard |

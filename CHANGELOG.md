@@ -44,7 +44,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- The signed app costs $5 once (it was $19), still for 3 Macs with a 14-day trial and 30-day refunds.
 - Shared copy names the device it runs on ("saved on this iPhone"), so the core reads right on both.
 - In demo mode, the reply after adding an event or reminder says where it went ("“Dentist” is on your Home
   calendar") instead of quoting the action's raw result.

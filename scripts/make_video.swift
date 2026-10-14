@@ -558,7 +558,7 @@ func endCard(start: Double, end: Double) -> Card {
         ctx.strokePath()
 
         let g = sans(30, .medium)
-        let line = isLaunch ? "Try it free for 14 days, then $5 once. Or build it from source."
+        let line = isLaunch ? "Try it free for 14 days, then $19 once. Or build it from source."
             : "Build it from source today. The signed app is coming soon."
         drawCentered(attributed(line, g, Ink.primary.withAlphaComponent(0.9), kern: 0.1), baselineY: 276, font: g)
     }

@@ -19,7 +19,7 @@
 <p align="center">
   <a href="https://ottonotch.com/download"><strong>Download the 14-day trial</strong></a>
   &nbsp;·&nbsp;
-  <a href="https://ottonotch.com/buy"><strong>Buy Otto, $5</strong></a>
+  <a href="https://ottonotch.com/buy"><strong>Buy Otto, $19</strong></a>
   &nbsp;·&nbsp;
   <a href="#build-from-source"><strong>Build from source (free)</strong></a>
   &nbsp;·&nbsp;
@@ -27,7 +27,7 @@
 </p>
 
 <p align="center">
-  <sub>Signed app $5 once, with a 14-day free trial · source code free under the MIT license · macOS 14 Sonoma or later · uses the Claude API (bring your own Anthropic key)</sub>
+  <sub>Signed app $19 once, with a 14-day free trial · source code free under the MIT license · macOS 14 Sonoma or later · uses the Claude API (bring your own Anthropic key)</sub>
 </p>
 
 <p align="center">
@@ -486,7 +486,7 @@ It follows along when you plug displays in or out.
 <details>
 <summary><strong>How much does it cost?</strong></summary>
 
-The signed app is $5 once, for up to 3 Macs, with every 1.x update and a 14-day trial.
+The signed app is $19 once, for up to 3 Macs, with every 1.x update and a 14-day trial.
 Polar runs the checkout as the merchant of record, and you can get a full refund within 30 days. The source
 code is free under the MIT license, and building it yourself costs nothing. Either way, you pay Anthropic
 for what you use, per token, on your own API account. Set a monthly spend limit in the Anthropic Console if
