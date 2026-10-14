@@ -126,14 +126,30 @@ struct ResponsesClient: LLMClient {
         progress: inout AttemptProgress
     ) async throws {
         var accumulator = ResponsesStreamAccumulator(requestedModel: request.model)
+        // The gateway acknowledges a request (`response.created`) before the model has read it, so `.messageStart`
+        // waits for the first event after it. A response that fails before any output (a prompt too long for the
+        // model, a failure upstream) then reaches ChatSession with nothing delivered, the way a request Anthropic
+        // refused does: ChatSession compacts and resends an overflow, and `run` retries a transient failure.
+        var heldStart: StreamEvent?
+        func deliver(_ streamEvent: StreamEvent) throws {
+            let pending = (heldStart.map { [$0] } ?? []) + [streamEvent]
+            heldStart = nil
+            for next in pending {
+                if case .terminated = continuation.yield(next) {
+                    throw CancellationError()
+                }
+                progress.didYield = true
+            }
+        }
         // Cancelling this task terminates the transport's stream, which cancels the gateway call.
         for try await event in transport.events(for: body) {
             progress.receivedEvent = true
             for streamEvent in try accumulator.handle(event) {
-                if case .terminated = continuation.yield(streamEvent) {
-                    throw CancellationError()
+                if case .messageStart = streamEvent {
+                    heldStart = streamEvent
+                } else {
+                    try deliver(streamEvent)
                 }
-                progress.didYield = true
             }
             if accumulator.isComplete { break }
         }
@@ -142,10 +158,7 @@ struct ResponsesClient: LLMClient {
         guard accumulator.isComplete else {
             throw LLMError.network(Self.prematureEOFMessage)
         }
-        if case .terminated = continuation.yield(.completed(accumulator.result())) {
-            throw CancellationError()
-        }
-        progress.didYield = true
+        try deliver(.completed(accumulator.result()))
     }
 
     /// Whether `body` carries what `.compatible` leaves out: reasoning, a replayed reasoning item or a strict tool.

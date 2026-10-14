@@ -143,9 +143,25 @@ final class ResponsesClientTests: XCTestCase {
     func testFailedOverflowIsThrownWithoutARetryForChatSessionToCompact() async {
         let (events, error, transport) = await run([.lines(ResponsesFixtures.failedOverflow), .lines(ResponsesFixtures.text)],
                                                    request: makeRequest(model: .sonnet5))
-        XCTAssertEqual(events.map(eventLabel), ["messageStart(anthropic/claude-sonnet-5)"])
+        XCTAssertEqual(events.map(eventLabel), [], "nothing delivered, so ChatSession may compact and resend")
         XCTAssertTrue(ChatSession.isContextOverflow(error ?? CancellationError()), "\(String(describing: error))")
         XCTAssertEqual(transport.bodies.count, 1)
+    }
+
+    /// `response.created` only acknowledges the request: a failure before any output is retried like one before
+    /// any event, and the retry's `.messageStart` is the only one delivered.
+    func testFailureAfterOnlyTheAcknowledgementIsRetried() async {
+        let created = ScriptedResponsesTransport.decode(ResponsesFixtures.text[0])
+        let failed: JSONValue = ["type": "response.failed", "response": [
+            "id": "resp_01text", "status": "failed", "model": "anthropic/claude-opus-5",
+            "error": ["code": "server_error", "message": "The model failed to generate a response."],
+        ]]
+        let (events, error, transport) = await run([.events([created, failed]), .lines(ResponsesFixtures.text)])
+        XCTAssertNil(error)
+        XCTAssertEqual(events.first.map(eventLabel), "messageStart(anthropic/claude-opus-5)")
+        XCTAssertEqual(events.filter { if case .messageStart = $0 { return true } else { return false } }.count, 1)
+        XCTAssertEqual(events.last.map(eventLabel), "completed(end_turn)")
+        XCTAssertEqual(transport.bodies.count, 2)
     }
 
     func testFailedCreditsIsThrownWithoutARetry() async {
@@ -430,7 +446,7 @@ final class ResponsesClientTests: XCTestCase {
             .lines(ResponsesFixtures.text),
         ], request: makeRequest(clientTools: [Self.strictTool]))
 
-        XCTAssertEqual(events.map(eventLabel), ["messageStart(anthropic/claude-opus-5)"])
+        XCTAssertEqual(events.map(eventLabel), [], "the held-back .messageStart is never delivered")
         XCTAssertEqual(error as? LLMError, .http(status: 400, type: "invalid_request_error", message: "Rejected."))
         XCTAssertEqual(transport.bodies.count, 1)
     }
