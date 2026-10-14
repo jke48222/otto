@@ -17,6 +17,8 @@ final class ScriptedResponsesTransport: ResponsesTransport, @unchecked Sendable 
         case failure(Error, after: [JSONValue])
         /// Yields the events and then never finishes; only cancellation ends it.
         case stall([JSONValue])
+        /// Yields one event every `interval` seconds, then finishes.
+        case paced([JSONValue], interval: TimeInterval)
 
         /// Yields a `ResponsesFixtures` scenario (one JSON event per line), then finishes.
         static func lines(_ lines: [String]) -> Attempt {
@@ -56,12 +58,8 @@ final class ScriptedResponsesTransport: ResponsesTransport, @unchecked Sendable 
         }
         return AsyncThrowingStream { continuation in
             continuation.onTermination = { [weak self] termination in
-                guard case .cancelled = termination, let self else { return }
-                let handler = self.lock.withLock { () -> (@Sendable () -> Void)? in
-                    self.recordedCancellations += 1
-                    return self.cancellationHandler
-                }
-                handler?()
+                guard case .cancelled = termination else { return }
+                self?.recordCancellation()
             }
             switch attempt {
             case .events(let events):
@@ -72,10 +70,33 @@ final class ScriptedResponsesTransport: ResponsesTransport, @unchecked Sendable 
                 continuation.finish(throwing: error)
             case .stall(let events):
                 events.forEach { continuation.yield($0) }
+            case .paced(let events, let interval):
+                let pacer = Task {
+                    for event in events {
+                        try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+                        if Task.isCancelled { return }
+                        continuation.yield(event)
+                    }
+                    continuation.finish()
+                }
+                // Replaces the handler above for this attempt, so cancelling also stops the pacer.
+                continuation.onTermination = { [weak self] termination in
+                    pacer.cancel()
+                    guard case .cancelled = termination else { return }
+                    self?.recordCancellation()
+                }
             case nil:
                 continuation.finish(throwing: ResponsesTransportError.network("No scripted attempt left."))
             }
         }
+    }
+
+    private func recordCancellation() {
+        let handler = lock.withLock { () -> (@Sendable () -> Void)? in
+            recordedCancellations += 1
+            return cancellationHandler
+        }
+        handler?()
     }
 
     static func decode(_ line: String) -> JSONValue {

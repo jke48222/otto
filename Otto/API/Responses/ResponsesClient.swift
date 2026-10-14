@@ -19,12 +19,20 @@ struct ResponsesClient: LLMClient {
     /// A `retryAfter` from the gateway is honored up to this many seconds; longer waits are surfaced instead.
     static let maxHonoredRetryAfter: TimeInterval = 20
     static let prematureEOFMessage = "The connection to Setapp AI closed before the reply finished."
+    /// How long the gateway may take to send its first event. A Setapp that never answers (a stalled handshake
+    /// with the Setapp app, a token request that never returns) would otherwise leave the reply on "Thinking…".
+    static let defaultFirstEventTimeout: TimeInterval = 45
+    /// The longest gap between two events, as long as AnthropicClient's request timeout (also an idle timeout).
+    static let defaultEventGapTimeout: TimeInterval = AnthropicClient.requestTimeout
+    static let stallMessage = "Setapp AI didn't answer in time."
 
     private static let logger = Logger(subsystem: "com.jalenedusei.otto", category: "ResponsesClient")
 
     private let transport: any ResponsesTransport
     private let retryDelays: [TimeInterval]
     private let sleep: @Sendable (TimeInterval) async throws -> Void
+    private let firstEventTimeout: TimeInterval
+    private let eventGapTimeout: TimeInterval
 
     /// `retryDelays` sets both the backoff schedule and the retry count.
     init(transport: any ResponsesTransport, retryDelays: [TimeInterval] = [1, 3]) {
@@ -33,12 +41,16 @@ struct ResponsesClient: LLMClient {
         })
     }
 
-    /// Tests pass `sleep` to see each backoff without waiting it out.
+    /// Tests pass `sleep` to see each backoff without waiting it out, and short timeouts to see a stall end.
     init(transport: any ResponsesTransport, retryDelays: [TimeInterval],
-         sleep: @escaping @Sendable (TimeInterval) async throws -> Void) {
+         sleep: @escaping @Sendable (TimeInterval) async throws -> Void,
+         firstEventTimeout: TimeInterval = ResponsesClient.defaultFirstEventTimeout,
+         eventGapTimeout: TimeInterval = ResponsesClient.defaultEventGapTimeout) {
         self.transport = transport
         self.retryDelays = retryDelays
         self.sleep = sleep
+        self.firstEventTimeout = firstEventTimeout
+        self.eventGapTimeout = eventGapTimeout
     }
 
     // MARK: - LLMClient
@@ -125,7 +137,7 @@ struct ResponsesClient: LLMClient {
         continuation: AsyncThrowingStream<StreamEvent, Error>.Continuation,
         progress: inout AttemptProgress
     ) async throws {
-        var accumulator = ResponsesStreamAccumulator(requestedModel: request.model)
+        var accumulator = ResponsesStreamAccumulator(requestedModel: request.model, maxOutputTokens: request.maxTokens)
         // The gateway acknowledges a request (`response.created`) before the model has read it, so `.messageStart`
         // waits for the first event after it. A response that fails before any output (a prompt too long for the
         // model, a failure upstream) then reaches ChatSession with nothing delivered, the way a request Anthropic
@@ -141,8 +153,8 @@ struct ResponsesClient: LLMClient {
                 progress.didYield = true
             }
         }
-        // Cancelling this task terminates the transport's stream, which cancels the gateway call.
-        for try await event in transport.events(for: body) {
+        // Cancelling this task terminates the transport's stream, which cancels the gateway call; so does a stall.
+        for try await event in boundedEvents(for: body) {
             progress.receivedEvent = true
             for streamEvent in try accumulator.handle(event) {
                 if case .messageStart = streamEvent {
@@ -159,6 +171,49 @@ struct ResponsesClient: LLMClient {
             throw LLMError.network(Self.prematureEOFMessage)
         }
         try deliver(.completed(accumulator.result()))
+    }
+
+    /// The transport's events for `body`, ended with `ResponsesTransportError.unavailable(stallMessage)` (and the
+    /// transport's stream cancelled) when the first event takes longer than `firstEventTimeout` or the gap between
+    /// two events is longer than `eventGapTimeout`. The time is measured where the events arrive, so a slow
+    /// consumer doesn't count against the gateway.
+    private func boundedEvents(for body: JSONValue) -> AsyncThrowingStream<JSONValue, Error> {
+        let transport = self.transport
+        let watch = StallWatch(firstEventTimeout: firstEventTimeout, eventGapTimeout: eventGapTimeout)
+        return AsyncThrowingStream { continuation in
+            let pump = Task {
+                do {
+                    for try await event in transport.events(for: body) {
+                        guard watch.noteEvent() else { return }
+                        continuation.yield(event)
+                    }
+                    if watch.finish() { continuation.finish() }
+                } catch {
+                    if watch.finish() { continuation.finish(throwing: error) }
+                }
+            }
+            let watchdog = Task {
+                while let wait = watch.timeLeft() {
+                    if wait <= 0 {
+                        guard watch.finish() else { return }
+                        let firstEvent = !watch.receivedEvent
+                        Self.logger.error("Setapp AI stalled \(firstEvent ? "before its first event" : "between events", privacy: .public); ending the request")
+                        pump.cancel()
+                        continuation.finish(throwing: ResponsesTransportError.unavailable(Self.stallMessage))
+                        return
+                    }
+                    do {
+                        try await Task.sleep(nanoseconds: UInt64(min(wait, 3_600) * 1_000_000_000))
+                    } catch {
+                        return
+                    }
+                }
+            }
+            continuation.onTermination = { _ in
+                pump.cancel()
+                watchdog.cancel()
+            }
+        }
     }
 
     /// Whether `body` carries what `.compatible` leaves out: reasoning, a replayed reasoning item or a strict tool.
@@ -249,6 +304,47 @@ struct ResponsesClient: LLMClient {
                          message: message.isEmpty ? serverFallback : message)
         case .network(let message):
             return .network(message.isEmpty ? networkFallback : message)
+        }
+    }
+}
+
+/// The deadline of one attempt's next event: `firstEventTimeout` after the start, then `eventGapTimeout` after each
+/// event. Whichever of the stream and the watchdog finishes first wins; the other then does nothing.
+private final class StallWatch: @unchecked Sendable {
+    private let lock = NSLock()
+    private let eventGapTimeout: TimeInterval
+    private var deadline: Date
+    private var events = 0
+    private var finished = false
+
+    init(firstEventTimeout: TimeInterval, eventGapTimeout: TimeInterval) {
+        self.eventGapTimeout = eventGapTimeout
+        deadline = Date().addingTimeInterval(firstEventTimeout)
+    }
+
+    var receivedEvent: Bool { lock.withLock { events > 0 } }
+
+    /// Moves the deadline on; false once the stream has finished (the watchdog ended it).
+    func noteEvent() -> Bool {
+        lock.withLock {
+            guard !finished else { return false }
+            events += 1
+            deadline = Date().addingTimeInterval(eventGapTimeout)
+            return true
+        }
+    }
+
+    /// Seconds until the deadline (0 or less when it passed), nil once the stream has finished.
+    func timeLeft() -> TimeInterval? {
+        lock.withLock { finished ? nil : deadline.timeIntervalSinceNow }
+    }
+
+    /// Marks the stream finished; true only for the first caller.
+    func finish() -> Bool {
+        lock.withLock {
+            guard !finished else { return false }
+            finished = true
+            return true
         }
     }
 }

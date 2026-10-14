@@ -63,9 +63,12 @@ final class ResponsesClientTests: XCTestCase {
         )
     }
 
-    private func makeClient(_ transport: ScriptedResponsesTransport, retryDelays: [TimeInterval] = [0, 0]) -> ResponsesClient {
+    private func makeClient(_ transport: ScriptedResponsesTransport, retryDelays: [TimeInterval] = [0, 0],
+                            firstEventTimeout: TimeInterval = ResponsesClient.defaultFirstEventTimeout,
+                            eventGapTimeout: TimeInterval = ResponsesClient.defaultEventGapTimeout) -> ResponsesClient {
         let sleeper = self.sleeper
-        return ResponsesClient(transport: transport, retryDelays: retryDelays, sleep: { try await sleeper.sleep($0) })
+        return ResponsesClient(transport: transport, retryDelays: retryDelays, sleep: { try await sleeper.sleep($0) },
+                               firstEventTimeout: firstEventTimeout, eventGapTimeout: eventGapTimeout)
     }
 
     private func collect(_ stream: AsyncThrowingStream<StreamEvent, Error>) async -> (events: [StreamEvent], error: Error?) {
@@ -81,10 +84,14 @@ final class ResponsesClientTests: XCTestCase {
     }
 
     private func run(_ attempts: [ScriptedResponsesTransport.Attempt], request: MessagesRequest? = nil,
-                     retryDelays: [TimeInterval] = [0, 0])
+                     retryDelays: [TimeInterval] = [0, 0],
+                     firstEventTimeout: TimeInterval = ResponsesClient.defaultFirstEventTimeout,
+                     eventGapTimeout: TimeInterval = ResponsesClient.defaultEventGapTimeout)
         async -> (events: [StreamEvent], error: Error?, transport: ScriptedResponsesTransport) {
         let transport = ScriptedResponsesTransport(attempts)
-        let (events, error) = await collect(makeClient(transport, retryDelays: retryDelays).stream(request ?? makeRequest()))
+        let client = makeClient(transport, retryDelays: retryDelays, firstEventTimeout: firstEventTimeout,
+                                eventGapTimeout: eventGapTimeout)
+        let (events, error) = await collect(client.stream(request ?? makeRequest()))
         return (events, error, transport)
     }
 
@@ -130,6 +137,10 @@ final class ResponsesClientTests: XCTestCase {
             (ResponsesFixtures.parallelFunctionCalls, .sonnet5, "completed(tool_use)"),
             (ResponsesFixtures.incompleteMaxTokens, .haiku45, "completed(max_tokens)"),
             (ResponsesFixtures.refusal, .opus5, "completed(refusal)"),
+            (ResponsesFixtures.litellmTruncatedCall, .opus5, "completed(max_tokens)"),
+            (ResponsesFixtures.litellmRefusal, .opus5, "completed(refusal)"),
+            (ResponsesFixtures.litellmReasoning, .opus5, "completed(end_turn)"),
+            (ResponsesFixtures.citationsWithoutSearchCall, .opus5, "completed(end_turn)"),
         ]
         for (lines, model, outcome) in expected {
             let (events, error, transport) = await run([.lines(lines)], request: makeRequest(model: model))
@@ -216,6 +227,109 @@ final class ResponsesClientTests: XCTestCase {
         XCTAssertEqual(transport.cancellations, 1)
         XCTAssertEqual(transport.bodies.count, 1)
         XCTAssertTrue(outcome.error == nil || outcome.error is CancellationError, "\(String(describing: outcome.error))")
+    }
+
+    // MARK: - Stalls
+
+    /// A gateway (or Setapp handshake) that never sends a first event ends after `firstEventTimeout`, the transport's
+    /// stream is cancelled, and the attempt is retried like any failure before output.
+    func testStallBeforeTheFirstEventIsCancelledAndRetried() async {
+        let start = Date()
+        let (events, error, transport) = await run([
+            .stall([]),
+            .stall(lines: ResponsesFixtures.text, count: 1),  // only the acknowledgement, then nothing
+            .lines(ResponsesFixtures.text),
+        ], firstEventTimeout: 0.05, eventGapTimeout: 0.05)
+
+        XCTAssertNil(error)
+        XCTAssertEqual(events.last.map(eventLabel), "completed(end_turn)")
+        XCTAssertEqual(events.filter { if case .messageStart = $0 { return true } else { return false } }.count, 1)
+        XCTAssertEqual(transport.bodies.count, 3)
+        XCTAssertEqual(transport.cancellations, 2, "each stalled stream was cancelled")
+        XCTAssertLessThan(Date().timeIntervalSince(start), 5)
+    }
+
+    func testStallThatNeverEndsFailsAsSetappUnavailable() async {
+        let (events, error, transport) = await run([.stall([]), .stall([]), .stall([])],
+                                                   retryDelays: [0, 0], firstEventTimeout: 0.05)
+        XCTAssertTrue(events.isEmpty)
+        XCTAssertEqual(error as? LLMError, .setappAI(.unavailable))
+        XCTAssertEqual(transport.bodies.count, 3)
+        XCTAssertEqual(transport.cancellations, 3)
+        XCTAssertEqual(ResponsesClient.mapError(.unavailable(ResponsesClient.stallMessage), model: .opus5),
+                       .setappAI(.unavailable))
+    }
+
+    /// Once output has been shown, a stall ends the reply instead of retrying it.
+    func testStallAfterOutputEndsTheReplyWithoutARetry() async {
+        let (events, error, transport) = await run([
+            .stall(lines: ResponsesFixtures.text, count: 5),
+            .lines(ResponsesFixtures.text),
+        ], firstEventTimeout: 5, eventGapTimeout: 0.05)
+
+        XCTAssertEqual(events.map(eventLabel), ["messageStart(anthropic/claude-opus-5)", "textDelta(Swift 6.2 makes concurrency )"])
+        XCTAssertEqual(error as? LLMError, .setappAI(.unavailable))
+        XCTAssertEqual(transport.bodies.count, 1)
+        XCTAssertEqual(transport.cancellations, 1)
+    }
+
+    /// The gap is measured between events, so a slow stream that keeps sending finishes, however long it takes
+    /// in total.
+    func testSlowStreamThatKeepsSendingFinishes() async {
+        let events = ResponsesFixtures.text.map(ScriptedResponsesTransport.decode)
+        let (received, error, transport) = await run([.paced(events, interval: 0.03)],
+                                                     firstEventTimeout: 0.2, eventGapTimeout: 0.2)
+        XCTAssertNil(error)
+        XCTAssertEqual(received.last.map(eventLabel), "completed(end_turn)")
+        XCTAssertEqual(transport.bodies.count, 1)
+        XCTAssertEqual(transport.cancellations, 0)
+    }
+
+    func testDefaultStallBounds() {
+        XCTAssertEqual(ResponsesClient.defaultFirstEventTimeout, 45)
+        XCTAssertEqual(ResponsesClient.defaultEventGapTimeout, AnthropicClient.requestTimeout)
+        XCTAssertEqual(ResponsesClient.defaultEventGapTimeout, 300)
+    }
+
+    // MARK: - In-stream errors
+
+    /// A request the gateway refuses for its content mid-stream fails at once, so ChatSession can drop the turn;
+    /// the compatibility retry is only for a request refused outright.
+    func testInStreamRejectedRequestIsNotRetried() async {
+        let created = ScriptedResponsesTransport.decode(ResponsesFixtures.text[0])
+        for (model, tools) in [(ModelOption.haiku45, [JSONValue]()), (.opus5, [Self.strictTool])] {
+            let (events, error, transport) = await run([
+                .events([created, ["type": "error", "code": "invalid_request_error", "message": "Could not process image"]]),
+                .lines(ResponsesFixtures.text),
+            ], request: makeRequest(model: model, clientTools: tools))
+            XCTAssertTrue(events.isEmpty, model.rawValue)
+            XCTAssertEqual(error as? LLMError,
+                           .http(status: 400, type: "invalid_request_error", message: "Could not process image"), model.rawValue)
+            XCTAssertEqual(transport.bodies.count, 1, model.rawValue)
+            XCTAssertTrue(sleeper.delays.isEmpty)
+        }
+    }
+
+    /// LiteLLM's typeless error frame reaches the client as the failure it names: an overload before any output is
+    /// retried.
+    func testTypelessErrorFrameIsMappedAndRetriedBeforeOutput() async {
+        let frame: JSONValue = ["error": ["message": "litellm.InternalServerError: AnthropicException - Overloaded",
+                                          "type": "internal_server_error", "param": nil, "code": "529"]]
+        let (events, error, transport) = await run([.events([frame]), .lines(ResponsesFixtures.text)])
+        XCTAssertNil(error)
+        XCTAssertEqual(events.last.map(eventLabel), "completed(end_turn)")
+        XCTAssertEqual(transport.bodies.count, 2)
+    }
+
+    /// The accumulator is given the request's own output limit: a LiteLLM reply with no stop reason that used all of
+    /// it was cut off; one that stopped well short of it was stopped for its content.
+    func testTheRequestsOutputLimitDecidesATruncation() async throws {
+        for (limit, outcome) in [(64_000, "completed(max_tokens)"), (128_000, "completed(refusal)")] {
+            var request = makeRequest(model: .opus5)
+            request.maxTokens = limit
+            let (events, _, _) = await run([.lines(ResponsesFixtures.litellmTruncatedCall)], request: request)
+            XCTAssertEqual(events.last.map(eventLabel), outcome, "max_output_tokens \(limit)")
+        }
     }
 
     // MARK: - Retries
