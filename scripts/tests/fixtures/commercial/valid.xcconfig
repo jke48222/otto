@@ -16,3 +16,7 @@ OTTO_POLAR_PORTAL_SLUG = otto-fixture
 OTTO_GUMROAD_PRODUCT_ID = OttoFixtureProduct==
 
 OTTO_SPARKLE_PUBLIC_ED_KEY = KOMFi2KJbii7Uyn/YoVI+QwuGpI/0F20G0ZuYb+1F4I=
+
+// Setapp AI's OAuth client (J22): fake values. A real build reads them from the git-ignored Config/Local.xcconfig.
+OTTO_SETAPP_AI_CLIENT_ID = otto-fixture-setapp-ai-client
+OTTO_SETAPP_AI_CLIENT_SECRET = otto-fixture-setapp-ai-secret

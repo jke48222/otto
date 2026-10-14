@@ -10,10 +10,12 @@
 #                   <path/to/Otto.app>
 #
 #   --configuration Debug  also reads Contents/MacOS/Otto.debug.dylib (Xcode's Debug products keep the app code
-#                          there) and skips the lipo row and the Setapp public key row
+#                          there), skips the lipo row and the Setapp public key row, and accepts empty Setapp AI
+#                          client values (J22)
 #   --expect-wired         also checks the "present" cells (paid: Sparkle linked and embedded, both license API hosts,
-#                          the three symbols; setapp: SetappManager). Before the license engine is wired, dead-code
-#                          stripping may drop them, so only the WMc integrator and release.sh pass it
+#                          the three symbols; setapp: SetappManager and SetappSDKTransport). Before the license engine
+#                          and Setapp AI are wired, dead-code stripping may drop them, so only integrators and
+#                          release.sh pass it
 #   --distribution         also requires no .xpc anywhere in the app (release.sh removes Sparkle's XPC services)
 #
 # Exit: 0 when every checked row holds, 1 with one FAIL line per failed row, 2 for usage errors or a missing bundle.
@@ -198,6 +200,50 @@ case "$flavor" in
             fail "symbols don't include SetappManager"
         else
             pass "no license or Sparkle symbols${found:+ (found: $found)}"
+        fi
+        ;;
+esac
+
+# Row: nm -m …/Otto | swift demangle | grep SetappSDKTransport (Setapp AI, SPEC §19)
+transport=$(matches 'SetappSDKTransport' "$symbols")
+case "$flavor" in
+    source | paid)
+        [ -z "$transport" ] && pass "no Setapp AI transport symbols" || fail "symbols include SetappSDKTransport"
+        ;;
+    setapp)
+        if [ -n "$transport" ]; then
+            pass "symbols include SetappSDKTransport"
+        elif [ "$expect_wired" -eq 1 ]; then
+            fail "symbols don't include SetappSDKTransport"
+        fi
+        ;;
+esac
+
+# Row: plutil -extract OttoSetappAIClientID|OttoSetappAIClientSecret raw …/Info.plist (Setapp AI's OAuth client, J22).
+# Values are never printed: the secret is one.
+case "$flavor" in
+    source | paid)
+        found=$(matches '"OttoSetappAI[A-Za-z]*"' "$info" | tr -d '"')
+        [ -z "$found" ] && pass "Info.plist has no Setapp AI keys" || fail "Info.plist has $found"
+        ;;
+    setapp)
+        missing=""
+        unusable=""
+        for key in OttoSetappAIClientID OttoSetappAIClientSecret; do
+            if ! value=$(plutil -extract "$key" raw "$info_plist" 2>/dev/null); then
+                missing="$missing $key"
+            elif [ -z "${value//[[:space:]]/}" ] || [[ $value == *'$('* ]]; then
+                unusable="$unusable $key"
+            fi
+        done
+        if [ -n "$missing" ]; then
+            fail "Info.plist lacks$missing"
+        elif [ -n "$unusable" ] && [ "$configuration" = "Release" ]; then
+            fail "Info.plist has no usable value for$unusable (J22)"
+        elif [ -n "$unusable" ]; then
+            pass "Info.plist has OttoSetappAIClientID and OttoSetappAIClientSecret (empty in this Debug build)"
+        else
+            pass "Info.plist has OttoSetappAIClientID and OttoSetappAIClientSecret, set"
         fi
         ;;
 esac

@@ -29,6 +29,11 @@ targets:
         optional: true
     info:
       path: build/flavors/setapp/Info.plist
+      properties:
+        # Setapp AI's OAuth client (J22). The values live in the git-ignored Config/Local.xcconfig; without them both
+        # keys are empty and Setapp AI reports itself not set up. Config/Setapp/README.md has the details.
+        OttoSetappAIClientID: "$(OTTO_SETAPP_AI_CLIENT_ID)"
+        OttoSetappAIClientSecret: "$(OTTO_SETAPP_AI_CLIENT_SECRET)"
     entitlements:
       path: build/flavors/setapp/Otto.entitlements
     settings:
