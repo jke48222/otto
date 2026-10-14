@@ -917,7 +917,43 @@ final class SetappAIIntegrationTests: XCTestCase {
         XCTAssertFalse(tooltip.contains("$"), tooltip)
     }
 
-    // MARK: 8. Cut off mid tool call
+    // MARK: 8. Repeated call ids
+
+    /// A later response that reuses the id of a call an earlier round ran (a gateway can send any id) changes
+    /// nothing about that call: its row keeps its input, status and result, it doesn't run again, and the history
+    /// still pairs it with its own result.
+    func testALaterResponseReusingACallIDLeavesTheFinishedCallAlone() async throws {
+        func round(_ calls: [(id: String, text: String)], text: String) -> ScriptedLLMClient.Response {
+            let content = [textBlock(text)] + calls.map { toolUseBlock($0.id, "echo", ["text": .string($0.text)]) }
+            return anthropicReply(content, text: text, stopReason: "tool_use",
+                                  calls: calls.map { ($0.id, "echo", ["text": .string($0.text)]) })
+        }
+        let client = ScriptedLLMClient([
+            round([("call_same", "one")], text: "First."),
+            round([("call_same", "two"), ("call_new", "three")], text: "Second."),
+            anthropicReply([textBlock("Done.")], text: "Done."),
+        ])
+        let settings = makeSettings()
+        settings.aiProvider = .anthropic
+        let chat = makeSession(settings: settings, tools: [EchoTool()], executor: makeExecutor(settings)) { client }
+        await send(chat, "Echo a few things")
+
+        let reply = try lastReply(chat)
+        XCTAssertEqual(reply.state, .complete)
+        XCTAssertEqual(reply.toolCalls.map(\.id), ["call_same", "call_new"])
+        XCTAssertEqual(reply.toolCalls.map(\.status), [.succeeded, .succeeded])
+        XCTAssertEqual(reply.toolCalls.first?.input, ["text": "one"], "the second response didn't replace the input")
+        XCTAssertEqual(reply.toolCalls.first?.result, .text("one"))
+        XCTAssertEqual(reply.toolExchanges.map(\.callIDs), [["call_same"], ["call_new"]])
+
+        let last = try XCTUnwrap(client.requests.last)
+        let results = last.messages.flatMap { $0["content"]?.arrayValue ?? [] }.filter { $0.typeName == "tool_result" }
+        XCTAssertEqual(results.map { $0["tool_use_id"] }, ["call_same", "call_new"])
+        let uses = last.messages.flatMap { $0["content"]?.arrayValue ?? [] }.filter { $0.typeName == "tool_use" }
+        XCTAssertEqual(uses.map { $0["id"] }, ["call_same", "call_new"], "the reused id isn't sent a second time")
+    }
+
+    // MARK: 9. Cut off mid tool call
 
     func testReplyCutOffMidToolCallEndsTruncatedAndRunsNothing() async throws {
         let partial = #"{"text":"Buy oat milk, eggs and"#

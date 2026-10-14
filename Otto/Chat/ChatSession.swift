@@ -1157,6 +1157,15 @@ import os
         var message = messages[index]
 
         switch event {
+        case .toolUseStarted(let id, _), .toolUseReady(let id, _, _, _):
+            // A later response reusing the id of a call an earlier round already ran (a gateway can send any id)
+            // must not reopen that call's row or replace its input; `newClientCallIDs` won't run it again either.
+            if message.toolExchanges.contains(where: { $0.callIDs.contains(id) }) { return }
+        default:
+            break
+        }
+
+        switch event {
         case .messageStart(let model):
             message.model = model
         case .thinkingStarted:
