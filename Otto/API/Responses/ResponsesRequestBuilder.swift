@@ -5,7 +5,8 @@
 //  Builds the OpenAI Responses request Setapp's AI Gateway takes from a `MessagesRequest` (SPEC §19, "Setapp AI").
 //  Otto stores every conversation as Anthropic Messages blocks; this file is the one place they become Responses
 //  input items. Blocks only Anthropic can take back (signed thinking, server-tool pairs, fallbacks) are left out,
-//  and so are the blocks Otto synthesized from earlier gateway web searches.
+//  and so are the blocks Otto synthesized from earlier gateway web searches. Pages Otto read on the Mac for Setapp
+//  AI's web fetch (`SetappWebFetch`) go back as the `web_fetch` calls and outputs they were.
 //
 
 import Foundation
@@ -28,10 +29,12 @@ enum ResponsesRequestBuilder {
     /// decoded into) never sees an empty `tools` or `include` list.
     static func body(for request: MessagesRequest, options: ResponsesRequestOptions) -> JSONValue {
         let model = request.model
+        let offersWebFetch = SetappWebFetch.isOffered(request, options: options)
         var body: [String: JSONValue] = [
             "model": .string(model.setappAIModelID),
             "input": .array(inputItems(from: request.messages,
-                                       replaysReasoning: options.includeReasoning && model.supportsAdaptiveThinking)),
+                                       replaysReasoning: options.includeReasoning && model.supportsAdaptiveThinking,
+                                       replaysPageReads: offersWebFetch)),
             "max_output_tokens": .int(Int64(request.maxTokens)),
             "stream": true,
             // The gateway keeps nothing between requests; each one carries the whole conversation.
@@ -49,8 +52,9 @@ enum ResponsesRequestBuilder {
             include.append("reasoning.encrypted_content")
         }
 
-        // The gateway's built-in search first, then the client tools in the order ToolRegistry sorted them, so the
-        // tool list is stable for a given model and settings. Web fetch has no gateway equivalent.
+        // The gateway's built-in search first, then web fetch, then the client tools in the order ToolRegistry sorted
+        // them, as AnthropicClient orders its tools, so the list is stable for a given model and settings. Web fetch
+        // has no gateway equivalent: Otto offers its own as a function and reads the page on the Mac.
         var tools: [JSONValue] = []
         let webSearchLimit = request.serverToolLimits.webSearch
         if request.webAccess && webSearchLimit > 0 && model.supportsSetappAIWebSearch {
@@ -60,6 +64,9 @@ enum ResponsesRequestBuilder {
             // Caps every built-in tool call in the response, which here means only searches. A gateway that
             // ignores it (LiteLLM does) caps Anthropic's searches by `search_context_size` instead.
             body["max_tool_calls"] = .int(Int64(webSearchLimit))
+        }
+        if offersWebFetch {
+            tools.append(SetappWebFetch.functionTool(strict: options.strictTools))
         }
         tools += request.clientTools.compactMap { functionTool(from: $0, options: options) }
         if !tools.isEmpty {
@@ -104,12 +111,16 @@ enum ResponsesRequestBuilder {
     // MARK: - Input items
 
     /// `replaysReasoning` is true only when the request itself asks for reasoning: a stored reasoning item sent to a
-    /// model running without it (Haiku, or the compatibility retry) would be out of place.
-    private static func inputItems(from messages: [JSONValue], replaysReasoning: Bool) -> [JSONValue] {
+    /// model running without it (Haiku, or the compatibility retry) would be out of place. `replaysPageReads` is true
+    /// only when the request offers web fetch, so a call never names a tool the request doesn't define.
+    private static func inputItems(from messages: [JSONValue], replaysReasoning: Bool,
+                                   replaysPageReads: Bool) -> [JSONValue] {
         messages.flatMap { message -> [JSONValue] in
             switch message["role"]?.stringValue {
             case "user": return userItems(contentBlocks(of: message))
-            case "assistant": return assistantItems(contentBlocks(of: message), replaysReasoning: replaysReasoning)
+            case "assistant":
+                return assistantItems(contentBlocks(of: message), replaysReasoning: replaysReasoning,
+                                      replaysPageReads: replaysPageReads)
             default: return []
             }
         }
@@ -277,10 +288,13 @@ enum ResponsesRequestBuilder {
     ///
     /// Consecutive text blocks (Anthropic splits text around citations) share one assistant message, and each
     /// `function_call` or replayed reasoning item ends the message before it, so the items keep the model's order.
-    /// Blocks that are left out don't split a message.
-    private static func assistantItems(_ blocks: [JSONValue], replaysReasoning: Bool) -> [JSONValue] {
+    /// Blocks that are left out don't split a message. A page Otto read on the Mac goes back as its `web_fetch`
+    /// call and that call's output, only as a complete pair.
+    private static func assistantItems(_ blocks: [JSONValue], replaysReasoning: Bool,
+                                       replaysPageReads: Bool) -> [JSONValue] {
         var items: [JSONValue] = []
         var texts: [JSONValue] = []
+        let readCalls = replaysPageReads ? pairedPageReads(in: blocks) : []
 
         func closeMessage() {
             guard !texts.isEmpty else { return }
@@ -289,6 +303,17 @@ enum ResponsesRequestBuilder {
         }
 
         for block in blocks {
+            if ProviderBlocks.isMacPageRead(block) {
+                guard let id = ToolHistory.serverToolCallID(of: block), readCalls.contains(id) else { continue }
+                if block.typeName == "server_tool_use" {
+                    closeMessage()
+                    items.append(pageReadCall(block, id: id))
+                } else {
+                    items.append(["type": "function_call_output", "call_id": .string(id),
+                                  "output": .string(SetappWebFetch.outputText(ofResult: block))])
+                }
+                continue
+            }
             // Synthesized from an earlier gateway web search: the gateway has no item to take it back as.
             guard block[ProviderBlocks.providerField] == nil else { continue }
             switch block.typeName {
@@ -312,6 +337,35 @@ enum ResponsesRequestBuilder {
         }
         closeMessage()
         return items
+    }
+
+    /// Ids of the pages Otto read on the Mac that have both their call and their result in `blocks`.
+    private static func pairedPageReads(in blocks: [JSONValue]) -> Set<String> {
+        var calls: Set<String> = []
+        var results: Set<String> = []
+        for block in blocks where ProviderBlocks.isMacPageRead(block) {
+            guard let id = ToolHistory.serverToolCallID(of: block), !id.isEmpty else { continue }
+            if block.typeName == "server_tool_use" {
+                calls.insert(id)
+            } else if block.typeName == "web_fetch_tool_result" {
+                results.insert(id)
+            }
+        }
+        return calls.intersection(results)
+    }
+
+    /// The `web_fetch` function call a stored page read began with.
+    private static func pageReadCall(_ block: JSONValue, id: String) -> JSONValue {
+        var arguments = "{}"
+        if let input = block["input"], input.objectValue != nil {
+            arguments = input.encodedString()
+        }
+        return [
+            "type": "function_call",
+            "call_id": .string(id),
+            "name": .string(SetappWebFetch.toolName),
+            "arguments": .string(arguments),
+        ]
     }
 
     /// `function_call` from a client `tool_use` block, or nil without an id or a name. `arguments` is the input as

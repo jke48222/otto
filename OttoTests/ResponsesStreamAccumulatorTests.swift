@@ -1064,6 +1064,74 @@ final class ResponsesStreamAccumulatorTests: XCTestCase {
         XCTAssertTrue(ChatSession.isContextOverflow(overflow))
     }
 
+    // MARK: - Web fetch answered by the client
+
+    private func replayWithWebFetch(_ events: [JSONValue]) throws -> Replay {
+        var accumulator = ResponsesStreamAccumulator(requestedModel: .opus5, localTools: [SetappWebFetch.toolName])
+        var produced: [StreamEvent] = []
+        for event in events {
+            produced += try accumulator.handle(event)
+        }
+        return Replay(events: produced, accumulator: accumulator)
+    }
+
+    /// A web fetch call the client answers shows as "Reading <host>", like an Anthropic fetch, never as a tool call,
+    /// and is stored as the call half of an Anthropic-shaped pair; the response doesn't stop for the tool loop.
+    func testAWebFetchCallTheClientAnswersIsActivityNotAToolCall() throws {
+        let call = functionCall("fc_page", callID: "call_page", name: "web_fetch",
+                                arguments: #"{"url":"https://www.docs.example/guide"}"#)
+        let run = try replayWithWebFetch([
+            created(),
+            ["type": "response.output_item.added", "output_index": 0,
+             "item": call.setting("arguments", to: "").setting("status", to: "in_progress")],
+            ["type": "response.function_call_arguments.delta", "item_id": "fc_page", "output_index": 0,
+             "delta": #"{"url":"https://www.docs.example/guide"}"#],
+            ["type": "response.output_item.done", "output_index": 0, "item": call],
+            completed([call]),
+        ])
+        XCTAssertEqual(run.descriptions, [
+            "messageStart(anthropic/claude-opus-5)",
+            "toolActivity(call_page|webFetch|Reading docs.example|running)",
+        ])
+        XCTAssertEqual(run.result.content, [
+            SetappWebFetch.callBlock(id: "call_page", input: ["url": "https://www.docs.example/guide"]),
+        ])
+        XCTAssertEqual(run.result.stopReason, "end_turn", "the client goes on with the page, not the tool loop")
+        XCTAssertEqual(run.accumulator.localToolCalls(), [
+            .init(id: "call_page", name: "web_fetch", input: ["url": "https://www.docs.example/guide"],
+                  rawInput: #"{"url":"https://www.docs.example/guide"}"#),
+        ])
+    }
+
+    func testAWebFetchCallOnlyInTheTerminalOutputIsShownOnceAndBesideAClientCall() throws {
+        let fetch = functionCall("fc_page", callID: "call_page", name: "web_fetch", arguments: #"{"url":"not a url"}"#)
+        let echo = functionCall("fc_echo", callID: "call_echo", name: "echo", arguments: #"{"text":"hi"}"#)
+        let repeated = functionCall("fc_again", callID: "call_page", name: "web_fetch",
+                                    arguments: #"{"url":"https://other.example/"}"#)
+        let run = try replayWithWebFetch([created(), completed([fetch, echo, repeated])])
+        XCTAssertEqual(run.descriptions, [
+            "messageStart(anthropic/claude-opus-5)",
+            "toolActivity(call_page|webFetch|Reading a web page|running)",
+            "toolUseStarted(call_echo|echo)",
+            #"toolUseReady(call_echo|echo|{"text":"hi"}|{"text":"hi"})"#,
+        ])
+        XCTAssertEqual(run.result.stopReason, "tool_use", "the client call still goes to the tool loop")
+        XCTAssertEqual(run.result.content, [
+            SetappWebFetch.callBlock(id: "call_page", input: ["url": "not a url"]),
+            ["type": "tool_use", "id": "call_echo", "name": "echo", "input": ["text": "hi"]],
+        ], "a repeated call id is one call")
+        XCTAssertEqual(run.accumulator.localToolCalls().map(\.id), ["call_page"])
+    }
+
+    func testWithoutLocalToolsAWebFetchCallIsAClientCall() throws {
+        let call = functionCall("fc_page", callID: "call_page", name: "web_fetch", arguments: #"{"url":"https://a.example/"}"#)
+        let run = try replay(events: [created(), completed([call])])
+        XCTAssertEqual(run.result.content, [
+            ["type": "tool_use", "id": "call_page", "name": "web_fetch", "input": ["url": "https://a.example/"]],
+        ])
+        XCTAssertTrue(run.accumulator.localToolCalls().isEmpty)
+    }
+
     @MainActor
     func testEveryOverflowWordingReadsAsAContextOverflow() {
         for message in ["prompt is too long: 210000 tokens", "Exceeds the context length of the model",

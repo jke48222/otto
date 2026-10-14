@@ -12,6 +12,10 @@
 //  `response.output`) fills in what didn't: every item is shown exactly once, by whichever path reaches it first.
 //  The terminal output is authoritative for `result()`.
 //
+//  Calls to a tool the client runs itself (`localTools`: Setapp AI's web fetch, which Otto answers on the Mac) are
+//  shown as web activity, not client tool calls, and stored as the `server_tool_use` half of an Anthropic-shaped
+//  pair; `ResponsesClient` reads them from `localToolCalls()` and adds the results.
+//
 //  Live state is keyed by item id, or by "#<output_index>" when an event carries none. Reasoning is also keyed by
 //  output index, because LiteLLM (which the gateway most likely runs) has given each summary delta an id of its own
 //  and the finished item another. LiteLLM's shapes differ from OpenAI's in a few more places this file reads: a
@@ -55,9 +59,19 @@ struct ResponsesStreamAccumulator {
         var item: JSONValue
     }
 
+    /// A function call to one of these is answered by the client (`localToolCalls()`), not the tool loop.
+    struct LocalToolCall: Equatable, Sendable {
+        let id: String
+        let name: String
+        /// The parsed arguments; nil when they aren't a JSON object.
+        let input: JSONValue?
+        let rawInput: String
+    }
+
     private let requestedModel: ModelOption
     /// The request's `max_output_tokens`: a response cut off with no reason that used this many is a truncation.
     private let outputLimit: Int
+    private let localTools: Set<String>
     private var model: String?
     private var didStart = false
 
@@ -93,10 +107,12 @@ struct ResponsesStreamAccumulator {
     /// True after `response.completed` or `response.incomplete`.
     private(set) var isComplete = false
 
-    /// `maxOutputTokens` is the request's output limit, `requestedModel.maxOutputTokens` when not given.
-    init(requestedModel: ModelOption, maxOutputTokens: Int? = nil) {
+    /// `maxOutputTokens` is the request's output limit, `requestedModel.maxOutputTokens` when not given. `localTools`
+    /// names the function tools the client answers itself (`SetappWebFetch.toolName` when the request offers it).
+    init(requestedModel: ModelOption, maxOutputTokens: Int? = nil, localTools: Set<String> = []) {
         self.requestedModel = requestedModel
         self.outputLimit = maxOutputTokens ?? requestedModel.maxOutputTokens
+        self.localTools = localTools
     }
 
     /// One gateway event in, the StreamEvents it produces out. Throws LLMError for `error` / `response.failed`.
@@ -140,8 +156,14 @@ struct ResponsesStreamAccumulator {
                 }
             case "function_call":
                 guard keptCalls.contains(position), let block = toolUseBlock(item, index: index) else { continue }
-                content.append(block)
-                calledTools = true
+                if let name = block["name"]?.stringValue, localTools.contains(name),
+                   let id = block["id"]?.stringValue {
+                    // Answered by the client before the reply goes on, like an Anthropic server tool.
+                    content.append(SetappWebFetch.callBlock(id: id, input: block["input"] ?? [:]))
+                } else {
+                    content.append(block)
+                    calledTools = true
+                }
             default:
                 break
             }
@@ -169,6 +191,24 @@ struct ResponsesStreamAccumulator {
         }
         return StreamResult(content: content, stopReason: stopReason, stopDetails: nil,
                             model: model ?? requestedModel.setappAIModelID, usage: mappedUsage(items))
+    }
+
+    /// The calls to `localTools` in this response, in output order, one per call id (the ones `result()` stores).
+    /// Valid once `isComplete`.
+    func localToolCalls() -> [LocalToolCall] {
+        guard !localTools.isEmpty else { return [] }
+        let items = finalItems()
+        let keptCalls = keptCallItems(items)
+        var found: [LocalToolCall] = []
+        for (position, entry) in items.enumerated() where entry.item.typeName == "function_call" && keptCalls.contains(position) {
+            let progress = calls[Self.itemID(entry.item, fallbackIndex: entry.index)]
+            let callID = Self.nonEmpty(entry.item["call_id"]?.stringValue) ?? progress?.callID ?? ""
+            let name = Self.nonEmpty(entry.item["name"]?.stringValue) ?? progress?.name ?? ""
+            guard !callID.isEmpty, localTools.contains(name) else { continue }
+            let rawInput = arguments(of: entry.item, progress: progress)
+            found.append(LocalToolCall(id: callID, name: name, input: Self.toolInput(rawInput), rawInput: rawInput))
+        }
+        return found
     }
 
     /// Why the response stopped early, if it did. LiteLLM ends every stream with `response.completed` and maps
@@ -252,6 +292,8 @@ struct ResponsesStreamAccumulator {
             if let callID = Self.nonEmpty(item["call_id"]?.stringValue) { call.callID = callID }
             if let name = Self.nonEmpty(item["name"]?.stringValue) { call.name = name }
             calls[id] = call
+            // A local call shows as activity once its address is known (when the item is done), not as a tool call.
+            if localTools.contains(call.name) { return [] }
             return announce(callID: call.callID, name: call.name)
         case "web_search_call":
             guard !finishedWebCalls.contains(id), runningWebCalls.insert(id).inserted else { return [] }
@@ -388,6 +430,11 @@ struct ResponsesStreamAccumulator {
             guard !callID.isEmpty, !name.isEmpty, readyCalls[callID] == nil else { return [] }
             readyCalls[callID] = id
             let rawInput = arguments(of: item, progress: progress)
+            if localTools.contains(name) {
+                // "Reading example.com" while the client reads it, as an Anthropic fetch is labeled.
+                return [.toolActivity(StreamAccumulator.makeActivity(id: callID, name: name,
+                                                                     input: Self.toolInput(rawInput)))]
+            }
             emittedOutput = true
             return announce(callID: callID, name: name)
                 + [.toolUseReady(id: callID, name: name, input: Self.toolInput(rawInput), rawInput: rawInput)]

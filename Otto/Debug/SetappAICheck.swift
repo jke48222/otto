@@ -884,6 +884,23 @@ final class SetappAICheck {
                 ["type": "tool_result", "tool_use_id": "call_1", "content": [["type": "text", "text": "Added."]]],
             ]],
         ]
+        // A page Otto read on the Mac for the web_fetch function, stored as the client stores it, then a new turn.
+        let page = WebPage(url: URL(string: "https://www.swift.example/blog/")!, title: "Swift Blog",
+                           text: "Swift 6.2 is out.",
+                           links: [WebLink(text: "Forums", url: URL(string: "https://forums.swift.example/")!)])
+        let pageRead: [JSONValue] = [
+            ["role": "user", "content": [
+                ["type": "text", "text": "<browser_tab>\nTitle: Swift Blog\nURL: https://www.swift.example/blog/\n</browser_tab>"],
+                ["type": "text", "text": "What does this say?"],
+            ]],
+            ["role": "assistant", "content": [
+                ["type": "otto_responses_reasoning", "item": reasoning],
+                SetappWebFetch.callBlock(id: "call_page", input: ["url": "https://www.swift.example/blog/"]),
+                SetappWebFetch.resultBlock(id: "call_page", page: page),
+                ["type": "text", "text": "It says Swift 6.2 is out."],
+            ]],
+            ["role": "user", "content": [["type": "text", "text": "Thanks"]]],
+        ]
         // An Anthropic-format definition, as ToolRegistry.definitions hands it to every client.
         let calendar = SetappAdapterSamples.calendarTool
         let tools: [JSONValue] = [[
@@ -898,6 +915,9 @@ final class SetappAICheck {
                 maxTokens: 64_000, effort: .high, webAccess: true, clientTools: tools)),
             ("haiku wrap-up", MessagesRequest(model: .haiku45, system: "", messages: toolRound, maxTokens: 32_000,
                 effort: .low, webAccess: false, clientTools: tools, toolChoice: ["type": "none"])),
+            ("web fetch round", MessagesRequest(model: .opus5, system: "You are Otto.", messages: pageRead,
+                maxTokens: 64_000, effort: .medium, webAccess: true, clientTools: tools,
+                serverToolLimits: ServerToolLimits(webSearch: 4, webFetch: 3))),
         ]
         for (name, request) in requests {
             for options in [ResponsesRequestOptions.standard, .compatible] {

@@ -170,6 +170,7 @@ final class ResponsesRequestBuilderTests: XCTestCase {
             "include": ["reasoning.encrypted_content", "web_search_call.action.sources"],
             "tools": [
                 ["type": "web_search", "search_context_size": "low"],
+                SetappWebFetch.functionTool(strict: true),
                 ["type": "function", "name": "add_event", "description": "Adds an event to Calendar.",
                  "parameters": eventSchema, "strict": true],
                 ["type": "function", "name": "run_shortcut", "description": "Runs a shortcut.",
@@ -254,7 +255,7 @@ final class ResponsesRequestBuilderTests: XCTestCase {
 
     func testWebSearchIsSentOnOpusAndSonnetWithItsLimit() {
         for model in [ModelOption.opus5, .sonnet5] {
-            let limits = ServerToolLimits(webSearch: 4, webFetch: 2)
+            let limits = ServerToolLimits(webSearch: 4, webFetch: 0)
             let sent = body(makeRequest(model: model, webAccess: true, serverToolLimits: limits))
             XCTAssertEqual(sent["tools"], [["type": "web_search", "search_context_size": "low"]], model.rawValue)
             XCTAssertEqual(sent["max_tool_calls"], 4, model.rawValue)
@@ -287,23 +288,92 @@ final class ResponsesRequestBuilderTests: XCTestCase {
         ]
         for (label, request) in cases {
             let sent = body(request)
-            XCTAssertNil(sent["tools"], label)
+            XCTAssertFalse(toolTypes(sent)?.contains("web_search") == true, label)
             XCTAssertNil(sent["max_tool_calls"], label)
-            XCTAssertFalse(sent.encodedString().contains("web_search"), label)
+            XCTAssertFalse(sent.encodedString().contains("web_search_call"), label)
         }
     }
 
-    func testWebFetchIsNeverSent() {
-        let sent = body(makeRequest(webAccess: true, serverToolLimits: ServerToolLimits(webSearch: 5, webFetch: 5)))
-        XCTAssertEqual(toolTypes(sent), ["web_search"])
-        XCTAssertFalse(sent.encodedString().contains("web_fetch"))
+    // MARK: Web fetch
+
+    /// Otto's own web fetch tool goes out exactly when AnthropicClient would send its server `web_fetch`: web access
+    /// on, a fetch left in the request's limit (none during the Safer web pause), and a model Anthropic fetches with.
+    func testWebFetchIsOfferedWhenTheAnthropicRequestWouldFetch() {
+        let fetchOnly = ServerToolLimits(webSearch: 0, webFetch: 3)
+        XCTAssertEqual(body(makeRequest(webAccess: true, serverToolLimits: fetchOnly))["tools"],
+                       [SetappWebFetch.functionTool(strict: true)])
+        XCTAssertEqual(body(makeRequest(model: .sonnet5, webAccess: true))["tools"]?[1], SetappWebFetch.functionTool(strict: true))
+        let none: [(String, MessagesRequest)] = [
+            ("web access off", makeRequest(webAccess: false)),
+            ("fetch limit 0", makeRequest(webAccess: true, serverToolLimits: ServerToolLimits(webSearch: 5, webFetch: 0))),
+            ("the Safer web pause", makeRequest(webAccess: true, serverToolLimits: .none)),
+            ("Haiku", makeRequest(model: .haiku45, webAccess: true)),
+        ]
+        for (label, request) in none {
+            XCTAssertFalse(body(request).encodedString().contains("\"web_fetch\""), label)
+        }
+        XCTAssertNil(body(makeRequest(webAccess: true), .compatible)["tools"]?.arrayValue?
+            .first { $0["name"] == "web_fetch" }, "the compatibility retry leaves it out")
+        XCTAssertEqual(body(makeRequest(webAccess: true, serverToolLimits: fetchOnly),
+                            ResponsesRequestOptions(includeReasoning: true, strictTools: false))["tools"],
+                       [SetappWebFetch.functionTool(strict: false)], "strict follows the options like a client tool's")
+        XCTAssertNil(body(makeRequest(webAccess: true, serverToolLimits: fetchOnly))["max_tool_calls"],
+                     "max_tool_calls caps built-in tools, not functions")
     }
 
-    func testWebSearchComesFirstThenClientToolsInOrder() {
+    func testWebSearchComesFirstThenWebFetchThenClientToolsInOrder() {
         let sent = body(makeRequest(webAccess: true, clientTools: [looseDefinition, strictDefinition]))
-        XCTAssertEqual(toolTypes(sent), ["web_search", "function", "function"])
-        XCTAssertEqual(sent["tools"]?.arrayValue?.compactMap { $0["name"]?.stringValue }, ["run_shortcut", "add_event"])
+        XCTAssertEqual(toolTypes(sent), ["web_search", "function", "function", "function"])
+        XCTAssertEqual(sent["tools"]?.arrayValue?.compactMap { $0["name"]?.stringValue },
+                       ["web_fetch", "run_shortcut", "add_event"])
         XCTAssertEqual(sent["max_tool_calls"], 5)
+    }
+
+    func testAPageReadOnTheMacGoesBackAsItsCallAndOutput() throws {
+        let page = WebPage(url: try XCTUnwrap(URL(string: "https://docs.example/final")), title: "Guide", text: "Body.")
+        let messages = [
+            user([text("Read https://docs.example/start")]),
+            assistant([
+                text("Reading it."),
+                SetappWebFetch.callBlock(id: "call_page", input: ["url": "https://docs.example/start"]),
+                SetappWebFetch.resultBlock(id: "call_page", page: page),
+                SetappWebFetch.callBlock(id: "call_refused", input: ["url": "https://other.example/"]),
+                SetappWebFetch.errorBlock(id: "call_refused", failure: .notInConversation),
+                text("It says Body."),
+            ]),
+            user([text("Thanks")]),
+        ]
+        let expected: [JSONValue] = [
+            userMessage([inputText("Read https://docs.example/start")]),
+            assistantMessage([outputText("Reading it.")]),
+            functionCall("call_page", "web_fetch", arguments: #"{"url":"https://docs.example/start"}"#),
+            output("call_page", "URL: https://docs.example/final\nTitle: Guide\n\nBody."),
+            functionCall("call_refused", "web_fetch", arguments: #"{"url":"https://other.example/"}"#),
+            output("call_refused", "Error: " + SetappWebFetch.Failure.notInConversation.message),
+            assistantMessage([outputText("It says Body.")]),
+            userMessage([inputText("Thanks")]),
+        ]
+        XCTAssertEqual(body(makeRequest(messages: messages, webAccess: true))["input"]?.arrayValue, expected)
+
+        // Without web fetch in the request (spent, paused, or the compatibility retry), the pairs are left out,
+        // as ToolHistory leaves Anthropic's out when the request defines no web_fetch.
+        let withoutFetch = [userMessage([inputText("Read https://docs.example/start")]),
+                            assistantMessage([outputText("Reading it."), outputText("It says Body.")]),
+                            userMessage([inputText("Thanks")])]
+        XCTAssertEqual(body(makeRequest(messages: messages, webAccess: true,
+                                        serverToolLimits: ServerToolLimits(webSearch: 5, webFetch: 0)))["input"]?.arrayValue,
+                       withoutFetch)
+        XCTAssertEqual(body(makeRequest(messages: messages, webAccess: true), .compatible)["input"]?.arrayValue,
+                       withoutFetch)
+    }
+
+    func testAnUnpairedPageReadIsLeftOut() {
+        let sent = body(makeRequest(messages: [
+            user([text("Hi")]),
+            assistant([SetappWebFetch.callBlock(id: "call_cut", input: ["url": "https://a.example/"]), text("Partial")]),
+            assistant([SetappWebFetch.errorBlock(id: "call_orphan", failure: .maxUsesExceeded)]),
+        ], webAccess: true))
+        XCTAssertEqual(sent["input"]?.arrayValue, [userMessage([inputText("Hi")]), assistantMessage([outputText("Partial")])])
     }
 
     func testClientToolsWithoutWebSearchSendNoMaxToolCalls() {
@@ -806,6 +876,7 @@ final class ResponsesRequestBuilderTests: XCTestCase {
             "include": ["reasoning.encrypted_content", "web_search_call.action.sources"],
             "tools": [
                 ["type": "web_search", "search_context_size": "low"],
+                SetappWebFetch.functionTool(strict: true),
                 ["type": "function", "name": "echo", "description": .string(EchoTool().description),
                  "parameters": echoSchema, "strict": true],
             ],
