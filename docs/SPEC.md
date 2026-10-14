@@ -1444,8 +1444,21 @@ at a time.
 fresh install: Setapp's AI Gateway, reached through the Setapp Framework's `SetappAI` module and billed in the member's
 Setapp AI credits, so a member can ask without an API key. Settings → Models starts with **Provider** (Setapp AI or
 "Your Anthropic key"); with Setapp AI chosen it shows the credit balance with **Get Credits**, hides the key field and
-the list prices, and says where messages go. `settings.aiProvider` (`otto.aiProvider`) stores the choice;
-`effectiveProvider` falls back to `.anthropic` in a build that doesn't offer Setapp AI.
+the list prices, and says where messages go. `settings.aiProvider` (`otto.aiProvider`) stores the choice.
+`effectiveProvider` falls back to `.anthropic` in a build that doesn't offer Setapp AI. It does the same in a Setapp
+build without the OAuth client (J22, `settings.isSetappAIConfigured`, set at launch and never stored), where Models
+checks "Your Anthropic key" and shows the key field. With nothing stored, an existing API key (Keychain or `ANTHROPIC_API_KEY`)
+starts the Setapp build on that key instead. The first launch of a build that offers Setapp AI opens Models once
+(`otto.setappAI.introduced`), so the member sees the choice and where messages go before asking anything.
+
+- **Credits.** The balance is fetched past the SDK's cache when Models appears on Setapp AI, when Settings becomes
+  key, two seconds after each Setapp AI reply finishes (one fetch for a reply with tool rounds) and at once when a
+  reply runs out of credits. On Setapp AI the ⋮ menu's Usage rows become one row, the balance or "Setapp AI uses
+  credits, not dollars". Get Credits opens the SDK's purchase link (https only, else `setapp.com/ai`) the way its
+  window opens links: Settings lowers its floating panel first, the notch closes first. A reply out of credits
+  offers Get Credits with a quieter **Open Settings**; a balance that failed to load offers Try Again and Get Credits.
+- **Haiku 4.5** doesn't search through the gateway: on Setapp AI the header menu's Web search is off with "No web
+  search on Haiku 4.5 with Setapp AI", Settings says the same, and ⌘3's notice adds "no web search".
 
 - **Request.** `makeClient` returns `ResponsesClient(transport: SetappSDKTransport())`. `ResponsesRequestBuilder`
   turns the `MessagesRequest` into an OpenAI Responses body with `model` `anthropic/<id>` (the gateway serves
@@ -1475,7 +1488,7 @@ the list prices, and says where messages go. `settings.aiProvider` (`otto.aiProv
   SDK's raw `.unsupported` value, and nullable enums are sent as `anyOf` with a null type. Events the SDK can't decode
   end its stream; the transport recovers the raw event from the connector's error text when it can and otherwise
   rebuilds the terminal response from the finished items. `LiveSetappAIAccount` reads the balance (15 s timeout,
-  rounded down) and opens Setapp's purchase link.
+  rounded down) and hands over Setapp's purchase link (5 s timeout).
 - **Cost.** A Setapp AI reply keeps the gateway's model id, so it is never priced in dollars: its label reads
   "Opus 5 · Setapp AI" and dollar totals count only replies on the user's own key.
 - **Check.** `--setapp-ai-check <dir>` (Debug, Setapp build) runs before the Setapp Framework starts and round-trips
