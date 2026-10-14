@@ -235,6 +235,76 @@ enum ModelOption: String, CaseIterable, Codable, Identifiable, Sendable {
     var webFetchToolType: String? { self == .haiku45 ? nil : "web_fetch_20260209" }
     /// `max_tokens` for a streaming request (thinking + visible text share this cap).
     var maxOutputTokens: Int { self == .haiku45 ? 32_000 : 64_000 }
+
+    /// The id Setapp's AI Gateway serves this model under (its `/v1/model/info` lists all three, checked 2026-10-13).
+    var setappAIModelID: String { "anthropic/" + rawValue }
+    /// Whether Otto offers the gateway's `web_search` tool on this model. The gateway reports
+    /// `supports_web_search: true` for Opus 5 and Sonnet 5 and nothing for Haiku 4.5.
+    var supportsSetappAIWebSearch: Bool { self != .haiku45 }
+}
+
+// MARK: - AI provider
+
+/// Who answers. The direct and source builds only have `.anthropic` (the user's own key, straight to
+/// api.anthropic.com). The Setapp build adds `.setappAI`: Setapp's AI Gateway, billed in the member's Setapp AI
+/// credits, reached through the Setapp Framework's SetappAI module.
+enum AIProvider: String, CaseIterable, Codable, Identifiable, Sendable {
+    case anthropic
+    case setappAI
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .anthropic: return "Your Anthropic key"
+        case .setappAI: return "Setapp AI"
+        }
+    }
+
+    /// The providers this build offers, in the order Settings lists them.
+    static var available: [AIProvider] {
+        #if OTTO_SETAPP
+        return [.setappAI, .anthropic]
+        #else
+        return [.anthropic]
+        #endif
+    }
+
+    /// The provider a fresh install starts on: Setapp AI in the Setapp build, so a member can ask without a key.
+    static var defaultProvider: AIProvider { available[0] }
+
+    var isAvailable: Bool { Self.available.contains(self) }
+}
+
+/// Where a stored model id came from. Replies through Setapp AI keep the gateway's id
+/// ("anthropic/claude-opus-5"), which keeps them out of Anthropic price math: they are billed in credits.
+enum ModelProvenance {
+    static let setappAIPrefix = "anthropic/"
+
+    /// (true, "claude-opus-5") for "anthropic/claude-opus-5"; (false, id) for anything else.
+    static func split(_ modelID: String) -> (viaSetappAI: Bool, baseID: String) {
+        guard modelID.hasPrefix(setappAIPrefix) else { return (false, modelID) }
+        return (true, String(modelID.dropFirst(setappAIPrefix.count)))
+    }
+}
+
+/// Content blocks that only Setapp AI turns carry. They are stored in `apiContent` like any other block,
+/// and `AnthropicClient` removes them before a request (Anthropic rejects unknown types and fields).
+enum ProviderBlocks {
+    /// `{"type": "otto_responses_reasoning", "item": <the Responses reasoning output item, verbatim>}`. Replayed to
+    /// the gateway so a reasoning model keeps its chain across a tool round; never sent to Anthropic.
+    static let responsesReasoningType = "otto_responses_reasoning"
+    /// A field set to `setappAIMarker` on the `server_tool_use` and `*_tool_result` blocks synthesized from
+    /// the gateway's `web_search_call` items. They exist so TrustLedger, the web budget and History see the same
+    /// shapes as an Anthropic web search; they have no `encrypted_content`, so Anthropic can't take them back.
+    static let providerField = "otto_provider"
+    static let setappAIMarker = "setapp-ai"
+
+    /// Whether `block` exists only for Setapp AI.
+    static func isSetappAIOnly(_ block: JSONValue) -> Bool {
+        if block["type"]?.stringValue == responsesReasoningType { return true }
+        return block[providerField]?.stringValue == setappAIMarker
+    }
 }
 
 enum EffortLevel: String, CaseIterable, Codable, Identifiable, Sendable {
@@ -805,6 +875,8 @@ enum LLMError: LocalizedError, Equatable {
     case streamError(type: String?, message: String)
     case network(String)
     case decoding(String)
+    /// Setapp AI (Setapp build only) turned the request away for a reason the user can act on.
+    case setappAI(SetappAIFailure)
 
     var errorDescription: String? {
         switch self {
@@ -827,6 +899,8 @@ enum LLMError: LocalizedError, Equatable {
             return message.isEmpty ? "Couldn't reach the Anthropic API. Check your connection." : message
         case .decoding(let message):
             return "Couldn't read the response: \(message)"
+        case .setappAI(let failure):
+            return failure.copy
         }
     }
 
@@ -837,6 +911,62 @@ enum LLMError: LocalizedError, Equatable {
         case .http(let status, _, _): return status == 408 || status == 409 || status >= 500
         case .streamError(let type, _): return type == "overloaded_error" || type == "api_error"
         case .missingAPIKey, .invalidAPIKey, .decoding: return false
+        case .setappAI(let failure): return failure == .unavailable
         }
+    }
+}
+
+/// Why Setapp AI couldn't answer. Each case's `copy` is the reply's failure text, and `MessageView` recognizes
+/// that text to offer the matching button (`action`), the same way it does for the API key errors.
+enum SetappAIFailure: Equatable, Sendable {
+    /// HTTP 402 / `SetappAIError.insufficientCredits`: the member's AI credits ran out.
+    case insufficientCredits
+    /// HTTP 403 / `SetappAIError.modelNotAllowed`: the chosen model isn't on the member's plan.
+    /// The associated value is the model's short name ("Opus 5").
+    case modelNotAllowed(String)
+    /// This build has no Setapp OAuth client (J22), so the SDK can't sign in.
+    case notConfigured
+    /// HTTP 401, `SetappAIError.general`, or anything else between Otto and the gateway: Setapp not running,
+    /// not signed in, or the gateway down. Retryable.
+    case unavailable
+
+    /// What the reply's footer offers for this failure.
+    enum Action: Equatable, Sendable {
+        /// "Get Credits": open Setapp's purchase page (`SetappAIAccountModel.openPurchasePage()`).
+        case getCredits
+        /// "Open Settings" on the Models tab, where the model and provider are.
+        case openModelsSettings
+    }
+
+    var copy: String {
+        switch self {
+        case .insufficientCredits:
+            return "You're out of Setapp AI credits. Get more, or switch to your own Anthropic key in Settings."
+        case .modelNotAllowed(let model):
+            return "\(model) isn't on your Setapp plan. Pick another model, or use your own Anthropic key."
+        case .notConfigured:
+            return "Setapp AI isn't set up in this build. Use your own Anthropic key in Settings."
+        case .unavailable:
+            return "Couldn't reach Setapp AI. Make sure Setapp is open and you're signed in, then try again."
+        }
+    }
+
+    var action: Action? {
+        switch self {
+        case .insufficientCredits: return .getCredits
+        case .modelNotAllowed, .notConfigured: return .openModelsSettings
+        case .unavailable: return nil
+        }
+    }
+
+    /// The action for a stored failure text, or nil when it isn't a Setapp AI failure. `modelNotAllowed` is
+    /// matched for every model.
+    static func action(forCopy copy: String) -> Action? {
+        let fixed: [SetappAIFailure] = [.insufficientCredits, .notConfigured, .unavailable]
+        if let match = fixed.first(where: { $0.copy == copy }) { return match.action }
+        if ModelOption.allCases.contains(where: { SetappAIFailure.modelNotAllowed($0.shortName).copy == copy }) {
+            return .openModelsSettings
+        }
+        return nil
     }
 }

@@ -64,7 +64,7 @@ final class AnthropicClient: LLMClient, @unchecked Sendable {
             "model": .string(model.rawValue),
             "max_tokens": .int(Int64(request.maxTokens)),
             "stream": true,
-            "messages": .array(request.messages),
+            "messages": .array(anthropicMessages(request.messages)),
             // Top-level automatic prompt caching: the breakpoint follows the conversation as it grows.
             "cache_control": ["type": "ephemeral"],
         ]
@@ -92,6 +92,24 @@ final class AnthropicClient: LLMClient, @unchecked Sendable {
             }
         }
         return .object(body)
+    }
+
+    /// `messages` without the blocks only Setapp AI turns carry (`ProviderBlocks`), so a conversation that switched
+    /// from Setapp AI to the user's own key keeps its text, tool calls and results. Returns `messages` itself when
+    /// there is nothing to remove, which keeps the body byte-stable for prompt caching.
+    static func anthropicMessages(_ messages: [JSONValue]) -> [JSONValue] {
+        let hasProviderBlocks = messages.contains { message in
+            message["content"]?.arrayValue?.contains(where: ProviderBlocks.isSetappAIOnly) ?? false
+        }
+        guard hasProviderBlocks else { return messages }
+        return messages.compactMap { message in
+            guard var object = message.objectValue, let content = message["content"]?.arrayValue else { return message }
+            let kept = content.filter { !ProviderBlocks.isSetappAIOnly($0) }
+            // A turn that held nothing else (a Setapp AI web search with no text) would be an empty message.
+            guard !kept.isEmpty else { return nil }
+            object["content"] = .array(kept)
+            return .object(object)
+        }
     }
 
     /// The web tools with this request's `max_uses`; a tool whose limit is 0 is left out.

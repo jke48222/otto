@@ -1467,7 +1467,7 @@ import os
             return status == 400 || status == 413 || type.map(contentErrorTypes.contains) == true
         case .streamError(let type, _):
             return type.map(contentErrorTypes.contains) == true
-        case .missingAPIKey, .invalidAPIKey, .rateLimited, .overloaded, .network, .decoding:
+        case .missingAPIKey, .invalidAPIKey, .rateLimited, .overloaded, .network, .decoding, .setappAI:
             return false
         }
     }

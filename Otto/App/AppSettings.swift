@@ -21,6 +21,7 @@ import os
 
     private enum Key {
         static let model = "otto.model"
+        static let aiProvider = "otto.aiProvider"
         static let effort = "otto.effort"
         static let webAccess = "otto.webAccess"
         static let suggestBrowserTab = "otto.suggestBrowserTab"
@@ -41,6 +42,17 @@ import os
     var model: ModelOption {
         didSet { defaults.set(model.rawValue, forKey: Key.model) }
     }
+
+    /// Who answers (§19 Setapp AI). Stored as chosen; `effectiveProvider` is what a build can actually use.
+    var aiProvider: AIProvider {
+        didSet { defaults.set(aiProvider.rawValue, forKey: Key.aiProvider) }
+    }
+
+    /// `aiProvider` when this build offers it, else the user's own Anthropic key.
+    var effectiveProvider: AIProvider { aiProvider.isAvailable ? aiProvider : .anthropic }
+
+    /// Whether a message can be sent without first visiting Settings: Setapp AI needs no key.
+    var isProviderReady: Bool { effectiveProvider == .setappAI || hasAPIKey }
 
     var effort: EffortLevel {
         didSet { defaults.set(effort.rawValue, forKey: Key.effort) }
@@ -137,6 +149,7 @@ import os
         self.usesKeychain = usesKeychain
 
         model = defaults.string(forKey: Key.model).flatMap(ModelOption.init(rawValue:)) ?? .opus5
+        aiProvider = defaults.string(forKey: Key.aiProvider).flatMap(AIProvider.init(rawValue:)) ?? AIProvider.defaultProvider
         effort = defaults.string(forKey: Key.effort).flatMap(EffortLevel.init(rawValue:)) ?? .medium
         webAccess = Self.bool(defaults, Key.webAccess, default: true)
         suggestBrowserTab = Self.bool(defaults, Key.suggestBrowserTab, default: true)
