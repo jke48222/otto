@@ -56,7 +56,11 @@ Global conventions
 ### 1. API module (owner: `api` agent): `Otto/API/*`, `OttoTests/API*Tests.swift`
 
 Files: `AnthropicClient.swift`, `SSEParser.swift`, `StreamAccumulator.swift`, `MockLLMClient.swift`,
-`KeychainStore.swift`.
+`KeychainStore.swift`, and `Responses/` for Setapp AI (section 19): `ResponsesContracts.swift`,
+`ResponsesRequestBuilder.swift`, `ResponsesStreamAccumulator.swift`, `ResponsesClient.swift`. Otto keeps one
+conversation format, Anthropic Messages blocks; `ResponsesClient` is a second `LLMClient` that translates to and
+from the OpenAI Responses API at its edge. `AnthropicClient.anthropicMessages(_:)` drops the blocks only Setapp AI
+turns carry (`ProviderBlocks`) before every request.
 
 ```swift
 enum KeychainStore {
@@ -1236,13 +1240,14 @@ never shows a dialog, and never downgrades on an answer that could be an outage.
   `build/release/<flavor>/DerivedData`), so none of them overwrites the source build's `Otto.app`.
 - Flavor code sits behind `#if OTTO_LICENSING`, `#if OTTO_SPARKLE`, `#if OTTO_SETAPP`, or `#if OTTO_SPARKLE ||
   OTTO_SETAPP` for the shared updates UI. Every file under `Otto/Licensing/`, `Otto/Updates/` and `Otto/Setapp/` is
-  wrapped in its flag as a whole file, and so is every test file that needs a flag, because `project.yml` compiles all
+  wrapped in its flag as a whole file (except `Otto/Setapp/SetappAIContracts.swift`, the flavor-neutral credit model), and so is every test file that needs a flag, because `project.yml` compiles all
   of `OttoTests/` into every project. `import Sparkle` and `import Setapp` appear only inside their flags.
 - `OttoBuild` (`Otto/App/OttoBuild.swift`, compiled everywhere) names the flavor and its footer label and lists
   `allBundleIDs`. It refuses to compile Setapp together with licensing or Sparkle, and Sparkle without licensing.
 - The flavor-neutral seams are compiled in every flavor and inert in the source build: `ComposerGate` and
-  `ComposerGating`, `NotchServices.sendGate`, `UsageReportThrottle`, `StatusItemController.extraMenuItems` and
-  `BuildInfoFooter`.
+  `ComposerGating`, `NotchServices.sendGate`, `UsageReportThrottle`, `StatusItemController.extraMenuItems`,
+  `BuildInfoFooter`, and for Setapp AI `AIProvider`, `ProviderBlocks`, `Otto/API/Responses/` and
+  `SetappAIContracts.swift` (`AIProvider.available` is `[.anthropic]` outside the Setapp build).
 - The paid build shares the source build's bundle id on purpose: moving to the signed app keeps preferences, history
   and the API key, after one Keychain "Always Allow" prompt.
 
@@ -1431,9 +1436,51 @@ services and signs `Autoupdate`, `Updater.app`, `Sparkle.framework` and then `Ot
 event when the notch becomes engaged or a message is sent, at most once per 5 minutes. `SetappUpdater` asks Setapp for a
 pending update 30 s after launch, every 6 hours and when Settings → General appears, then offers "Update and
 Relaunch…". The Setapp build has no trial, license keys, License tab, Sparkle, "Buy a License" or pricing links. It
-keeps the user's own Anthropic key and never routes prompts through Setapp. It shares Otto's data folder and Keychain
+answers through Setapp AI (below) or the user's own Anthropic key, the member's choice. It shares Otto's data folder and Keychain
 service with the direct build but not its preferences, and the launch guard (section 8) allows one Otto of any flavor
 at a time.
+
+**Setapp AI.** Since 2026-10-13 the Setapp build offers a second provider, `AIProvider.setappAI`, the default for a
+fresh install: Setapp's AI Gateway, reached through the Setapp Framework's `SetappAI` module and billed in the member's
+Setapp AI credits, so a member can ask without an API key. Settings → Models starts with **Provider** (Setapp AI or
+"Your Anthropic key"); with Setapp AI chosen it shows the credit balance with **Get Credits**, hides the key field and
+the list prices, and says where messages go. `settings.aiProvider` (`otto.aiProvider`) stores the choice;
+`effectiveProvider` falls back to `.anthropic` in a build that doesn't offer Setapp AI.
+
+- **Request.** `makeClient` returns `ResponsesClient(transport: SetappSDKTransport())`. `ResponsesRequestBuilder`
+  turns the `MessagesRequest` into an OpenAI Responses body with `model` `anthropic/<id>` (the gateway serves
+  `anthropic/claude-opus-5`, `-sonnet-5` and `-haiku-4-5`), `instructions`, `"store": false` and `"stream": true`.
+  The `input` items are user text, `input_image` data URLs, PDFs as `input_file`, text documents wrapped in
+  `<document>`, and `function_call` and `function_call_output` for tool rounds. Opus 5 and Sonnet 5 also get
+  `reasoning {effort, summary: auto}`, with the encrypted reasoning replayed across a tool round, and `web_search`
+  capped by `max_tool_calls`; the client tools go as function tools. Web fetch, server fallbacks, prompt-caching controls and
+  `pause_turn` have no gateway equivalent.
+- **Stream.** `ResponsesStreamAccumulator` turns the gateway's events into the same `StreamEvent`s, live when they
+  arrive and reconciled from the terminal response when the SDK delivers only text deltas and the final response.
+  Stored blocks stay Anthropic-shaped: text, client `tool_use`, and a `thinking` block for the summary plus the raw
+  reasoning item (`otto_responses_reasoning`). Each gateway web search is stored as a `server_tool_use` and
+  `web_search_tool_result` pair marked `"otto_provider": "setapp-ai"`, so TrustLedger, the web budget and History
+  treat it like an Anthropic search. Stop reasons map to `tool_use`, `max_tokens` (which wins over a cut-off tool
+  call), `refusal` and `end_turn`; usage maps to Anthropic's keys.
+- **Errors.** `ResponsesTransportError` maps to the existing `LLMError`s plus `LLMError.setappAI(SetappAIFailure)`:
+  out of credits (footer **Get Credits**), model not on the plan or J22 missing (**Open Settings**), Setapp
+  unreachable (Retry). A context overflow reads as "prompt is too long" so ChatSession compacts as it does for
+  Anthropic. Retries happen only before the first event; a `badRequest` on a body that carried reasoning or strict
+  tools is retried once without them, because the gateway's handling of those for Anthropic models can't be checked
+  offline.
+- **SDK.** `SetappSDKTransport` configures the SDK once from the Info.plist keys `OttoSetappAIClientID` and
+  `OttoSetappAIClientSecret` (J22, from the git-ignored `Config/Local.xcconfig`; the secret ships in the app, which is
+  Setapp's documented design) with errors propagated to Otto's own UI. The SDK's typed Codable needs the connector's
+  snake_case settings and loses or refuses several OpenAI fields, so every input item and tool goes through as the
+  SDK's raw `.unsupported` value, and nullable enums are sent as `anyOf` with a null type. Events the SDK can't decode
+  end its stream; the transport recovers the raw event from the connector's error text when it can and otherwise
+  rebuilds the terminal response from the finished items. `LiveSetappAIAccount` reads the balance (15 s timeout,
+  rounded down) and opens Setapp's purchase link.
+- **Cost.** A Setapp AI reply keeps the gateway's model id, so it is never priced in dollars: its label reads
+  "Opus 5 · Setapp AI" and dollar totals count only replies on the user's own key.
+- **Check.** `--setapp-ai-check <dir>` (Debug, Setapp build) runs before the Setapp Framework starts and round-trips
+  requests, `ResponsesRequestBuilder` bodies and every `ResponsesFixtures` stream through the SDK's own types, the
+  transport and the client, offline. CI runs it. Nothing here has run against the live gateway until J22 exists.
 
 **Network.** The source build contacts none of these.
 
@@ -1444,10 +1491,13 @@ at a time.
 | `<site host>/appcast.xml` | at most once a day, and Check Now | paid |
 | the downloads host (Vercel Blob) | when an update downloads | paid |
 | Setapp, through the Setapp app | a usage event at most every 5 minutes while in use | setapp |
+| Setapp's AI Gateway (`api.macpaw.com/ai`), through the Setapp Framework | each message, only with Setapp AI chosen: the conversation, attachments and tool results, as the Anthropic request would carry them; the gateway passes it to Anthropic | setapp |
 
 Every license and update request uses an ephemeral `URLSession` (no cookies, cache or credentials) and pins
 `Accept-Language: en`, so none carries the Mac's language list. Logs use the categories `License`, `Updates` and
 `Setapp` and carry the backend, operation, outcome name and HTTP status, never a key, activation id, label or email.
+Setapp AI logs under `ResponsesClient` and `SetappAI` with error codes public and message text private, and never
+the OAuth secret.
 
 **Tests.** The source suite keeps passing with no flag. Flag-only tests (`LicensePolicyTests`, `LicenseControllerTests`,
 `PolarLicenseBackendTests` and the rest) run in the licensing-check and paid builds; `SparkleUpdaterTests` and
@@ -1455,7 +1505,10 @@ Every license and update request uses an ephemeral `URLSession` (no cookies, cac
 against a `com.jalenedusei.otto.tests.<UUID>` service, and `PolarSandboxLiveTests` only with
 `OTTO_POLAR_SANDBOX_TESTS=1` and sandbox credentials. `scripts/snapshot.sh --licensing` and `--paid` render the license
 and updates scenes into `docs/snapshots/licensing/` and `docs/snapshots/paid/`; the Setapp build has no snapshots,
-because its framework starts at launch. CONTRIBUTING.md lists the commands.
+because its framework starts at launch. Setapp AI's translation, stream, client and UI tests run in the source
+suite (`ResponsesRequestBuilderTests`, `ResponsesStreamAccumulatorTests`, `ResponsesClientTests`, the Setapp AI
+cases in the cost, settings and conversation tests, `SetappAIIntegrationTests`), its Settings and reply scenes
+render in the source build from `StaticSetappAIAccount`, and the SDK side is covered by `--setapp-ai-check`. CONTRIBUTING.md lists the commands.
 
 ### 20. Otto for iPhone
 

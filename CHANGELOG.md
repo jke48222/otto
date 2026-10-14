@@ -35,9 +35,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   - Shortcuts, AppleScript, media control and links stay on the Mac.
 - An iOS CI job builds the app and its widget extension, runs the iPhone tests on the newest simulator and
   uploads snapshots of every screen.
+- **Setapp AI** in the Setapp build: a member can choose Setapp AI in Settings → Models and use Otto on their
+  Setapp AI credits with no API key, or keep their own Anthropic key. Opus 5, Sonnet 5 and Haiku 4.5 work through
+  it with streaming, thinking summaries, attachments, actions with their approval cards, and web search on Opus 5
+  and Sonnet 5. Settings shows the credit balance and a Get Credits button, a reply that runs out of credits
+  offers the same button, and Setapp AI replies stay out of the dollar totals. Not yet tested against the live
+  gateway, which needs Setapp's OAuth client (J22).
 
 ### Changed
 
+- The signed app costs $5 once (it was $19), still for 3 Macs with a 14-day trial and 30-day refunds.
 - Shared copy names the device it runs on ("saved on this iPhone"), so the core reads right on both.
 - In demo mode, the reply after adding an event or reminder says where it went ("“Dentist” is on your Home
   calendar") instead of quoting the action's raw result.
