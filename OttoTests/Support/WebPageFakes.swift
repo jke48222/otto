@@ -22,6 +22,8 @@ final class PageStubProtocol: URLProtocol {
         /// Sends the headers and body, then never finishes: only a stop ends the load.
         var holdsOpen = false
         var failure: URLError?
+        /// The body goes out in pieces of this size.
+        var chunkSize = 16 * 1_024
 
         static func html(_ html: String) -> Page {
             Page(body: Data(html.utf8))
@@ -75,7 +77,7 @@ final class PageStubProtocol: URLProtocol {
         // In pieces, as a network delivers it, so a reader can stop part way.
         var offset = 0
         while offset < page.body.count {
-            let end = min(page.body.count, offset + 16 * 1_024)
+            let end = min(page.body.count, offset + max(1, page.chunkSize))
             client?.urlProtocol(self, didLoad: page.body.subdata(in: offset..<end))
             offset = end
         }
@@ -116,6 +118,34 @@ final class ResolverTable: @unchecked Sendable {
     static func address(_ text: String) -> ResolvedAddress {
         guard let address = ResolvedAddress(text) else { preconditionFailure("not an address: \(text)") }
         return address
+    }
+}
+
+/// Answers the reader's post-connect check from a table by absolute URL, in place of URLSession's metrics (a
+/// URLProtocol stub's carry no address). A URL not in the table connected to `fallback`, a public address. Records
+/// every URL it was asked about.
+final class ConnectionTable: @unchecked Sendable {
+    private let lock = NSLock()
+    private var table: [String: [ConnectionRecord]?]
+    private let fallback: [ConnectionRecord]?
+    private var asked: [String] = []
+
+    init(_ table: [String: [ConnectionRecord]?] = [:],
+         fallback: [ConnectionRecord]? = [ConnectionRecord(remoteAddress: "93.184.216.34")]) {
+        self.table = table
+        self.fallback = fallback
+    }
+
+    var checkedURLs: [String] { lock.withLock { asked } }
+
+    var source: WebPageReader.ConnectionSource {
+        { [self] url, _ in
+            lock.withLock {
+                asked.append(url.absoluteString)
+                if let entry = table[url.absoluteString] { return entry }
+                return fallback
+            }
+        }
     }
 }
 

@@ -8,8 +8,9 @@
 //  downloads. Every hop is checked before it is requested: http or https only, never from https down to http, at
 //  most 5 redirects (followed here, one at a time), and a host whose address is on this Mac, the local network or
 //  another private range (URLGuard's ranges) is refused, so a page can't point Otto at the user's router or a
-//  service on localhost. HTML becomes readable text with HTMLText, as attachments do, plain text stays as it is, and
-//  a PDF's text comes out through PDFKit.
+//  service on localhost. Every request is checked again against the address its connection reached, and refused
+//  when that address is local or can't be confirmed. HTML becomes readable text with HTMLText, as attachments do,
+//  plain text stays as it is, and a PDF's text comes out through PDFKit.
 //
 
 import Darwin
@@ -57,6 +58,8 @@ enum WebPageReadError: Error, Equatable, Sendable {
     /// The bytes couldn't be decoded as text, or the PDF couldn't be opened.
     case unreadable
     case noText
+    /// The connection's remote address was missing or unreadable, so Otto couldn't confirm it wasn't local.
+    case unverifiedConnection
     /// Any other network failure (the URLError code).
     case failed(String)
 
@@ -68,7 +71,7 @@ enum WebPageReadError: Error, Equatable, Sendable {
             return "unsupported_content_type"
         case .offline: return "unavailable"
         case .hostNotFound, .insecureRedirect, .unsupportedRedirect, .tooManyRedirects, .httpStatus, .timedOut,
-             .secureConnectionFailed, .needsSignIn, .failed:
+             .secureConnectionFailed, .needsSignIn, .unverifiedConnection, .failed:
             return "url_not_accessible"
         }
     }
@@ -110,6 +113,8 @@ enum WebPageReadError: Error, Equatable, Sendable {
             return "Otto couldn't read the page's contents."
         case .noText:
             return "The page has no text Otto can read. It may need scripts to show anything."
+        case .unverifiedConnection:
+            return "Otto couldn't confirm which address the page came from, so it didn't use it."
         case .failed(let detail):
             return "Otto couldn't load the page (\(detail))."
         }
@@ -150,9 +155,20 @@ enum ResolvedAddress: Equatable, Sendable {
     }
 }
 
+/// One connection a request used, as URLSession's task metrics describe it.
+struct ConnectionRecord: Equatable, Sendable {
+    /// "93.184.216.34", "2606:2800:21f:cb07::1"; nil when the metrics don't say.
+    var remoteAddress: String?
+    /// The connection went to a proxy, so `remoteAddress` is the proxy's.
+    var isProxyConnection = false
+}
+
 struct WebPageReader: WebPageReading {
     /// Resolves a host name (ASCII) to its addresses. Tests answer from a table; nothing touches DNS.
     typealias Resolver = @Sendable (_ host: String) async throws -> [ResolvedAddress]
+    /// The connections a finished request used: URLSession's metrics (`collected`, nil when they never arrived) on the
+    /// Mac. Tests answer from a table, because a URLProtocol stub's metrics carry no address.
+    typealias ConnectionSource = @Sendable (_ url: URL, _ collected: [ConnectionRecord]?) -> [ConnectionRecord]?
 
     /// For the whole read: every hop, the download and the conversion.
     static let timeout: TimeInterval = 20
@@ -161,6 +177,8 @@ struct WebPageReader: WebPageReading {
     static let acceptHeader = "text/html,application/xhtml+xml,text/plain;q=0.9,application/pdf;q=0.9,*/*;q=0.5"
     /// HTML converted past this many bytes of text is cut anyway (SetappWebFetch keeps 100,000 characters).
     static let maxHTMLTextBytes = 1_000_000
+    /// How long a finished request waits for its metrics, which can arrive a little after the request ends.
+    static let metricsWait: TimeInterval = 1
 
     /// The reader the app uses: one ephemeral session, the system resolver.
     static let live = WebPageReader()
@@ -172,18 +190,21 @@ struct WebPageReader: WebPageReading {
     let maxBytes: Int
     let userAgent: String
     private let resolve: Resolver
+    private let connections: ConnectionSource
 
-    /// Tests pass `protocolClasses` (a URLProtocol stub), a `resolve` table and short limits.
+    /// Tests pass `protocolClasses` (a URLProtocol stub), a `resolve` table, a `connections` table and short limits.
     init(
         timeout: TimeInterval = WebPageReader.timeout,
         maxBytes: Int = WebPageReader.maxBytes,
         resolve: @escaping Resolver = { try await WebPageReader.systemResolve($0) },
+        connections: @escaping ConnectionSource = { _, collected in collected },
         protocolClasses: [AnyClass]? = nil,
         userAgent: String = WebPageReader.defaultUserAgent()
     ) {
         self.timeout = timeout
         self.maxBytes = maxBytes
         self.resolve = resolve
+        self.connections = connections
         self.userAgent = userAgent
         session = URLSession(configuration: Self.makeConfiguration(timeout: timeout, protocolClasses: protocolClasses))
     }
@@ -244,40 +265,28 @@ struct WebPageReader: WebPageReading {
         var url = start
         var redirects = 0
         while true {
-            try Task.checkCancellation()
+            try Self.checkpoint(deadline)
             try await checkAddress(of: url)
-            let delegate = FetchTaskDelegate()
-            let (bytes, response) = try await open(url, delegate: delegate)
-            guard let http = response as? HTTPURLResponse else {
-                bytes.task.cancel()
-                throw WebPageReadError.failed("not an HTTP response")
-            }
+            let hop = try await fetch(url)
+            try Task.checkCancellation()
+            // DNS can answer differently the second time it's asked, so the address the request actually reached must
+            // pass the same check, whatever came back: a page, a redirect, an error status or a failure all say
+            // something about what is at that address.
+            try await verifyConnections(of: hop, url: url)
+            if let error = hop.error { throw error }
+            guard let http = hop.response else { throw WebPageReadError.failed("not an HTTP response") }
             if (300...399).contains(http.statusCode), let location = http.value(forHTTPHeaderField: "Location") {
-                bytes.task.cancel()
                 guard redirects < Self.maxRedirects else { throw WebPageReadError.tooManyRedirects }
                 redirects += 1
                 url = try Self.redirectTarget(location, from: url)
                 continue
             }
-            guard (200...299).contains(http.statusCode) else {
-                bytes.task.cancel()
-                throw WebPageReadError.httpStatus(http.statusCode)
-            }
+            guard (200...299).contains(http.statusCode) else { throw WebPageReadError.httpStatus(http.statusCode) }
             let mimeType = http.mimeType?.lowercased()
-            if Self.isPDF(mimeType), http.expectedContentLength > Int64(maxBytes) {
-                bytes.task.cancel()
-                throw WebPageReadError.pdfTooLarge
-            }
-            let (data, isPartial) = try await collect(bytes, delegate: delegate)
-            // DNS can answer differently the second time it's asked: the address the page actually came from must
-            // pass the same check.
-            if delegate.reachedBlockedAddress {
-                Self.logger.error("A page came from a local address after its host resolved to a public one")
-                throw WebPageReadError.blockedAddress
-            }
+            if hop.pdfTooLarge { throw WebPageReadError.pdfTooLarge }
             try Self.checkpoint(deadline)
-            return try Self.page(from: data, mimeType: mimeType, charset: http.textEncodingName, url: url,
-                                 isPartial: isPartial, checkpoint: { try Self.checkpoint(deadline) })
+            return try Self.page(from: hop.body, mimeType: mimeType, charset: http.textEncodingName, url: url,
+                                 isPartial: hop.isPartial, checkpoint: { try Self.checkpoint(deadline) })
         }
     }
 
@@ -299,36 +308,53 @@ struct WebPageReader: WebPageReading {
         if addresses.contains(where: \.isBlocked) { throw WebPageReadError.blockedAddress }
     }
 
-    private func open(_ url: URL, delegate: FetchTaskDelegate) async throws -> (URLSession.AsyncBytes, URLResponse) {
+    /// What one request came back with. Throws only CancellationError.
+    private func fetch(_ url: URL) async throws -> Hop {
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: timeout)
         request.httpMethod = "GET"
         request.httpShouldHandleCookies = false
         request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         request.setValue("en", forHTTPHeaderField: "Accept-Language")
         request.setValue(Self.acceptHeader, forHTTPHeaderField: "Accept")
-        do {
-            return try await session.bytes(for: request, delegate: delegate)
-        } catch {
-            throw Self.mapped(error, delegate: delegate)
+        let maxBytes = self.maxBytes
+        let load = PageLoad(maxBytes: maxBytes) { response in
+            // Only a page is downloaded: a redirect, an error status or a PDF over the cap stops at the headers.
+            (200...299).contains(response.statusCode)
+                && !(Self.isPDF(response.mimeType?.lowercased()) && response.expectedContentLength > Int64(maxBytes))
         }
+        await load.run(request, in: session)
+        try Task.checkCancellation()
+        var hop = load.outcome()
+        hop.connections = await load.connections(within: Self.metricsWait)
+        if let error = hop.error {
+            hop.error = Self.mapped(error, refusedChallenge: hop.refusedChallenge)
+        }
+        if hop.error == nil, hop.response == nil {
+            hop.error = WebPageReadError.failed("not an HTTP response")
+        }
+        return hop
     }
 
-    /// The body up to `maxBytes`; true when there was more (the rest is never downloaded).
-    private func collect(_ bytes: URLSession.AsyncBytes, delegate: FetchTaskDelegate) async throws -> (Data, Bool) {
-        var buffer: [UInt8] = []
-        buffer.reserveCapacity(min(maxBytes, 256 * 1_024))
-        do {
-            for try await byte in bytes {
-                if buffer.count >= maxBytes {
-                    bytes.task.cancel()
-                    return (Data(buffer), true)
-                }
-                buffer.append(byte)
-            }
-        } catch {
-            throw Self.mapped(error, delegate: delegate)
+    /// Throws `blockedAddress` when a connection of `hop` that didn't go to a proxy reached a local or private address,
+    /// and `unverifiedConnection` when the request's metrics, or a connection's remote address, are missing or
+    /// unreadable. A connection through a proxy reports the proxy's address, so only the lookup before the request
+    /// vouches for the site behind it. A failure that never leaves the Mac (offline) needs no check.
+    private func verifyConnections(of hop: Hop, url: URL) async throws {
+        if let error = hop.error as? WebPageReadError, error == .offline { return }
+        guard let records = connections(url, hop.connections), !records.isEmpty else {
+            Self.logger.error("A page read had no connection metrics; refusing it")
+            throw WebPageReadError.unverifiedConnection
         }
-        return (Data(buffer), false)
+        for record in records where !record.isProxyConnection {
+            guard let text = record.remoteAddress, let address = ResolvedAddress(text) else {
+                Self.logger.error("A page read's connection had no readable remote address; refusing it")
+                throw WebPageReadError.unverifiedConnection
+            }
+            if address.isBlocked {
+                Self.logger.error("A page read reached a local address after its host resolved to a public one")
+                throw WebPageReadError.blockedAddress
+            }
+        }
     }
 
     // MARK: - Hops
@@ -433,13 +459,13 @@ struct WebPageReader: WebPageReading {
 
     // MARK: - Errors
 
-    private static func mapped(_ error: Error, delegate: FetchTaskDelegate) -> Error {
+    private static func mapped(_ error: Error, refusedChallenge: Bool) -> Error {
         if error is CancellationError { return error }
         if let error = error as? WebPageReadError { return error }
         guard let urlError = error as? URLError else {
             return Task.isCancelled ? CancellationError() : WebPageReadError.failed(String(describing: type(of: error)))
         }
-        if delegate.refusedChallenge { return WebPageReadError.needsSignIn }
+        if refusedChallenge { return WebPageReadError.needsSignIn }
         switch urlError.code {
         case .cancelled:
             return Task.isCancelled ? CancellationError() : WebPageReadError.failed("cancelled")
@@ -548,39 +574,144 @@ private final class ResolveGate: @unchecked Sendable {
     }
 }
 
-/// One request's delegate: follows no redirect (the reader checks each one first), answers every authentication
-/// challenge except server trust by cancelling it, so Otto never sends credentials, and keeps the addresses the
-/// request's connections reached.
-private final class FetchTaskDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+/// What one request came back with.
+private struct Hop {
+    var response: HTTPURLResponse?
+    /// The body as URLSession decoded it, at most the reader's cap.
+    var body = Data()
+    /// The body passed the cap and the rest was never downloaded.
+    var isPartial = false
+    /// A PDF declared larger than the cap: its body was never downloaded.
+    var pdfTooLarge = false
+    /// How the request failed; nil when it finished, or Otto stopped it on purpose.
+    var error: Error?
+    var refusedChallenge = false
+    /// The request's connections, from its metrics; nil when they never arrived.
+    var connections: [ConnectionRecord]?
+}
+
+/// One request and its delegate: follows no redirect (the reader checks each one first), answers every authentication
+/// challenge except server trust by cancelling it, so Otto never sends credentials, downloads only a 2xx body Otto wants
+/// and counts it as URLSession decodes it, cancelling as soon as it passes the cap (a compressed body is never inflated
+/// far past it), and keeps the connections the request used.
+private final class PageLoad: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    private enum Stop { case none, headers, cap }
+
     private let lock = NSLock()
-    private var remoteAddresses: [String] = []
+    private let maxBytes: Int
+    private let wantsBody: @Sendable (HTTPURLResponse) -> Bool
+    private var task: URLSessionDataTask?
+    private var finished: CheckedContinuation<Void, Never>?
+    private var response: URLResponse?
+    private var body = Data()
+    private var stop = Stop.none
+    private var error: Error?
     private var refused = false
+    private var records: [ConnectionRecord]?
 
-    var refusedChallenge: Bool { lock.withLock { refused } }
+    init(maxBytes: Int, wantsBody: @escaping @Sendable (HTTPURLResponse) -> Bool) {
+        self.maxBytes = maxBytes
+        self.wantsBody = wantsBody
+    }
 
-    /// Whether a connection that wasn't to a proxy reached a local or private address.
-    var reachedBlockedAddress: Bool {
-        lock.withLock { remoteAddresses.contains { ResolvedAddress($0)?.isBlocked == true } }
+    /// Runs `request` until URLSession reports the task complete. Cancelling the caller cancels the task.
+    func run(_ request: URLRequest, in session: URLSession) async {
+        let task = session.dataTask(with: request)
+        task.delegate = self
+        lock.withLock { self.task = task }
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                lock.withLock { finished = continuation }
+                task.resume()
+            }
+        } onCancel: {
+            task.cancel()
+        }
+    }
+
+    /// The request's outcome, once `run` returned.
+    func outcome() -> Hop {
+        lock.withLock {
+            var hop = Hop(response: response as? HTTPURLResponse, body: body, isPartial: stop == .cap,
+                          refusedChallenge: refused)
+            if let http = hop.response, stop == .headers, (200...299).contains(http.statusCode) {
+                hop.pdfTooLarge = true
+            }
+            // Otto's own cancellation (headers only, or the cap) isn't a failure.
+            if stop == .none || (error as? URLError)?.code != .cancelled { hop.error = error }
+            if response != nil, !(response is HTTPURLResponse), hop.error == nil {
+                hop.error = WebPageReadError.failed("not an HTTP response")
+            }
+            return hop
+        }
+    }
+
+    /// The request's connections, waiting up to `timeout` for its metrics; nil when they never arrive.
+    func connections(within timeout: TimeInterval) async -> [ConnectionRecord]? {
+        let end = ContinuousClock.now + .milliseconds(Int64(timeout * 1_000))
+        while true {
+            if let records = lock.withLock({ self.records }) { return records }
+            guard ContinuousClock.now < end, !Task.isCancelled else { return nil }
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+    }
+
+    // MARK: URLSessionDataDelegate
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
+                    completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        let allowed = (response as? HTTPURLResponse).map(wantsBody) ?? false
+        lock.withLock {
+            self.response = response
+            if !allowed { stop = .headers }
+        }
+        completionHandler(allowed ? .allow : .cancel)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        let passedCap: Bool = lock.withLock {
+            guard stop == .none else { return false }
+            let room = maxBytes - body.count
+            guard data.count > room else {
+                body.append(data)
+                return false
+            }
+            body.append(data.prefix(max(0, room)))
+            stop = .cap
+            return true
+        }
+        if passedCap { dataTask.cancel() }
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
-                    newRequest request: URLRequest) async -> URLRequest? {
-        nil
+                    newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
+        completionHandler(nil)
     }
 
-    func urlSession(_ session: URLSession, task: URLSessionTask,
-                    didReceive challenge: URLAuthenticationChallenge) async
-        -> (URLSession.AuthChallengeDisposition, URLCredential?) {
+    func urlSession(_ session: URLSession, task: URLSessionTask, didReceive challenge: URLAuthenticationChallenge,
+                    completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
         if challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust {
-            return (.performDefaultHandling, nil)
+            completionHandler(.performDefaultHandling, nil)
+            return
         }
         lock.withLock { refused = true }
-        return (.cancelAuthenticationChallenge, nil)
+        completionHandler(.cancelAuthenticationChallenge, nil)
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didFinishCollecting metrics: URLSessionTaskMetrics) {
-        let addresses = metrics.transactionMetrics.filter { !$0.isProxyConnection }.compactMap(\.remoteAddress)
-        lock.withLock { remoteAddresses = addresses }
+        let collected = metrics.transactionMetrics.map {
+            ConnectionRecord(remoteAddress: $0.remoteAddress, isProxyConnection: $0.isProxyConnection)
+        }
+        lock.withLock { records = collected }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        let continuation: CheckedContinuation<Void, Never>? = lock.withLock {
+            self.error = error
+            defer { finished = nil }
+            return finished
+        }
+        continuation?.resume()
     }
 }
 

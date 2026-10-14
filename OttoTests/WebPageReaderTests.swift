@@ -16,16 +16,19 @@ final class WebPageReaderTests: XCTestCase {
     private static let pageURL = "https://docs.example/guide"
 
     private var resolver = ResolverTable([:])
+    private var connections = ConnectionTable()
 
     override func tearDown() {
         PageStubProtocol.serve([:])
         super.tearDown()
     }
 
-    /// A reader on the stub, with `table` for DNS (every `.example` host in the tests resolves publicly by default).
+    /// A reader on the stub, with `table` for DNS (every `.example` host in the tests resolves publicly by default)
+    /// and `reached` for the post-connect check (every connection reached a public address by default).
     private func makeReader(
         _ pages: [String: PageStubProtocol.Page],
         table: [String: [ResolvedAddress]]? = nil,
+        reached: ConnectionTable = ConnectionTable(),
         timeout: TimeInterval = 5,
         maxBytes: Int = WebPageReader.maxBytes,
         onStart: (@Sendable (URLRequest) -> Void)? = nil
@@ -37,8 +40,10 @@ final class WebPageReaderTests: XCTestCase {
         }
         for (host, addresses) in table ?? [:] { hosts[host] = addresses }
         resolver = ResolverTable(hosts)
+        connections = reached
         return WebPageReader(timeout: timeout, maxBytes: maxBytes, resolve: resolver.resolver,
-                             protocolClasses: [PageStubProtocol.self], userAgent: "Otto/9.9")
+                             connections: reached.source, protocolClasses: [PageStubProtocol.self],
+                             userAgent: "Otto/9.9")
     }
 
     private func read(_ reader: WebPageReader, _ url: String = pageURL) async throws -> WebPage {
@@ -144,6 +149,85 @@ final class WebPageReaderTests: XCTestCase {
     func testAHostThatDoesntResolveIsNotFound() async {
         let reader = makeReader([Self.pageURL: .html("<p>Hi</p>")], table: [Self.host: []])
         await expectFailure(.hostNotFound, with: reader)
+    }
+
+    /// DNS can answer differently when URLSession asks: whatever a request came back with, the address its
+    /// connection reached decides, so a host that resolved publicly and then connected locally tells Claude nothing.
+    func testTheAddressAConnectionReachedIsCheckedOnEveryPath() async {
+        let big = String(repeating: "word ", count: 2_000)
+        var held = PageStubProtocol.Page.html("<p>\(big)</p>")
+        held.holdsOpen = true
+        var failing = PageStubProtocol.Page()
+        failing.failure = URLError(.secureConnectionFailed)
+        let paths: [(String, PageStubProtocol.Page, Int)] = [
+            ("a page", .html("<p>Router admin</p>"), WebPageReader.maxBytes),
+            ("a page cut at the cap", held, 1_024),
+            ("a redirect", .redirect(to: "https://elsewhere.example/"), WebPageReader.maxBytes),
+            ("an error status", PageStubProtocol.Page(status: 401), WebPageReader.maxBytes),
+            ("a PDF over the cap", PageStubProtocol.Page(headers: ["Content-Type": "application/pdf",
+                                                                   "Content-Length": "999999"], body: Data("%PDF-1.7".utf8)),
+             1_024),
+            ("a failure", failing, WebPageReader.maxBytes),
+        ]
+        let blocked = [ConnectionRecord(remoteAddress: "192.168.1.1")]
+        for (label, page, cap) in paths {
+            let reached = ConnectionTable([Self.pageURL: blocked])
+            await expectFailure(.blockedAddress, with: makeReader([Self.pageURL: page], reached: reached, maxBytes: cap))
+            XCTAssertEqual(reached.checkedURLs, [Self.pageURL], label)
+
+            for (missing, records) in [("no metrics", nil), ("no transactions", []),
+                                       ("no address", [ConnectionRecord(remoteAddress: nil)]),
+                                       ("an unreadable address", [ConnectionRecord(remoteAddress: "router.example")]),
+                                       ("one of two unreadable", [ConnectionRecord(remoteAddress: "93.184.216.34"),
+                                                                  ConnectionRecord(remoteAddress: "")])]
+                as [(String, [ConnectionRecord]?)] {
+                await expectFailure(.unverifiedConnection,
+                                    with: makeReader([Self.pageURL: page], reached: ConnectionTable([Self.pageURL: records]),
+                                                     maxBytes: cap))
+                XCTAssertEqual(connections.checkedURLs, [Self.pageURL], "\(label), \(missing): fails closed")
+            }
+        }
+        XCTAssertEqual(WebPageReadError.unverifiedConnection.code, "url_not_accessible")
+    }
+
+    /// A connection through a proxy reports the proxy's address (often on this Mac), so it isn't held against the page;
+    /// the lookup before the request still vouched for the site.
+    func testAProxyConnectionIsLeftToTheLookup() async throws {
+        let reached = ConnectionTable([Self.pageURL: [ConnectionRecord(remoteAddress: "127.0.0.1", isProxyConnection: true)]])
+        let page = try await read(makeReader([Self.pageURL: .html("<p>Through the proxy</p>")], reached: reached))
+        XCTAssertEqual(page.text, "Through the proxy")
+        let mixed = ConnectionTable([Self.pageURL: [ConnectionRecord(remoteAddress: "127.0.0.1", isProxyConnection: true),
+                                                    ConnectionRecord(remoteAddress: "10.0.0.2")]])
+        await expectFailure(.blockedAddress, with: makeReader([Self.pageURL: .html("<p>Hi</p>")], reached: mixed))
+    }
+
+    /// Each redirect's request is checked before the next hop is looked up.
+    func testEachHopsConnectionIsChecked() async {
+        let reached = ConnectionTable(["https://docs.example/guide/v2": [ConnectionRecord(remoteAddress: "fd00::7")]])
+        await expectFailure(.blockedAddress, with: makeReader([
+            Self.pageURL: .redirect(to: "/guide/v2"),
+            "https://docs.example/guide/v2": .html("<p>Rebound</p>"),
+        ], reached: reached))
+        XCTAssertEqual(reached.checkedURLs, [Self.pageURL, "https://docs.example/guide/v2"])
+    }
+
+    /// Being offline never reaches an address, so there is nothing to check and the reason stands.
+    func testOfflineNeedsNoConnectionCheck() async {
+        var page = PageStubProtocol.Page()
+        page.failure = URLError(.notConnectedToInternet)
+        await expectFailure(.offline, with: makeReader([Self.pageURL: page], reached: ConnectionTable(fallback: nil)))
+    }
+
+    /// The reader the app builds reads URLSession's own metrics. A URLProtocol stub's carry no remote address, so with
+    /// nothing standing in for them every read fails closed.
+    func testURLSessionsOwnMetricsFailClosedWithoutAnAddress() async {
+        PageStubProtocol.serve([Self.pageURL: .html("<p>Hi</p>")])
+        resolver = ResolverTable([Self.host: [ResolverTable.publicV4]])
+        let reader = WebPageReader(timeout: 5, resolve: resolver.resolver, protocolClasses: [PageStubProtocol.self])
+        let start = ContinuousClock.now
+        await expectFailure(.unverifiedConnection, with: reader)
+        XCTAssertLessThan(ContinuousClock.now - start, .seconds(WebPageReader.metricsWait + 1),
+                          "the wait for metrics is bounded")
     }
 
     func testTheRemoteAddressOfAConnectionIsCheckedToo() {
@@ -266,6 +350,23 @@ final class WebPageReaderTests: XCTestCase {
         XCTAssertTrue(read.text.hasPrefix("word word"))
         await waitUntil { PageStubProtocol.stopCount > 0 }
         XCTAssertGreaterThan(PageStubProtocol.stopCount, 0, "the rest of the download was cancelled")
+    }
+
+    /// The body is counted as URLSession decodes it and the download is cancelled once it passes 5 MB, so a page
+    /// (or a compressed body that inflates) never piles up past the cap, whether it comes in pieces or in one go.
+    func testMoreThanFiveMegabytesIsCutAtTheCap() async throws {
+        let body = Data(String(repeating: "abcdefgh\n", count: 8 * 1_024 * 1_024 / 9).utf8)
+        XCTAssertGreaterThan(body.count, WebPageReader.maxBytes)
+        for chunk in [16 * 1_024, body.count] {
+            var page = PageStubProtocol.Page(headers: ["Content-Type": "text/plain; charset=utf-8"], body: body)
+            page.chunkSize = chunk
+            page.holdsOpen = true
+            let read = try await read(makeReader([Self.pageURL: page]))
+            XCTAssertTrue(read.isPartial, "\(chunk)")
+            XCTAssertEqual(read.text.utf8.count, WebPageReader.maxBytes, "exactly the cap, \(chunk)-byte pieces")
+            await waitUntil { PageStubProtocol.stopCount > 0 }
+            XCTAssertGreaterThan(PageStubProtocol.stopCount, 0, "the download was cancelled")
+        }
     }
 
     func testAPageUnderTheCapIsWhole() async throws {
