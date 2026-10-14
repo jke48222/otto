@@ -329,7 +329,10 @@ final class ResponsesRequestBuilderTests: XCTestCase {
         XCTAssertEqual(sent["max_tool_calls"], 5)
     }
 
-    func testAPageReadOnTheMacGoesBackAsItsCallAndOutput() throws {
+    /// A response's page reads go back like its client calls: every call first, then every output in call order, so
+    /// Anthropic behind the gateway sees one assistant turn with all its tool calls and one user turn with all the
+    /// results, which it requires (with thinking on, a turn split between two reads would lose its thinking).
+    func testAResponsesPageReadsGoBackAsItsCallsThenTheirOutputs() throws {
         let page = WebPage(url: try XCTUnwrap(URL(string: "https://docs.example/final")), title: "Guide", text: "Body.")
         let messages = [
             user([text("Read https://docs.example/start")]),
@@ -343,28 +346,152 @@ final class ResponsesRequestBuilderTests: XCTestCase {
             ]),
             user([text("Thanks")]),
         ]
-        let expected: [JSONValue] = [
+        let pageOutput = output("call_page", "URL: https://docs.example/final\nTitle: Guide\n\nBody.")
+        let refusedOutput = output("call_refused", "Error: " + SetappWebFetch.Failure.notInConversation.message)
+        XCTAssertEqual(body(makeRequest(messages: messages, webAccess: true))["input"]?.arrayValue, [
             userMessage([inputText("Read https://docs.example/start")]),
             assistantMessage([outputText("Reading it.")]),
             functionCall("call_page", "web_fetch", arguments: #"{"url":"https://docs.example/start"}"#),
-            output("call_page", "URL: https://docs.example/final\nTitle: Guide\n\nBody."),
             functionCall("call_refused", "web_fetch", arguments: #"{"url":"https://other.example/"}"#),
-            output("call_refused", "Error: " + SetappWebFetch.Failure.notInConversation.message),
+            pageOutput,
+            refusedOutput,
+            assistantMessage([outputText("It says Body.")]),
+            userMessage([inputText("Thanks")]),
+        ])
+
+        // Without web fetch in the request (the reply's fetches spent, the Safer pause, the last continuation, or the
+        // compatibility retry) the pairs can't name the tool, so the pages go back as fenced data in a user message.
+        let fenced: [JSONValue] = [
+            userMessage([inputText("Read https://docs.example/start")]),
+            assistantMessage([outputText("Reading it.")]),
+            userMessage([inputText(ResponsesRequestBuilder.fencedPageReadsIntro),
+                         inputText(SetappWebFetch.fencedText(ofResult: SetappWebFetch.resultBlock(id: "call_page", page: page))),
+                         inputText(SetappWebFetch.fencedText(ofResult: SetappWebFetch.errorBlock(
+                            id: "call_refused", failure: .notInConversation)))]),
             assistantMessage([outputText("It says Body.")]),
             userMessage([inputText("Thanks")]),
         ]
-        XCTAssertEqual(body(makeRequest(messages: messages, webAccess: true))["input"]?.arrayValue, expected)
-
-        // Without web fetch in the request (spent, paused, or the compatibility retry), the pairs are left out,
-        // as ToolHistory leaves Anthropic's out when the request defines no web_fetch.
-        let withoutFetch = [userMessage([inputText("Read https://docs.example/start")]),
-                            assistantMessage([outputText("Reading it."), outputText("It says Body.")]),
-                            userMessage([inputText("Thanks")])]
         XCTAssertEqual(body(makeRequest(messages: messages, webAccess: true,
                                         serverToolLimits: ServerToolLimits(webSearch: 5, webFetch: 0)))["input"]?.arrayValue,
-                       withoutFetch)
-        XCTAssertEqual(body(makeRequest(messages: messages, webAccess: true), .compatible)["input"]?.arrayValue,
-                       withoutFetch)
+                       fenced)
+        XCTAssertEqual(body(makeRequest(messages: messages, webAccess: true), .compatible)["input"]?.arrayValue, fenced)
+    }
+
+    /// Page reads beside a client call: all the response's calls in model order, then all the outputs in that order,
+    /// the client call's from the next user turn, then the user message.
+    func testPageReadsBesideAClientCallShareOneGroup() throws {
+        let page = WebPage(url: try XCTUnwrap(URL(string: "https://a.example/")), title: "A", text: "Alpha.")
+        let other = WebPage(url: try XCTUnwrap(URL(string: "https://b.example/")), title: "B", text: "Beta.")
+        let messages = [
+            user([text("Compare https://a.example/ and https://b.example/, then echo")]),
+            assistant([
+                ["type": "otto_responses_reasoning", "item": reasoningItem],
+                text("Reading both."),
+                SetappWebFetch.callBlock(id: "call_a", input: ["url": "https://a.example/"]),
+                SetappWebFetch.resultBlock(id: "call_a", page: page),
+                toolUse("call_echo"),
+                SetappWebFetch.callBlock(id: "call_b", input: ["url": "https://b.example/"]),
+                SetappWebFetch.resultBlock(id: "call_b", page: other),
+            ]),
+            user([["type": "tool_result", "tool_use_id": "call_echo", "content": [text("hi")]], text("Go on")]),
+        ]
+        XCTAssertEqual(body(makeRequest(messages: messages, webAccess: true, clientTools: [strictDefinition]))["input"]?
+            .arrayValue, [
+                userMessage([inputText("Compare https://a.example/ and https://b.example/, then echo")]),
+                reasoningItem,
+                assistantMessage([outputText("Reading both.")]),
+                functionCall("call_a", "web_fetch", arguments: #"{"url":"https://a.example/"}"#),
+                functionCall("call_echo"),
+                functionCall("call_b", "web_fetch", arguments: #"{"url":"https://b.example/"}"#),
+                output("call_a", "URL: https://a.example/\nTitle: A\n\nAlpha."),
+                output("call_echo", "hi"),
+                output("call_b", "URL: https://b.example/\nTitle: B\n\nBeta."),
+                userMessage([inputText("Go on")]),
+            ])
+    }
+
+    /// A reply that read pages over several responses (pause_turn continuations) keeps them apart: each response's
+    /// calls, its outputs, then the next response's reasoning. A turn paused right after its reads ends with them.
+    func testEachResponseOfAPausedTurnClosesItsOwnGroup() throws {
+        let page = WebPage(url: try XCTUnwrap(URL(string: "https://a.example/")), title: nil, text: "Alpha.")
+        let second: JSONValue = ["type": "reasoning", "id": "rs_02", "summary": [], "encrypted_content": "gAAAAB-2"]
+        let paused = [
+            user([text("Read https://a.example/")]),
+            assistant([
+                ["type": "otto_responses_reasoning", "item": reasoningItem],
+                SetappWebFetch.callBlock(id: "call_1", input: ["url": "https://a.example/"]),
+                SetappWebFetch.resultBlock(id: "call_1", page: page),
+                SetappWebFetch.callBlock(id: "call_2", input: ["url": "https://a.example/"]),
+                SetappWebFetch.resultBlock(id: "call_2", page: page),
+                ["type": "otto_responses_reasoning", "item": second],
+                SetappWebFetch.callBlock(id: "call_3", input: ["url": "https://a.example/"]),
+                SetappWebFetch.resultBlock(id: "call_3", page: page),
+            ]),
+        ]
+        let alpha = "URL: https://a.example/\nTitle: (none)\n\nAlpha."
+        XCTAssertEqual(body(makeRequest(messages: paused, webAccess: true))["input"]?.arrayValue, [
+            userMessage([inputText("Read https://a.example/")]),
+            reasoningItem,
+            functionCall("call_1", "web_fetch", arguments: #"{"url":"https://a.example/"}"#),
+            functionCall("call_2", "web_fetch", arguments: #"{"url":"https://a.example/"}"#),
+            output("call_1", alpha),
+            output("call_2", alpha),
+            second,
+            functionCall("call_3", "web_fetch", arguments: #"{"url":"https://a.example/"}"#),
+            output("call_3", alpha),
+        ])
+
+        // Spent or paused: the reasoning that led only to reads now sent as data has no call to precede and goes.
+        let fencedPage = inputText(SetappWebFetch.fencedText(ofResult: SetappWebFetch.resultBlock(id: "x", page: page)))
+        XCTAssertEqual(body(makeRequest(messages: paused, webAccess: true,
+                                        serverToolLimits: ServerToolLimits(webSearch: 5, webFetch: 0)))["input"]?.arrayValue, [
+            userMessage([inputText("Read https://a.example/")]),
+            userMessage([inputText(ResponsesRequestBuilder.fencedPageReadsIntro), fencedPage, fencedPage]),
+            userMessage([inputText(ResponsesRequestBuilder.fencedPageReadsIntro), fencedPage]),
+        ])
+    }
+
+    /// A PDF read on the Mac goes back as its call, the output "(The PDF follows.)", and the file in the user message
+    /// after the outputs, the way a tool result's images travel.
+    func testAReadPDFFollowsItsOutputAsAFile() throws {
+        let bytes = Data("%PDF-1.7 report".utf8)
+        let pdfPage = WebPage(url: try XCTUnwrap(URL(string: "https://docs.example/files/report.pdf")),
+                              title: "report.pdf", text: "", pdf: bytes)
+        let call = SetappWebFetch.callBlock(id: "call_pdf", input: ["url": "https://docs.example/files/report.pdf"])
+        let result = SetappWebFetch.resultBlock(id: "call_pdf", page: pdfPage)
+        let file: JSONValue = ["type": "input_file", "filename": "report.pdf",
+                               "file_data": .string("data:application/pdf;base64,\(bytes.base64EncodedString())")]
+        let pdfOutput = output("call_pdf", "URL: https://docs.example/files/report.pdf\nTitle: report.pdf\n\n(The PDF follows.)")
+        let readCall = functionCall("call_pdf", "web_fetch", arguments: #"{"url":"https://docs.example/files/report.pdf"}"#)
+
+        // Paused after the read: the request ends with the output and the file.
+        XCTAssertEqual(body(makeRequest(messages: [user([text("Summarize the report")]), assistant([call, result])],
+                                        webAccess: true))["input"]?.arrayValue, [
+            userMessage([inputText("Summarize the report")]),
+            readCall, pdfOutput,
+            userMessage([inputText(ResponsesRequestBuilder.pageReadFilesIntro), file]),
+        ])
+        // Beside a client call whose result has an image: the file, then the images, then the user's text.
+        let image = base64Image("iVBORw0KGgo=")
+        XCTAssertEqual(body(makeRequest(messages: [
+            user([text("Summarize the report")]),
+            assistant([call, result, toolUse("call_echo")]),
+            user([["type": "tool_result", "tool_use_id": "call_echo", "content": [image]], text("Next")]),
+        ], webAccess: true, clientTools: [strictDefinition]))["input"]?.arrayValue, [
+            userMessage([inputText("Summarize the report")]),
+            readCall, functionCall("call_echo"),
+            pdfOutput, output("call_echo", ResponsesRequestBuilder.imageOnlyToolOutput),
+            userMessage([inputText(ResponsesRequestBuilder.pageReadFilesIntro), file,
+                         inputText(ResponsesRequestBuilder.toolResultImagesIntro), inputImage("data:image/png;base64,iVBORw0KGgo="),
+                         inputText("Next")]),
+        ])
+        // Without web fetch in the request: fenced, with the file after it.
+        XCTAssertEqual(body(makeRequest(messages: [user([text("Summarize the report")]), assistant([call, result])],
+                                        webAccess: true), .compatible)["input"]?.arrayValue, [
+            userMessage([inputText("Summarize the report")]),
+            userMessage([inputText(ResponsesRequestBuilder.fencedPageReadsIntro),
+                         inputText(SetappWebFetch.fencedText(ofResult: result)), file]),
+        ])
     }
 
     func testAnUnpairedPageReadIsLeftOut() {

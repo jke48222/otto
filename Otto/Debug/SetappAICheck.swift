@@ -884,23 +884,61 @@ final class SetappAICheck {
                 ["type": "tool_result", "tool_use_id": "call_1", "content": [["type": "text", "text": "Added."]]],
             ]],
         ]
-        // A page Otto read on the Mac for the web_fetch function, stored as the client stores it, then a new turn.
+        // Pages Otto read on the Mac for the web_fetch function, stored as the client stores them: two reads in one
+        // response (a page and a PDF), then a read beside a client call, then a new turn.
         let page = WebPage(url: URL(string: "https://www.swift.example/blog/")!, title: "Swift Blog",
                            text: "Swift 6.2 is out.",
                            links: [WebLink(text: "Forums", url: URL(string: "https://forums.swift.example/")!)])
+        let notes = WebPage(url: URL(string: "https://www.swift.example/notes.pdf")!, title: "notes.pdf", text: "",
+                            pdf: Data("%PDF-1.4\n%%EOF".utf8))
+        let tab = "<browser_tab>\nTitle: Swift Blog\nURL: https://www.swift.example/blog/\n</browser_tab>"
         let pageRead: [JSONValue] = [
-            ["role": "user", "content": [
-                ["type": "text", "text": "<browser_tab>\nTitle: Swift Blog\nURL: https://www.swift.example/blog/\n</browser_tab>"],
-                ["type": "text", "text": "What does this say?"],
-            ]],
+            ["role": "user", "content": [["type": "text", "text": .string(tab)],
+                                         ["type": "text", "text": "What does this say? Read https://www.swift.example/notes.pdf too."]]],
             ["role": "assistant", "content": [
                 ["type": "otto_responses_reasoning", "item": reasoning],
                 SetappWebFetch.callBlock(id: "call_page", input: ["url": "https://www.swift.example/blog/"]),
                 SetappWebFetch.resultBlock(id: "call_page", page: page),
-                ["type": "text", "text": "It says Swift 6.2 is out."],
+                SetappWebFetch.callBlock(id: "call_notes", input: ["url": "https://www.swift.example/notes.pdf"]),
+                SetappWebFetch.resultBlock(id: "call_notes", page: notes),
+                ["type": "otto_responses_reasoning", "item": reasoning.setting("id", to: "rs_2")],
+                SetappWebFetch.callBlock(id: "call_forums", input: ["url": "https://forums.swift.example/"]),
+                SetappWebFetch.errorBlock(id: "call_forums", failure: .read(.httpStatus(403))),
+                ["type": "tool_use", "id": "call_add", "name": "calendar_add_event", "input": ["title": "Swift 6.2 talk"]],
             ]],
+            ["role": "user", "content": [
+                ["type": "tool_result", "tool_use_id": "call_add", "content": [["type": "text", "text": "Added."]]],
+            ]],
+            ["role": "assistant", "content": [["type": "text", "text": "It says Swift 6.2 is out, and I added the talk."]]],
             ["role": "user", "content": [["type": "text", "text": "Thanks"]]],
         ]
+        // A turn paused right after two reads, as a pause_turn continuation sends it.
+        let pausedRead: [JSONValue] = Array(pageRead.prefix(1)) + [
+            ["role": "assistant", "content": [
+                ["type": "otto_responses_reasoning", "item": reasoning],
+                ["type": "text", "text": "Reading both."],
+                SetappWebFetch.callBlock(id: "call_page", input: ["url": "https://www.swift.example/blog/"]),
+                SetappWebFetch.resultBlock(id: "call_page", page: page),
+                SetappWebFetch.callBlock(id: "call_notes", input: ["url": "https://www.swift.example/notes.pdf"]),
+                SetappWebFetch.resultBlock(id: "call_notes", page: notes),
+            ]],
+        ]
+        for (name, messages, calls) in [("read round", pageRead, ["call_page", "call_notes"]),
+                                        ("paused reads", pausedRead, ["call_page", "call_notes"])] {
+            // Every call of a response first, then their outputs: never a call followed by its own output.
+            let input = ResponsesRequestBuilder.body(for: MessagesRequest(
+                model: .opus5, system: "", messages: messages, maxTokens: 64_000, effort: .medium, webAccess: true,
+                clientTools: [], serverToolLimits: ServerToolLimits(webSearch: 4, webFetch: 3)
+            ), options: .standard)["input"]?.arrayValue ?? []
+            let kinds = input.compactMap { item -> String? in
+                guard let id = item["call_id"]?.stringValue, calls.contains(id) else { return nil }
+                return "\(item.typeName ?? "?"):\(id)"
+            }
+            expectEqual(kinds, calls.map { "function_call:\($0)" } + calls.map { "function_call_output:\($0)" },
+                        "\(name) groups its calls ahead of their outputs")
+            expect(input.contains { $0["content"]?.arrayValue?.contains { $0.typeName == "input_file" } == true },
+                   "\(name) sends the PDF read as a file")
+        }
         // An Anthropic-format definition, as ToolRegistry.definitions hands it to every client.
         let calendar = SetappAdapterSamples.calendarTool
         let tools: [JSONValue] = [[
@@ -918,6 +956,12 @@ final class SetappAICheck {
             ("web fetch round", MessagesRequest(model: .opus5, system: "You are Otto.", messages: pageRead,
                 maxTokens: 64_000, effort: .medium, webAccess: true, clientTools: tools,
                 serverToolLimits: ServerToolLimits(webSearch: 4, webFetch: 3))),
+            ("paused web fetch", MessagesRequest(model: .opus5, system: "You are Otto.", messages: pausedRead,
+                maxTokens: 64_000, effort: .medium, webAccess: true, clientTools: tools,
+                serverToolLimits: ServerToolLimits(webSearch: 4, webFetch: 3))),
+            ("fetches spent", MessagesRequest(model: .opus5, system: "You are Otto.", messages: pausedRead,
+                maxTokens: 64_000, effort: .medium, webAccess: true, clientTools: tools,
+                serverToolLimits: ServerToolLimits(webSearch: 4, webFetch: 0))),
         ]
         for (name, request) in requests {
             for options in [ResponsesRequestOptions.standard, .compatible] {
