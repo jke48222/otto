@@ -239,11 +239,14 @@ final class SetappWebFetchTests: XCTestCase {
 
     // MARK: https over http
 
-    func testHTTPIsReadOverHTTPSButNeverTheOtherWay() {
+    /// Otto's App Transport Security allows no plain http, so an allowed http address is always read over https.
+    func testHTTPIsAlwaysReadOverHTTPSAndNeverTheOtherWay() {
         let insecure = allowlist([userEntry([text("Read http://plain.example/page")])])
-        XCTAssertEqual(permitted("http://plain.example/page", in: insecure), "http://plain.example/page")
+        XCTAssertEqual(permitted("http://plain.example/page", in: insecure), "https://plain.example/page",
+                       "the address as written is upgraded")
         XCTAssertEqual(permitted("https://plain.example/page", in: insecure), "https://plain.example/page",
                        "an upgrade is allowed")
+        XCTAssertEqual(permitted("HTTP://Plain.Example:80/page", in: insecure), "https://plain.example/page")
 
         let secure = allowlist([userEntry([text("Read https://secure.example/page")])])
         XCTAssertEqual(permitted("http://secure.example/page", in: secure), "https://secure.example/page",
@@ -252,6 +255,15 @@ final class SetappWebFetchTests: XCTestCase {
         let ported = allowlist([userEntry([text("Read http://ported.example:8080/page")])])
         XCTAssertEqual(refusal("https://ported.example:8080/page", in: ported), .notInConversation,
                        "another port is another service")
+        XCTAssertEqual(permitted("http://ported.example:8080/page", in: ported), "https://ported.example:8080/page",
+                       "an address with its own port keeps it, over https")
+
+        // Whatever the conversation holds and Claude asks for, nothing comes back as http.
+        let mixed = allowlist([userEntry([text("http://a.example/ https://b.example/x http://c.example:81/")])])
+        for address in ["http://a.example/", "https://a.example/", "http://b.example/x", "https://b.example/x",
+                        "http://c.example:81/"] {
+            XCTAssertEqual(permitted(address, in: mixed).flatMap(URL.init(string:))?.scheme, "https", address)
+        }
     }
 
     // MARK: Local addresses and bad input

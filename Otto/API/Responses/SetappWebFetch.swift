@@ -91,8 +91,8 @@ enum SetappWebFetch {
     /// The addresses Claude may fetch: those already in the conversation sent to it. User text (typed, pasted
     /// documents), each browser tab's address, web search results, Anthropic's citations, and pages read with web
     /// fetch (their final address and every address in their text, links included). Never Claude's own text or tool
-    /// inputs, Otto's notes, or the output of Otto's other tools. Matching is exact after `normalized(_:)`, with one
-    /// allowance: an http address may be fetched over https, never the other way.
+    /// inputs, Otto's notes, or the output of Otto's other tools. Matching is exact after `normalized(_:)`, except
+    /// that http and https match each other (with no port named); every address is read over https.
     struct Allowlist: Equatable, Sendable {
         private(set) var addresses: Set<String> = []
 
@@ -145,20 +145,19 @@ enum SetappWebFetch {
         }
 
         /// The address to read for Claude's `url`, or why it can't be read. Local and malformed addresses are
-        /// refused before the conversation is consulted.
+        /// refused before the conversation is consulted. What comes back is always https: an http address in the
+        /// conversation is read over https (Otto's App Transport Security allows no plain http, and a page is never
+        /// worth an exception), and an https one is never read over http.
         func permit(_ raw: String) -> Result<URL, Failure> {
             let requested: URL
             switch SetappWebFetch.normalized(raw) {
             case .failure(let rejection): return .failure(.rejected(rejection))
             case .success(let url): requested = url
             }
-            if addresses.contains(requested.absoluteString) { return .success(requested) }
-            // https is preferred: an http address in the conversation may be read over https, and an https one is
-            // never read over http.
-            if let other = SetappWebFetch.withOtherScheme(requested), addresses.contains(other.absoluteString) {
-                return .success(requested.scheme == "https" ? requested : other)
-            }
-            return .failure(.notInConversation)
+            let allowed = addresses.contains(requested.absoluteString)
+                || SetappWebFetch.withOtherScheme(requested).map { addresses.contains($0.absoluteString) } == true
+            guard allowed, let secure = SetappWebFetch.overHTTPS(requested) else { return .failure(.notInConversation) }
+            return .success(secure)
         }
     }
 
@@ -194,6 +193,14 @@ enum SetappWebFetch {
             return nil
         }
         components.scheme = components.scheme == "https" ? "http" : "https"
+        return components.url
+    }
+
+    /// `url` over https (a port it names stays); nil for anything but http and https.
+    static func overHTTPS(_ url: URL) -> URL? {
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let scheme = components.scheme?.lowercased(), scheme == "http" || scheme == "https" else { return nil }
+        components.scheme = "https"
         return components.url
     }
 
