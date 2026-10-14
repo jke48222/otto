@@ -145,8 +145,9 @@ final class ResponsesStreamAccumulatorTests: XCTestCase {
         // 1,840 prompt tokens either way: OpenAI counts the cached ones inside input_tokens, Anthropic beside it.
         XCTAssertEqual(TokenUsage(json: usage).promptTokens, 1840)
 
+        // The page read went through the search tool too, so it spends a search as well as a fetch.
         let web = try XCTUnwrap(try replay(ResponsesFixtures.webSearch).result.usage)
-        XCTAssertEqual(TokenUsage(json: web), TokenUsage(input: 5210, output: 184, webSearches: 1))
+        XCTAssertEqual(TokenUsage(json: web), TokenUsage(input: 5210, output: 184, webSearches: 2))
     }
 
     func testReasoningThenTextScenario() throws {
@@ -198,7 +199,7 @@ final class ResponsesStreamAccumulatorTests: XCTestCase {
             "textDelta(Swift 6.2 focuses on approachable concurrency.)",
             "textDelta( The forums cover the migration.)",
             "sources(Migrating to Swift 6.2|\(Self.forumThread))",
-            #"usage({"cache_read_input_tokens":0,"input_tokens":5210,"output_tokens":184,"server_tool_use":{"web_fetch_requests":1,"web_search_requests":1}})"#,
+            #"usage({"cache_read_input_tokens":0,"input_tokens":5210,"output_tokens":184,"server_tool_use":{"web_fetch_requests":1,"web_search_requests":2}})"#,
         ])
 
         let result = run.result
@@ -430,6 +431,102 @@ final class ResponsesStreamAccumulatorTests: XCTestCase {
         ])
     }
 
+    // MARK: - LiteLLM reasoning
+
+    /// Older LiteLLM gives every summary delta an id of its own, the finished item another and the terminal output's
+    /// item a third, all at output index 0, and the terminal item carries `content` instead of `summary`. The
+    /// thinking is shown once, as it streamed, and stored from the terminal item.
+    func testLiteLLMReasoningIsShownOnceAndStoredFromItsContent() throws {
+        let run = try replay(ResponsesFixtures.litellmReasoning)
+
+        XCTAssertEqual(run.descriptions, [
+            "messageStart(anthropic/claude-opus-5)",
+            "thinkingStarted",
+            "thinkingDelta(The user asks for the time in Tokyo.)",
+            "thinkingDelta( Tokyo is UTC+9.)",
+            "textDelta(It's 9 hours ahead of UTC in Tokyo.)",
+            #"usage({"cache_read_input_tokens":0,"input_tokens":610,"output_tokens":58})"#,
+        ])
+        let terminalItem = try XCTUnwrap(
+            ScriptedResponsesTransport.decode(ResponsesFixtures.litellmReasoning.last!)["response"]?["output"]?[0])
+        XCTAssertEqual(run.result.content, [
+            ["type": "thinking", "thinking": "The user asks for the time in Tokyo. Tokyo is UTC+9.", "signature": ""],
+            ["type": "otto_responses_reasoning", "item": terminalItem],
+            ["type": "text", "text": "It's 9 hours ahead of UTC in Tokyo."],
+        ], "one reasoning item, the terminal output's, with its encrypted content; not the finished item as well")
+        XCTAssertEqual(run.result.stopReason, "end_turn")
+    }
+
+    func testSummaryTextFallsBackToContentParts() {
+        let summarized: JSONValue = ["type": "reasoning", "summary": [["type": "summary_text", "text": "Summary."]],
+                                     "content": [["type": "reasoning_text", "text": "Raw."]]]
+        XCTAssertEqual(ResponsesStreamAccumulator.summaryText(of: summarized), "Summary.")
+        // LiteLLM's shape, and the SDK's re-encoding of it (`reasoning_text` parts beside an empty summary).
+        let litellm: JSONValue = ["type": "reasoning", "content": [
+            ["type": "output_text", "text": "First.", "annotations": []], ["type": "output_text", "text": "Second."],
+        ]]
+        XCTAssertEqual(ResponsesStreamAccumulator.summaryText(of: litellm), "First.\n\nSecond.")
+        let reencoded: JSONValue = ["type": "reasoning", "summary": [], "content": [["type": "reasoning_text", "text": "t"]]]
+        XCTAssertEqual(ResponsesStreamAccumulator.summaryText(of: reencoded), "t")
+        let neither: JSONValue = ["type": "reasoning", "content": [["type": "input_image", "text": "x"]]]
+        XCTAssertEqual(ResponsesStreamAccumulator.summaryText(of: neither), "")
+    }
+
+    /// LiteLLM's content-only reasoning item, when nothing streamed for it, is shown from the terminal output.
+    func testContentOnlyReasoningInTheTerminalOutputIsShown() throws {
+        let reasoning: JSONValue = ["id": "rs_l", "type": "reasoning", "status": "completed", "role": "assistant",
+                                    "content": [["type": "output_text", "text": "Thinking about it.", "annotations": []]],
+                                    "encrypted_content": "W3sidHlwZSI6InRoaW5raW5nIn1d"]
+        let run = try replay(events: [created(), completed([reasoning, message("msg_l", "Hi")])])
+        XCTAssertEqual(run.descriptions, [
+            "messageStart(anthropic/claude-opus-5)", "thinkingStarted", "thinkingDelta(Thinking about it.)", "textDelta(Hi)",
+        ])
+        XCTAssertEqual(run.result.content.first, ["type": "thinking", "thinking": "Thinking about it.", "signature": ""])
+    }
+
+    /// A summary that only arrives with the terminal event, after the answer streamed, joins the thinking row without
+    /// `.thinkingStarted`, which would put "Thinking…" back above the finished answer.
+    func testReasoningReconciledAfterTextDoesNotRestartThinking() throws {
+        let reasoning: JSONValue = ["id": "rs_late", "type": "reasoning", "encrypted_content": "gAAAA-late",
+                                    "summary": [["type": "summary_text", "text": "Checked the zone."]]]
+        let afterText = try replay(events: [
+            created(), textDelta("msg_late", "It's noon."), completed([reasoning, message("msg_late", "It's noon.")]),
+        ])
+        XCTAssertEqual(afterText.descriptions, [
+            "messageStart(anthropic/claude-opus-5)", "textDelta(It's noon.)", "thinkingDelta(Checked the zone.)",
+        ])
+
+        let call = functionCall("fc_late", callID: "call_late", name: "reminders_list", arguments: "{}")
+        let afterCall = try replay(events: [
+            created(),
+            ["type": "response.output_item.done", "output_index": 1, "item": call],
+            completed([reasoning, call]),
+        ])
+        XCTAssertEqual(afterCall.descriptions, [
+            "messageStart(anthropic/claude-opus-5)",
+            "toolUseStarted(call_late|reminders_list)",
+            "toolUseReady(call_late|reminders_list|{}|{})",
+            "thinkingDelta(Checked the zone.)",
+        ])
+    }
+
+    func testReasoningKeyedByOutputIndexAcrossChangingIDs() throws {
+        let delta: (String, String) -> JSONValue = { id, text in
+            ["type": "response.reasoning_summary_text.delta", "item_id": .string(id), "output_index": 0,
+             "delta": .string(text)]
+        }
+        let done: JSONValue = ["type": "response.output_item.done", "output_index": 0, "item": [
+            "id": "rs_stable", "type": "reasoning", "summary": [["type": "summary_text", "text": "One. Two."]],
+        ]]
+        let run = try replay(events: [created(), delta("rs_1", "One."), delta("rs_2", " Two."), done,
+                                      completed([["id": "rs_minted", "type": "reasoning",
+                                                  "content": [["type": "output_text", "text": "One. Two."]]]])])
+        XCTAssertEqual(run.descriptions, [
+            "messageStart(anthropic/claude-opus-5)", "thinkingStarted", "thinkingDelta(One.)", "thinkingDelta( Two.)",
+        ])
+        XCTAssertEqual(run.result.content.filter { $0.typeName == "thinking" }.count, 1)
+    }
+
     func testWebSearchOnlyInTheTerminalOutputIsShownAndStored() throws {
         // The SDK's typed search action carries `queries`, not `query`.
         let search = webCall("ws_sdk", action: [
@@ -463,6 +560,8 @@ final class ResponsesStreamAccumulatorTests: XCTestCase {
             "messageStart(anthropic/claude-opus-5)",
             "textDelta(Read the notes.)",
             "sources(Notes|\(Self.forumThread))",
+            // A citation with no web_search_call behind it spends a search.
+            #"usage({"server_tool_use":{"web_fetch_requests":0,"web_search_requests":1}})"#,
         ])
     }
 
@@ -496,7 +595,7 @@ final class ResponsesStreamAccumulatorTests: XCTestCase {
                        ["server_tool_use", "web_fetch_tool_result", "text"])
         XCTAssertEqual(run.result.content[2]["text"], "Partial answer")
         XCTAssertEqual(run.result.stopReason, "max_tokens")
-        XCTAssertEqual(run.result.usage, ["server_tool_use": ["web_search_requests": 0, "web_fetch_requests": 1]])
+        XCTAssertEqual(run.result.usage, ["server_tool_use": ["web_search_requests": 1, "web_fetch_requests": 1]])
     }
 
     func testEventsAfterTheTerminalEventAreIgnored() throws {
@@ -559,6 +658,52 @@ final class ResponsesStreamAccumulatorTests: XCTestCase {
         XCTAssertEqual(run.result.content.first?["input"], [:])
     }
 
+    /// A call id repeated within one response is one call: announced, made ready and stored once, as the item that
+    /// was announced (not a second set of arguments under the same id).
+    func testRepeatedCallIDsInOneResponseAreDropped() throws {
+        let first = functionCall("fc_1", callID: "call_dup", name: "reminders_add", arguments: #"{"title":"Milk"}"#)
+        let second = functionCall("fc_2", callID: "call_dup", name: "reminders_add", arguments: #"{"title":"Rent"}"#)
+        let other = functionCall("fc_3", callID: "call_other", name: "reminders_list", arguments: "{}")
+        let streamed = try replay(events: [
+            created(),
+            ["type": "response.output_item.added", "output_index": 0, "item": first.setting("arguments", to: "")],
+            ["type": "response.output_item.done", "output_index": 0, "item": first],
+            ["type": "response.output_item.added", "output_index": 1, "item": second.setting("arguments", to: "")],
+            ["type": "response.output_item.done", "output_index": 1, "item": second],
+            ["type": "response.output_item.done", "output_index": 2, "item": other],
+            completed([first, second, other]),
+        ])
+        XCTAssertEqual(streamed.descriptions, [
+            "messageStart(anthropic/claude-opus-5)",
+            "toolUseStarted(call_dup|reminders_add)",
+            #"toolUseReady(call_dup|reminders_add|{"title":"Milk"}|{"title":"Milk"})"#,
+            "toolUseStarted(call_other|reminders_list)",
+            "toolUseReady(call_other|reminders_list|{}|{})",
+        ])
+        XCTAssertEqual(streamed.result.content, [
+            ["type": "tool_use", "id": "call_dup", "name": "reminders_add", "input": ["title": "Milk"]],
+            ["type": "tool_use", "id": "call_other", "name": "reminders_list", "input": [:]],
+        ])
+
+        // Only in the terminal output: the first one wins, in events and in the stored blocks alike.
+        let reconciled = try replay(events: [created(), completed([second, first])])
+        XCTAssertEqual(reconciled.descriptions.filter { $0.hasPrefix("toolUseReady") },
+                       [#"toolUseReady(call_dup|reminders_add|{"title":"Rent"}|{"title":"Rent"})"#])
+        XCTAssertEqual(reconciled.result.content, [
+            ["type": "tool_use", "id": "call_dup", "name": "reminders_add", "input": ["title": "Rent"]],
+        ])
+
+        // The item that was announced keeps the id even when the terminal output lists the other one first.
+        let reordered = try replay(events: [
+            created(),
+            ["type": "response.output_item.done", "output_index": 1, "item": first],
+            completed([second, first]),
+        ])
+        XCTAssertEqual(reordered.result.content, [
+            ["type": "tool_use", "id": "call_dup", "name": "reminders_add", "input": ["title": "Milk"]],
+        ])
+    }
+
     func testCallWithoutIDOrNameIsNotAnnounced() throws {
         let run = try replay(events: [created(), completed([functionCall("fc_n", callID: "", name: "reminders_list", arguments: "{}")])])
         XCTAssertEqual(run.descriptions, ["messageStart(anthropic/claude-opus-5)"])
@@ -598,6 +743,54 @@ final class ResponsesStreamAccumulatorTests: XCTestCase {
                        [.string(Self.newsPage), "Blog"])
     }
 
+    /// Text that cites the web with no web_search_call behind it (LiteLLM can pass Anthropic's citations on without
+    /// the search) still reads as a search: a Setapp-only search pair listing the cited pages, and one search spent.
+    func testCitationsWithoutASearchCallAreStoredAsASearch() throws {
+        let run = try replay(ResponsesFixtures.citationsWithoutSearchCall)
+        XCTAssertEqual(run.descriptions, [
+            "messageStart(anthropic/claude-opus-5)",
+            "textDelta(Swift 6.2 shipped in September.)",
+            "sources(Swift 6.2 Released|\(Self.swiftBlog))",
+            "sources(Swift 6.2 is out|\(Self.newsPage))",
+            #"usage({"cache_read_input_tokens":0,"input_tokens":5100,"output_tokens":40,"server_tool_use":{"web_fetch_requests":0,"web_search_requests":1}})"#,
+        ])
+        XCTAssertEqual(run.result.content, [
+            ["type": "text", "text": "Swift 6.2 shipped in September."],
+            ["type": "server_tool_use", "id": "ws_cited_resp_13cite", "name": "web_search", "input": ["query": ""],
+             "otto_provider": "setapp-ai"],
+            ["type": "web_search_tool_result", "tool_use_id": "ws_cited_resp_13cite", "otto_provider": "setapp-ai",
+             "content": [
+                ["type": "web_search_result", "url": .string(Self.swiftBlog), "title": "Swift 6.2 Released",
+                 "encrypted_content": "", "page_age": nil],
+                ["type": "web_search_result", "url": .string(Self.newsPage), "title": "Swift 6.2 is out",
+                 "encrypted_content": "", "page_age": nil],
+             ]],
+        ])
+        XCTAssertEqual(run.result.stopReason, "end_turn")
+
+        let trust = TrustLedger.assess(transcript: [
+            ["role": "user", "content": [["type": "text", "text": "When did Swift 6.2 ship?"]]],
+            ["role": "assistant", "content": .array(run.result.content)],
+        ], untrustedTools: [:])
+        XCTAssertEqual(trust.fresh, [ProvenanceSource(kind: .webSearch, severity: .high)])
+        XCTAssertTrue(ProviderBlocks.isSetappAIOnly(run.result.content[1]))
+        XCTAssertTrue(ProviderBlocks.isSetappAIOnly(run.result.content[2]))
+    }
+
+    func testOnlyACitationNamesTheSearchWhenItsURLIsNotAWebPage() throws {
+        // A citation whose URL isn't a web page still means the text came from the web; it just lists no result.
+        let odd = message("msg_o", "See there.", annotations: [
+            ["type": "url_citation", "url": "javascript:alert(1)", "title": "x", "start_index": 0, "end_index": 3],
+        ])
+        let run = try replay(events: [created(), completed([odd])])
+        XCTAssertEqual(run.result.content.map { $0.typeName ?? "?" }, ["text", "server_tool_use", "web_search_tool_result"])
+        XCTAssertEqual(run.result.content[2]["content"], [])
+        XCTAssertEqual(run.result.usage, ["server_tool_use": ["web_search_requests": 1, "web_fetch_requests": 0]])
+        // With a web_search_call in the response, its own pair covers the citations.
+        let covered = try replay(ResponsesFixtures.webSearch).result.content
+        XCTAssertEqual(covered.filter { $0["name"] == "web_search" }.count, 1)
+    }
+
     func testPageReadWithoutAURLCountsAsASearch() throws {
         let page = webCall("ws_u", action: ["type": "open_page"])
         let run = try replay(events: [created(), completed([page])])
@@ -614,6 +807,22 @@ final class ResponsesStreamAccumulatorTests: XCTestCase {
         let run = try replay(events: [created(), completed([find])])
         XCTAssertEqual(run.descriptions[1], "toolActivity(ws_f|webFetch|Reading forums.swift.example|done)")
         XCTAssertEqual(run.result.content.first?["name"], "web_fetch")
+        XCTAssertEqual(run.result.usage, ["server_tool_use": ["web_search_requests": 1, "web_fetch_requests": 1]])
+    }
+
+    /// Every web_search_call went through the one search tool `max_tool_calls` caps, so each spends the reply's
+    /// search budget; page reads also count as fetches. Otherwise a reply could read pages past its search budget.
+    func testEveryWebCallSpendsTheSearchBudgetAndPageReadsAlsoCountAsFetches() throws {
+        let calls = [
+            webCall("ws_a", action: ["type": "search", "query": "a"]),
+            webCall("ws_b", action: ["type": "open_page", "url": .string(Self.swiftBlog)]),
+            webCall("ws_c", action: ["type": "find_in_page", "url": .string(Self.swiftBlog), "pattern": "actor"]),
+            webCall("ws_d", action: ["type": "open_page", "url": .string(Self.forumThread)]),
+        ]
+        let run = try replay(events: [created(), completed(calls, usage: ["input_tokens": 10, "output_tokens": 2])])
+        let usage = try XCTUnwrap(run.result.usage)
+        XCTAssertEqual(usage["server_tool_use"], ["web_search_requests": 4, "web_fetch_requests": 3])
+        XCTAssertEqual(TokenUsage(json: usage).webSearches, 4)
     }
 
     func testTrustLedgerRecordsSynthesizedWebBlocks() throws {
@@ -674,10 +883,107 @@ final class ResponsesStreamAccumulatorTests: XCTestCase {
         XCTAssertEqual(run.result.stopReason, "refusal")
     }
 
+    /// LiteLLM ends a reply cut off by the output limit with `response.completed`, status "incomplete" and no
+    /// reason; the call it got to is cut off too, so nothing runs.
+    func testLiteLLMTruncatedCallIsMaxTokens() throws {
+        let run = try replay(ResponsesFixtures.litellmTruncatedCall)
+        let cutOff = #"{"title":"Buy oat milk, eggs and"#
+        XCTAssertEqual(run.descriptions, [
+            "messageStart(anthropic/claude-opus-5)",
+            "toolUseStarted(toolu_10cut|reminders_add)",
+            "toolUseReady(toolu_10cut|reminders_add|invalid|\(cutOff))",
+            #"usage({"cache_read_input_tokens":0,"input_tokens":2400,"output_tokens":64000})"#,
+        ])
+        XCTAssertEqual(run.result.stopReason, "max_tokens")
+        XCTAssertEqual(run.result.content, [["type": "tool_use", "id": "toolu_10cut", "name": "reminders_add", "input": [:]]])
+    }
+
+    func testLiteLLMRefusalIsARefusal() throws {
+        let run = try replay(ResponsesFixtures.litellmRefusal)
+        XCTAssertEqual(run.result.stopReason, "refusal")
+        XCTAssertEqual(run.result.content, [["type": "text", "text": "Here is how to"]])
+    }
+
+    func testIncompleteWithoutAReasonIsInferredFromTheOutputTokens() throws {
+        func stop(type: String = "response.completed", status: String? = "incomplete", usage: JSONValue?,
+                  model: ModelOption = .opus5, limit: Int? = nil) throws -> String? {
+            var response: JSONValue = ["id": "resp_i", "output": [message("m", "Partial")], "incomplete_details": nil]
+            if let status { response = response.setting("status", to: .string(status)) }
+            if let usage { response = response.setting("usage", to: usage) }
+            var accumulator = ResponsesStreamAccumulator(requestedModel: model, maxOutputTokens: limit)
+            _ = try accumulator.handle(["type": .string(type), "response": response])
+            return accumulator.result().stopReason
+        }
+        XCTAssertEqual(try stop(usage: ["input_tokens": 5, "output_tokens": 64_000]), "max_tokens", "at Opus 5's limit")
+        XCTAssertEqual(try stop(usage: ["input_tokens": 5, "output_tokens": 70_000]), "max_tokens", "over it")
+        XCTAssertEqual(try stop(usage: ["input_tokens": 5, "output_tokens": 63_999]), "refusal", "short of it")
+        XCTAssertEqual(try stop(usage: ["input_tokens": 5, "output_tokens": 32_000], model: .haiku45), "max_tokens",
+                       "Haiku 4.5's limit")
+        XCTAssertEqual(try stop(usage: ["input_tokens": 5, "output_tokens": 500], limit: 500), "max_tokens",
+                       "the request's own limit")
+        XCTAssertEqual(try stop(usage: nil), "max_tokens", "no usage")
+        XCTAssertEqual(try stop(usage: ["input_tokens": 5]), "max_tokens", "no output count")
+        XCTAssertEqual(try stop(type: "response.incomplete", status: nil, usage: ["output_tokens": 3]), "refusal",
+                       "response.incomplete without a status")
+        XCTAssertEqual(try stop(status: "completed", usage: ["output_tokens": 64_000]), "end_turn")
+        XCTAssertEqual(try stop(status: nil, usage: nil), "end_turn")
+    }
+
     func testRefusalWinsOverToolUse() throws {
         let refused: JSONValue = ["id": "msg_r", "type": "message", "content": [["type": "refusal", "refusal": "No."]]]
         let run = try replay(events: [created(), completed([refused, functionCall("fc", callID: "c", name: "reminders_list", arguments: "{}")])])
         XCTAssertEqual(run.result.stopReason, "refusal")
+    }
+
+    // MARK: - Integer safety
+
+    func testIntValueRefusesNumbersThatDontFit() {
+        XCTAssertEqual(JSONValue.double(1e19).intValue, nil)
+        XCTAssertEqual(JSONValue.double(1e20).intValue, nil)
+        XCTAssertEqual(JSONValue.double(-1e20).intValue, nil)
+        XCTAssertEqual(JSONValue.double(.infinity).intValue, nil)
+        XCTAssertEqual(JSONValue.double(.nan).intValue, nil)
+        XCTAssertEqual(JSONValue.double(3.9).intValue, 3)
+        XCTAssertEqual(JSONValue.double(-3.9).intValue, -3)
+        XCTAssertEqual(JSONValue.double(1e15).intValue, 1_000_000_000_000_000)
+        XCTAssertEqual(JSONValue.int(.max).intValue, Int(Int64.max))
+        XCTAssertEqual((try? JSONValue.decode("100000000000000000000"))?.intValue, nil, "1e20 in JSON text")
+    }
+
+    /// Indexes and token counts no Int can hold, or right at Int's edges, can't crash the accumulator.
+    func testHugeIndexesAndTokenCountsDontTrap() throws {
+        let huge: JSONValue = .double(1e20)
+        let run = try replay(events: [
+            created(),
+            ["type": "response.output_item.added", "output_index": huge, "item": ["id": "rs_h", "type": "reasoning"]],
+            ["type": "response.reasoning_summary_text.delta", "item_id": "rs_h", "output_index": huge,
+             "summary_index": .double(1e19), "delta": "Hm."],
+            ["type": "response.output_text.delta", "item_id": "msg_h", "output_index": huge, "content_index": huge,
+             "delta": "Hi"],
+            ["type": "response.output_item.done", "output_index": .int(.max),
+             "item": ["id": "msg_h", "type": "message", "content": [["type": "output_text", "text": "Hi"]]]],
+            ["type": "response.output_item.done", "item": ["id": "msg_x", "type": "message", "content": []]],
+            ["type": "response.completed", "response": [
+                "status": "completed", "output": [],
+                "usage": ["input_tokens": .int(.max), "output_tokens": huge,
+                          "input_tokens_details": ["cached_tokens": .int(.min), "cache_write_tokens": .int(.max)]],
+            ]],
+        ])
+        XCTAssertTrue(run.accumulator.isComplete)
+        let usage = try XCTUnwrap(run.result.usage)
+        XCTAssertEqual(usage["input_tokens"], 0, "reads and writes come out of input_tokens without going below 0")
+        XCTAssertEqual(usage["cache_read_input_tokens"], 0)
+        XCTAssertEqual(usage["cache_creation_input_tokens"], .int(.max))
+        XCTAssertEqual(usage["output_tokens"], 0, "a count no Int holds reads as none")
+
+        let overflowing = try replay(events: [
+            created(),
+            ["type": "response.completed", "response": ["status": "completed", "output": [], "usage": [
+                "input_tokens": 0, "output_tokens": 1,
+                "input_tokens_details": ["cached_tokens": .int(.max), "cache_write_tokens": .int(.max)],
+            ]]],
+        ])
+        XCTAssertEqual(overflowing.result.usage?["input_tokens"], 0)
     }
 
     // MARK: - Errors
@@ -707,15 +1013,64 @@ final class ResponsesStreamAccumulatorTests: XCTestCase {
                        .http(status: 400, type: "invalid_request_error", message: "prompt is too long: 214318 tokens > 200000 maximum"))
         XCTAssertEqual(error(["type": "error", "code": "context_length_exceeded", "message": "Input exceeds the window."]),
                        .http(status: 400, type: "invalid_request_error", message: "prompt is too long: Input exceeds the window."))
+        // LiteLLM's typeless frame: code first, else its type.
+        XCTAssertEqual(error(["error": ["message": "AnthropicException - Overloaded", "type": "internal_server_error",
+                                        "param": nil, "code": "529"]]), .overloaded)
+        XCTAssertEqual(error(["error": ["message": "Slow down", "type": "rate_limit_error", "code": nil]]),
+                       .rateLimited(retryAfter: nil))
+        XCTAssertEqual(error(["error": ["message": "Nope", "code": 403]]), .setappAI(.modelNotAllowed("Opus 5")))
+    }
+
+    /// In-stream error codes by family, any case: what the request's content caused is a 400 ChatSession drops
+    /// the turn for; the plan, rate limits and overload get their own errors; anything else is a server error.
+    @MainActor
+    func testInStreamErrorCodeFamilies() {
+        let rejected: (String) -> LLMError = { .http(status: 400, type: "invalid_request_error", message: $0) }
+        let cases: [(String?, LLMError)] = [
+            ("invalid_request_error", rejected("Bad thing.")),
+            ("INVALID_REQUEST", rejected("Bad thing.")),
+            ("invalid_request_body", rejected("Bad thing.")),
+            ("invalid_prompt", rejected("Bad thing.")),
+            ("BAD_REQUEST", rejected("Bad thing.")),
+            ("Validation", rejected("Bad thing.")),
+            ("400", rejected("Bad thing.")),
+            ("413", rejected("Bad thing.")),
+            ("422", rejected("Bad thing.")),
+            ("FORBIDDEN", .setappAI(.modelNotAllowed("Sonnet 5"))),
+            ("model_not_allowed", .setappAI(.modelNotAllowed("Sonnet 5"))),
+            ("rate_limit_exceeded", .rateLimited(retryAfter: nil)),
+            ("RATE_LIMIT_ERROR", .rateLimited(retryAfter: nil)),
+            ("429", .rateLimited(retryAfter: nil)),
+            ("overloaded_error", .overloaded),
+            ("Overloaded", .overloaded),
+            ("529", .overloaded),
+            ("insufficient_credits", .setappAI(.insufficientCredits)),
+            ("INSUFFICIENT_CREDITS", .setappAI(.insufficientCredits)),
+            ("server_error", .streamError(type: "api_error", message: "Bad thing.")),
+            ("INTERNAL_SERVER_ERROR", .streamError(type: "api_error", message: "Bad thing.")),
+            (nil, .streamError(type: "api_error", message: "Bad thing.")),
+        ]
+        for (code, expected) in cases {
+            let error = ResponsesStreamAccumulator.eventError(code: code, message: "Bad thing.", model: .sonnet5)
+            XCTAssertEqual(error, expected, code ?? "nil")
+            XCTAssertEqual(ChatSession.isRejectedRequestContent(error), expected == rejected("Bad thing."), code ?? "nil")
+        }
+        XCTAssertEqual(ResponsesStreamAccumulator.eventError(code: "bad_request", message: "", model: .opus5),
+                       rejected(ResponsesClient.badRequestFallback))
+        // An overflow still reads as one, whatever the code says.
+        let overflow = ResponsesStreamAccumulator.eventError(code: "invalid_request_error",
+                                                            message: "prompt is too long: 210000 tokens", model: .opus5)
+        XCTAssertTrue(ChatSession.isContextOverflow(overflow))
     }
 
     @MainActor
     func testEveryOverflowWordingReadsAsAContextOverflow() {
         for message in ["prompt is too long: 210000 tokens", "Exceeds the context length of the model",
                         "too many tokens", "This model's maximum context length is 200000 tokens"] {
-            let error = ResponsesStreamAccumulator.eventError(code: nil, message: message)
+            let error = ResponsesStreamAccumulator.eventError(code: nil, message: message, model: .opus5)
             XCTAssertTrue(ChatSession.isContextOverflow(error), message)
         }
-        XCTAssertFalse(ChatSession.isContextOverflow(ResponsesStreamAccumulator.eventError(code: nil, message: "Something broke")))
+        XCTAssertFalse(ChatSession.isContextOverflow(
+            ResponsesStreamAccumulator.eventError(code: nil, message: "Something broke", model: .opus5)))
     }
 }

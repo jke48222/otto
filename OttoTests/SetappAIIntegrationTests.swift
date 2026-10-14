@@ -29,10 +29,15 @@ private enum Gateway {
         ]
     }
 
-    static func message(_ id: String, _ text: String) -> JSONValue {
-        [
+    static func message(_ id: String, _ text: String, citing urls: [String] = []) -> JSONValue {
+        let annotations: [JSONValue] = urls.map { url in
+            ["type": "url_citation", "url": .string(url), "title": "Swift 6.2 Released", "start_index": 0,
+             "end_index": .int(Int64(text.count))]
+        }
+        return [
             "id": .string(id), "type": "message", "status": "completed", "role": "assistant",
-            "content": [["type": "output_text", "text": .string(text), "annotations": [], "logprobs": []]],
+            "content": [["type": "output_text", "text": .string(text), "annotations": .array(annotations),
+                         "logprobs": []]],
         ]
     }
 
@@ -461,6 +466,79 @@ final class SetappAIIntegrationTests: XCTestCase {
                        "the synthesized web blocks never go back to the gateway")
     }
 
+    /// Text that cites the web with no web_search_call behind it (LiteLLM can pass Anthropic's citations on
+    /// without the search) still records web provenance, and "Safer" pauses web access as after a search.
+    func testGatewayCitationsWithoutASearchCallRecordWebProvenance() async throws {
+        let question = "When did Swift 6.2 ship, and what's on my calendar?"
+        let pause = ToolActivity(
+            id: ChatSession.webPausedActivityID, kind: .other,
+            label: "Web access paused for the rest of this reply: this chat now holds your calendar and text from a web search.",
+            isDone: true
+        )
+
+        // Setapp AI: citations only.
+        let transport = ScriptedResponsesTransport([
+            .events(Gateway.stream("resp_cited", [
+                Gateway.message("msg_cited", "Swift 6.2 shipped in September.", citing: [blogURL]),
+                Gateway.functionCall("fc_cited", callID: "call_cited", name: "private_read", arguments: #"{"range":"today"}"#),
+            ])),
+            .lines(ResponsesFixtures.text),
+        ])
+        let gatewaySettings = makeSettings()
+        let gateway = makeSession(settings: gatewaySettings, tools: [EchoTool(), PrivateReadTool()],
+                                  executor: makeExecutor(gatewaySettings)) { ResponsesClient(transport: transport) }
+        await send(gateway, question)
+
+        // The same response from Anthropic, with its search.
+        let anthropicContent: [JSONValue] = [
+            ["type": "server_tool_use", "id": "srvtoolu_search", "name": "web_search", "input": ["query": "Swift 6.2"]],
+            ["type": "web_search_tool_result", "tool_use_id": "srvtoolu_search", "content": [
+                ["type": "web_search_result", "url": .string(blogURL), "title": "Swift 6.2 Released",
+                 "encrypted_content": "EqgfCioIARgBIiQ3", "page_age": nil],
+            ]],
+            textBlock("Swift 6.2 shipped in September."),
+            toolUseBlock("toolu_read", "private_read", ["range": "today"]),
+        ]
+        let ownKey = ScriptedLLMClient([
+            anthropicReply(anthropicContent, text: "Swift 6.2 shipped in September.", stopReason: "tool_use",
+                           usage: ["input_tokens": 5_100, "output_tokens": 40,
+                                   "server_tool_use": ["web_search_requests": 1]],
+                           calls: [("toolu_read", "private_read", ["range": "today"])]),
+            anthropicReply([textBlock(fixtureAnswer)], text: fixtureAnswer),
+        ])
+        let anthropicSettings = makeSettings()
+        anthropicSettings.aiProvider = .anthropic
+        let anthropic = makeSession(settings: anthropicSettings, tools: [EchoTool(), PrivateReadTool()],
+                                    executor: makeExecutor(anthropicSettings)) { ownKey }
+        await send(anthropic, question)
+
+        for reply in [try lastReply(gateway), try lastReply(anthropic)] {
+            XCTAssertEqual(reply.state, .complete)
+            XCTAssertEqual(reply.toolCalls.first?.status, .succeeded)
+            XCTAssertEqual(reply.toolCalls.first?.provenance, "after searching the web")
+            XCTAssertEqual(reply.toolCalls.first?.caution, true)
+            XCTAssertEqual(reply.activities.last, pause)
+        }
+
+        func trust(_ chat: ChatSession) -> TrustAssessment {
+            TrustLedger.assess(transcript: ChatSession.requestHistory(
+                for: chat.messages, inFlight: nil, resumingInFlight: false, enabledServerTools: nil,
+                clientToolNames: ["echo", "private_read"]
+            ), untrustedTools: [:])
+        }
+        XCTAssertEqual(trust(gateway), trust(anthropic))
+        XCTAssertEqual(trust(gateway).all, [ProvenanceSource(kind: .webSearch, severity: .high)])
+
+        let reply = try lastReply(gateway)
+        XCTAssertEqual(reply.sources.map(\.url.absoluteString), [blogURL])
+        XCTAssertEqual(ChatSession.webBudgetLeft(in: reply.apiContent).searches, ToolLimits.webSearchesPerTurn - 1)
+        let bodies = transport.bodies
+        XCTAssertEqual(bodies.count, 2)
+        XCTAssertEqual(toolNames(bodies.last), ["echo", "private_read"], "the paused request offers no search")
+        XCTAssertEqual(kinds(bodies.last), ["user", "assistant", "function_call", "function_call_output"],
+                       "the synthesized search never goes back to the gateway")
+    }
+
     func testGatewayWebSearchSourcesActivityAndUsageReachTheReply() async throws {
         let transport = ScriptedResponsesTransport([.lines(ResponsesFixtures.webSearch)])
         let chat = makeSession(settings: makeSettings()) { ResponsesClient(transport: transport) }
@@ -482,8 +560,9 @@ final class SetappAIIntegrationTests: XCTestCase {
         XCTAssertEqual(left.searches, ToolLimits.webSearchesPerTurn - 1)
         XCTAssertEqual(left.fetches, ToolLimits.webFetchesPerTurn - 1)
         XCTAssertEqual(recorder.records.count, 1)
+        // The page read went through the search tool, so it spends a search too.
         XCTAssertEqual(recorder.records.first?.usage?["server_tool_use"],
-                       ["web_search_requests": 1, "web_fetch_requests": 1])
+                       ["web_search_requests": 2, "web_fetch_requests": 1])
         XCTAssertEqual(recorder.records.first?.servedModel, "anthropic/claude-opus-5")
         XCTAssertEqual(recorder.finishedAnswers, [reply.id])
 
@@ -493,8 +572,10 @@ final class SetappAIIntegrationTests: XCTestCase {
         XCTAssertEqual(trust.all.map(\.kind), [.webSearch, .webFetch(host: "swift.example")])
     }
 
-    /// Searches through the gateway spend the same per-reply budget as Anthropic's: three per round leave four for
-    /// the third request of the reply, and the next reply starts over.
+    /// Searches through the gateway spend the same per-reply budget as Anthropic's, and so do page reads, which go
+    /// through the same search tool: three searches and a page read, then three searches, leave three for the third
+    /// request of the reply, and the next reply starts over. `search_context_size` follows the budget too, for a
+    /// gateway that ignores `max_tool_calls`.
     func testGatewaySearchesSpendTheReplysWebBudget() async throws {
         func searches(_ round: Int) -> [JSONValue] {
             (1...3).map { index in
@@ -522,13 +603,15 @@ final class SetappAIIntegrationTests: XCTestCase {
         let reply = try lastReply(chat)
         XCTAssertEqual(reply.state, .complete)
         XCTAssertEqual(reply.toolCalls.map(\.status), [.succeeded, .succeeded])
-        XCTAssertEqual(transport.bodies.map { $0["max_tool_calls"] }, [5, 5, 4])
+        XCTAssertEqual(transport.bodies.map { $0["max_tool_calls"] }, [5, 5, 3])
+        XCTAssertEqual(transport.bodies.map { $0["tools"]?[0]?["search_context_size"] }, ["medium", "medium", "low"])
         let left = ChatSession.webBudgetLeft(in: reply.apiContent)
         XCTAssertEqual(left.searches, ToolLimits.webSearchesPerTurn - 6)
         XCTAssertEqual(left.fetches, ToolLimits.webFetchesPerTurn - 1)
 
         await send(chat, "Thanks")
         XCTAssertEqual(transport.bodies.last?["max_tool_calls"], 5, "each reply starts a new budget")
+        XCTAssertEqual(transport.bodies.last?["tools"]?[0]?["search_context_size"], "medium")
     }
 
     // MARK: 4. Provider switch
@@ -684,6 +767,30 @@ final class SetappAIIntegrationTests: XCTestCase {
         XCTAssertTrue(MessageView.offersNewChat(for: reply.state))
         XCTAssertTrue(chat.messages[2].includeInContext, "the new message isn't the problem, so it stays")
         XCTAssertEqual(transport.bodies.count, 3, "compacted and resent once")
+    }
+
+    /// A request the gateway refuses mid-stream for its content fails without a retry, and ChatSession takes the
+    /// message out of the context so the next turn isn't refused the same way.
+    func testGatewayRejectingTheRequestMidStreamDropsTheTurn() async throws {
+        let created = ScriptedResponsesTransport.decode(ResponsesFixtures.text[0])
+        let transport = ScriptedResponsesTransport([
+            .events([created, ["error": ["message": "messages.0.content.1.image: Could not process image",
+                                         "type": "invalid_request_error", "param": nil, "code": "400"]]]),
+            .lines(ResponsesFixtures.text),
+        ])
+        let chat = makeSession(settings: makeSettings()) { ResponsesClient(transport: transport) }
+        await send(chat, "What's in this picture?")
+
+        let reply = try lastReply(chat)
+        guard case .failed(let description) = reply.state else { return XCTFail("\(reply.state)") }
+        XCTAssertTrue(description.hasSuffix(ChatSession.excludedFromContextNote), description)
+        XCTAssertFalse(chat.messages[0].includeInContext)
+        XCTAssertFalse(reply.includeInContext)
+        XCTAssertEqual(transport.bodies.count, 1, "not retried")
+
+        await send(chat, "Never mind, what's new in Swift 6.2?")
+        XCTAssertEqual(try lastReply(chat).state, .complete)
+        XCTAssertEqual(kinds(transport.bodies.last), ["user"], "the refused message stays out")
     }
 
     // MARK: 6. Out of credits

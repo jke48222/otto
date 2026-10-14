@@ -10,6 +10,12 @@
 //  developers.openai.com/api/reference/resources/responses/streaming-events, checked 2026-10-13); ids, text,
 //  token counts and encrypted content are made up, and every web address is a reserved `.example` name.
 //
+//  The `litellm…` streams and `citationsWithoutSearchCall` follow the shapes LiteLLM's Responses-to-Anthropic
+//  bridge produces instead (read from its source, checked 2026-10-13), since the gateway most likely runs it:
+//  `response.completed` with status "incomplete" and no `incomplete_details`, every item at output index 0, a
+//  summary delta id per delta, a terminal reasoning item with `content` and no `summary`, and citations with no
+//  web_search_call. Still synthesized, not captured.
+//
 
 // Debug tooling: compiled only into Debug builds.
 #if DEBUG
@@ -154,6 +160,63 @@ enum ResponsesFixtures {
         #"{"type":"error","sequence_number":0,"code":"insufficient_credits","message":"Not enough Setapp AI credits to complete this request.","param":null}"#,
     ]
 
+    /// LiteLLM's shape of a call cut off by the output limit: the stream ends with `response.completed` whose
+    /// status is "incomplete" and whose `incomplete_details` is null, the call's item says "completed" though its
+    /// arguments stop mid-string, and the reply used all 64,000 output tokens Opus 5 allows.
+    static let litellmTruncatedCall: [String] = [
+        #"{"type":"response.created","sequence_number":0,"response":{"id":"resp_10cut","object":"response","parallel_tool_calls":true,"created_at":1791850080,"status":"in_progress","error":null,"incomplete_details":null,"model":"anthropic/claude-opus-5","output":[],"usage":null}}"#,
+        #"{"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":{"id":"fc_toolu_10cut","type":"function_call","status":"in_progress","call_id":"toolu_10cut","name":"reminders_add","arguments":""}}"#,
+        #"{"type":"response.function_call_arguments.delta","sequence_number":2,"item_id":"fc_toolu_10cut","output_index":0,"delta":"{\"title\":\"Buy oat milk, eggs and"}"#,
+        #"{"type":"response.function_call_arguments.done","sequence_number":3,"item_id":"fc_toolu_10cut","output_index":0,"arguments":"{\"title\":\"Buy oat milk, eggs and"}"#,
+        #"{"type":"response.output_item.done","sequence_number":4,"output_index":0,"item":{"id":"fc_toolu_10cut","type":"function_call","status":"completed","call_id":"toolu_10cut","name":"reminders_add","arguments":"{\"title\":\"Buy oat milk, eggs and"}}"#,
+        #"{"type":"response.completed","sequence_number":5,"response":{"id":"resp_10cut","object":"response","parallel_tool_calls":true,"created_at":1791850080,"status":"incomplete","error":null,"incomplete_details":null,"model":"anthropic/claude-opus-5","output":[{"id":"fc_toolu_10cut","type":"function_call","status":"completed","call_id":"toolu_10cut","name":"reminders_add","arguments":"{\"title\":\"Buy oat milk, eggs and"}],"usage":{"input_tokens":2400,"input_tokens_details":{"cached_tokens":0},"output_tokens":64000,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":66400}}}"#,
+    ]
+
+    /// LiteLLM's shape of a reply Anthropic stopped for its content: some text, then `response.completed` with status
+    /// "incomplete", no `incomplete_details`, and far fewer output tokens than the limit.
+    static let litellmRefusal: [String] = [
+        #"{"type":"response.created","sequence_number":0,"response":{"id":"resp_11stop","object":"response","parallel_tool_calls":true,"created_at":1791850140,"status":"in_progress","error":null,"incomplete_details":null,"model":"anthropic/claude-opus-5","output":[],"usage":null}}"#,
+        #"{"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":{"id":"msg_11stop","type":"message","status":"in_progress","role":"assistant","content":[]}}"#,
+        #"{"type":"response.content_part.added","sequence_number":2,"item_id":"msg_11stop","output_index":0,"content_index":0,"part":{"type":"output_text","text":"","annotations":[],"logprobs":[]}}"#,
+        #"{"type":"response.output_text.delta","sequence_number":3,"item_id":"msg_11stop","output_index":0,"content_index":0,"delta":"Here is how to","logprobs":[]}"#,
+        #"{"type":"response.output_text.done","sequence_number":4,"item_id":"msg_11stop","output_index":0,"content_index":0,"text":"Here is how to","logprobs":[]}"#,
+        #"{"type":"response.output_item.done","sequence_number":5,"output_index":0,"item":{"id":"msg_11stop","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"Here is how to","annotations":[],"logprobs":[]}]}}"#,
+        #"{"type":"response.completed","sequence_number":6,"response":{"id":"resp_11stop","object":"response","parallel_tool_calls":true,"created_at":1791850140,"status":"incomplete","error":null,"incomplete_details":null,"model":"anthropic/claude-opus-5","output":[{"id":"msg_11stop","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"Here is how to","annotations":[],"logprobs":[]}]}],"usage":{"input_tokens":700,"input_tokens_details":{"cached_tokens":0},"output_tokens":12,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":712}}}"#,
+    ]
+
+    /// Older LiteLLM's reasoning: every item at output index 0, each summary delta with an id of its own (and no
+    /// `summary_index`), the finished item with a stable id and a `summary`, and the terminal output's reasoning item
+    /// with yet another id, `content` instead of `summary`, and the encrypted thinking.
+    static let litellmReasoning: [String] = [
+        #"{"type":"response.created","sequence_number":0,"response":{"id":"resp_12think","object":"response","parallel_tool_calls":true,"created_at":1791850200,"status":"in_progress","error":null,"incomplete_details":null,"model":"anthropic/claude-opus-5","output":[],"usage":null}}"#,
+        #"{"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":{"id":"rs_5f1d8e2a-0c4b-4f7e-9a61-3b2c7d9e0f12","type":"reasoning","status":"in_progress","summary":null}}"#,
+        #"{"type":"response.reasoning_summary_text.delta","item_id":"rs_-4417203611822450931","output_index":0,"delta":"The user asks for the time in Tokyo."}"#,
+        #"{"type":"response.reasoning_summary_text.delta","item_id":"rs_7310295486120737512","output_index":0,"delta":" Tokyo is UTC+9."}"#,
+        #"{"type":"response.reasoning_summary_text.done","sequence_number":4,"item_id":"rs_5f1d8e2a-0c4b-4f7e-9a61-3b2c7d9e0f12","output_index":0,"summary_index":0,"text":"The user asks for the time in Tokyo. Tokyo is UTC+9."}"#,
+        #"{"type":"response.reasoning_summary_part.done","sequence_number":5,"item_id":"rs_5f1d8e2a-0c4b-4f7e-9a61-3b2c7d9e0f12","output_index":0,"summary_index":0,"part":{"type":"summary_text","text":"The user asks for the time in Tokyo. Tokyo is UTC+9."}}"#,
+        #"{"type":"response.output_item.done","sequence_number":6,"output_index":0,"item":{"id":"rs_5f1d8e2a-0c4b-4f7e-9a61-3b2c7d9e0f12","type":"reasoning","summary":[{"type":"summary_text","text":"The user asks for the time in Tokyo. Tokyo is UTC+9."}]}}"#,
+        #"{"type":"response.output_item.added","sequence_number":7,"output_index":0,"item":{"id":"msg_12think","type":"message","status":"in_progress","role":"assistant","content":[]}}"#,
+        #"{"type":"response.content_part.added","sequence_number":8,"item_id":"msg_12think","output_index":0,"content_index":0,"part":{"type":"output_text","text":"","annotations":[],"logprobs":[]}}"#,
+        #"{"type":"response.output_text.delta","sequence_number":9,"item_id":"msg_12think","output_index":0,"content_index":0,"delta":"It's 9 hours ahead of UTC in Tokyo."}"#,
+        #"{"type":"response.output_text.done","sequence_number":10,"item_id":"msg_12think","output_index":0,"content_index":0,"text":"It's 9 hours ahead of UTC in Tokyo."}"#,
+        #"{"type":"response.content_part.done","sequence_number":11,"item_id":"msg_12think","output_index":0,"content_index":0,"part":{"type":"output_text","text":"It's 9 hours ahead of UTC in Tokyo.","annotations":[],"logprobs":null}}"#,
+        #"{"type":"response.output_item.done","sequence_number":12,"output_index":0,"item":{"id":"msg_12think","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"It's 9 hours ahead of UTC in Tokyo.","annotations":[]}]}}"#,
+        #"{"type":"response.completed","sequence_number":13,"response":{"id":"resp_12think","object":"response","parallel_tool_calls":true,"created_at":1791850200,"status":"completed","error":null,"incomplete_details":null,"model":"anthropic/claude-opus-5","output":[{"type":"reasoning","id":"rs_c02b9e4f71a8","status":"completed","role":"assistant","content":[{"type":"output_text","text":"The user asks for the time in Tokyo. Tokyo is UTC+9.","annotations":[]}],"encrypted_content":"W3sidHlwZSI6InRoaW5raW5nIiwic2lnbmF0dXJlIjoic3ludGhldGljIn1d"},{"id":"msg_12think","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"It's 9 hours ahead of UTC in Tokyo.","annotations":[]}]}],"usage":{"input_tokens":610,"input_tokens_details":{"cached_tokens":0},"output_tokens":58,"output_tokens_details":{"reasoning_tokens":30},"total_tokens":668}}}"#,
+    ]
+
+    /// Text that cites a page with no web_search_call anywhere in the response, the way LiteLLM can pass on
+    /// Anthropic's citations without the search behind them.
+    static let citationsWithoutSearchCall: [String] = [
+        #"{"type":"response.created","sequence_number":0,"response":{"id":"resp_13cite","object":"response","parallel_tool_calls":true,"created_at":1791850260,"status":"in_progress","error":null,"incomplete_details":null,"model":"anthropic/claude-opus-5","output":[],"usage":null}}"#,
+        #"{"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":{"id":"msg_13cite","type":"message","status":"in_progress","role":"assistant","content":[]}}"#,
+        #"{"type":"response.content_part.added","sequence_number":2,"item_id":"msg_13cite","output_index":0,"content_index":0,"part":{"type":"output_text","text":"","annotations":[],"logprobs":[]}}"#,
+        #"{"type":"response.output_text.delta","sequence_number":3,"item_id":"msg_13cite","output_index":0,"content_index":0,"delta":"Swift 6.2 shipped in September.","logprobs":[]}"#,
+        #"{"type":"response.output_text.annotation.added","sequence_number":4,"item_id":"msg_13cite","output_index":0,"content_index":0,"annotation_index":0,"annotation":{"type":"url_citation","url":"https://www.swift.example/blog/swift-6-2-released/","title":"Swift 6.2 Released","start_index":0,"end_index":31}}"#,
+        #"{"type":"response.output_text.done","sequence_number":5,"item_id":"msg_13cite","output_index":0,"content_index":0,"text":"Swift 6.2 shipped in September.","logprobs":[]}"#,
+        #"{"type":"response.output_item.done","sequence_number":6,"output_index":0,"item":{"id":"msg_13cite","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"Swift 6.2 shipped in September.","annotations":[{"type":"url_citation","url":"https://www.swift.example/blog/swift-6-2-released/","title":"Swift 6.2 Released","start_index":0,"end_index":31},{"type":"url_citation","url":"https://news.example/swift-6-2","title":"Swift 6.2 is out","start_index":0,"end_index":31}],"logprobs":[]}]}}"#,
+        #"{"type":"response.completed","sequence_number":7,"response":{"id":"resp_13cite","object":"response","parallel_tool_calls":true,"created_at":1791850260,"status":"completed","error":null,"incomplete_details":null,"model":"anthropic/claude-opus-5","output":[{"id":"msg_13cite","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"Swift 6.2 shipped in September.","annotations":[{"type":"url_citation","url":"https://www.swift.example/blog/swift-6-2-released/","title":"Swift 6.2 Released","start_index":0,"end_index":31},{"type":"url_citation","url":"https://news.example/swift-6-2","title":"Swift 6.2 is out","start_index":0,"end_index":31}],"logprobs":[]}]}],"usage":{"input_tokens":5100,"input_tokens_details":{"cached_tokens":0},"output_tokens":40,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":5140}}}"#,
+    ]
+
     /// Every scenario by name, for checks that run all of them.
     static let all: [(name: String, events: [String])] = [
         ("text", text),
@@ -166,6 +229,10 @@ enum ResponsesFixtures {
         ("refusal", refusal),
         ("failedOverflow", failedOverflow),
         ("failedCredits", failedCredits),
+        ("litellmTruncatedCall", litellmTruncatedCall),
+        ("litellmRefusal", litellmRefusal),
+        ("litellmReasoning", litellmReasoning),
+        ("citationsWithoutSearchCall", citationsWithoutSearchCall),
     ]
 }
 
