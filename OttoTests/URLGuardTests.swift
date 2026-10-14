@@ -60,6 +60,21 @@ final class URLGuardTests: XCTestCase {
         XCTAssertEqual(publicV6?.displayHost, "[2606:4700:4700::1111]")
     }
 
+    /// RFC 8215's local-use NAT64 prefix is a translator on the user's own network, whatever address it embeds.
+    func testLocalUseNAT64IsBlocked() {
+        for host in ["[64:ff9b:1::1]", "[64:ff9b:1::5db8:d822]", "[64:ff9b:1:ffff:ffff:ffff:ffff:ffff]",
+                     "[64:ff9b:1:5db8:d8:2200::]"] {
+            assertBlockedAsLocal("https://\(host)/")
+        }
+        let embeddingPublic = URLGuard.parseIPv6("64:ff9b:1::8.8.8.8")
+        XCTAssertEqual(embeddingPublic?.count, 16)
+        XCTAssertTrue(URLGuard.isBlockedIPv6(embeddingPublic ?? []), "even with a public IPv4 address inside")
+        // The well-known prefix still passes a public IPv4 address, and 64:ff9b:2:: is outside the local-use range.
+        XCTAssertNotNil(checked("https://[64:ff9b::808:808]/"))
+        XCTAssertNotNil(checked("https://[64:ff9b:2::1]/"))
+        XCTAssertEqual(ResolvedAddress("64:ff9b:1::a00:1")?.isBlocked, true)
+    }
+
     func testInvalidIPv6IsRejected() {
         XCTAssertEqual(rejection("http://[::1/")?.kind, .invalid)
         XCTAssertEqual(rejection("http://[fe80::1%25en0]/")?.kind, .invalid)
