@@ -27,6 +27,8 @@
 //    property is misspelled `starIndex`), text parts need `annotations`, usage needs `total_tokens` and an
 //    `error` event needs a non-null `param`. The connector throws when an event doesn't decode, which ends the
 //    stream, so `SetappSDKEventMapper` recovers what it can (see `recover(from:)`).
+//  - LiteLLM, which the gateway most likely runs, sends a failure mid-stream as `{"error": {…}}` with no `type`,
+//    which the SDK can't decode either; the mapper turns it into an `error` event.
 //
 
 #if OTTO_SETAPP
@@ -128,13 +130,18 @@ struct SetappSDKTransport: ResponsesTransport {
                 try Self.yield(mapper.map(event), to: continuation)
                 if mapper.isFinished { break }
             }
+            // A stream that ends without a terminal event ends here too: ResponsesClient reports the early end
+            // rather than finishing a reply from whatever items happened to arrive.
             try Task.checkCancellation()
-            try Self.yield(mapper.finish(), to: continuation)
         } catch {
             if Task.isCancelled || SetappSDKErrors.isCancellation(error) { throw CancellationError() }
             switch mapper.recover(from: error) {
             case .events(let events):
-                Self.logger.notice("Recovered \(events.count) event(s) after the SDK stream failed: \(LoggedError(error), privacy: .public)")
+                if mapper.didStandIn {
+                    Self.logger.error("Stood in for a terminal event the SDK couldn't decode, from the finished items (\(events.first?.typeName ?? "?", privacy: .public), no usage): \(LoggedError(error), privacy: .public)")
+                } else {
+                    Self.logger.notice("Recovered \(events.count) event(s) after the SDK stream failed: \(LoggedError(error), privacy: .public)")
+                }
                 try Self.yield(events, to: continuation)
             case .failure(let failure):
                 Self.logger.error("Setapp AI stream failed: \(SetappSDKErrors.logLabel(failure), privacy: .public) from \(LoggedError(error), privacy: .public) \(String(describing: error), privacy: .private)")
@@ -325,30 +332,32 @@ struct SetappSDKEventMapper {
 
     /// A terminal event (or `error`) has been mapped; nothing after it matters.
     private(set) var isFinished = false
+    /// `recover(from:)` stood in for the terminal event with `synthesizedTerminal()`.
+    private(set) var didStandIn = false
     private var responseID: String?
     private var model: String?
-    private var openItems: Set<Int> = []
-    private var doneItems: [Int: JSONValue] = [:]
+    /// Items announced and not finished yet, by key (item id, else "#<output_index>"), with their output indexes
+    /// (-1 when unknown).
+    private var openItems: [String: Int] = [:]
+    /// Finished items in the order they finished, by key: older LiteLLM numbers every item 0, so an output index
+    /// can't tell them apart.
+    private var doneItems: [(key: String, item: JSONValue)] = []
 
     mutating func map(_ event: SetappAIAPI.StreamingEvent) -> [JSONValue] {
-        guard !isFinished, let json = Self.json(for: event) else { return [] }
+        guard !isFinished, let mapped = Self.json(for: event) else { return [] }
+        let json = Self.errorEvent(fromFrame: mapped) ?? mapped
         note(json)
         return [json]
-    }
-
-    /// Called when the SDK stream ends normally. Usually nothing; see `synthesizedTerminal()`.
-    mutating func finish() -> [JSONValue] {
-        guard !isFinished, let terminal = synthesizedTerminal() else { return [] }
-        isFinished = true
-        return [terminal]
     }
 
     /// What to do when the SDK stream throws `error`, in order:
     /// 1. A thrown `error` event (the connector throws them instead of yielding them): yield it as an `error` event.
     /// 2. An event the connector couldn't decode whose text still reaches Otto (it logs "Failed to parse SSE event:
     ///    …, line: <event>"): yield it as the gateway sent it when it is terminal; the stream ended there either way.
+    ///    A typeless `{"error": {…}}` frame (LiteLLM's) is yielded as the `error` event it means.
     /// 3. A decoding failure in a lifecycle event's `output` or `usage` (in practice the terminal event, the only one
     ///    with a full output): stand in for it with `synthesizedTerminal()` when every announced item finished.
+    ///    This is the only place a terminal event is ever built.
     /// 4. Any other decoding failure: `.server` with `unreadableMessage`. Anything else: what the SDK error maps to.
     mutating func recover(from error: Error) -> Recovery {
         let chain = SetappSDKErrors.Chain(error)
@@ -358,10 +367,16 @@ struct SetappSDKEventMapper {
                                            param: streamError.param, sequenceNumber: streamError.sequenceNumber)])
         }
         let unreadable = Recovery.failure(.server(status: 0, message: Self.unreadableMessage))
-        if let raw = chain.unparsedEvent, raw.typeName != nil {
+        if let raw = chain.unparsedEvent {
             guard !isFinished else { return .events([]) }
-            note(raw)
-            return isFinished ? .events([raw]) : unreadable
+            if let errorEvent = Self.errorEvent(fromFrame: raw) {
+                isFinished = true
+                return .events([errorEvent])
+            }
+            if raw.typeName != nil {
+                note(raw)
+                return isFinished ? .events([raw]) : unreadable
+            }
         }
         guard let decodingError = chain.decodingError else {
             return .failure(SetappSDKErrors.transportError(for: chain))
@@ -370,21 +385,26 @@ struct SetappSDKEventMapper {
             return unreadable
         }
         isFinished = true
+        didStandIn = true
         return .events([terminal])
     }
 
-    /// A `response.completed` built from the `response.output_item.done` items, for a stream that lost its terminal
-    /// event. Only when at least one item finished and none is still open, so a stream cut mid-item still fails.
-    /// It has no usage: the gateway's token counts went with the lost event.
+    /// A terminal event built from the `response.output_item.done` items, for a terminal event the SDK couldn't
+    /// decode. Only when at least one item finished and none is still open, so a stream cut mid-item still fails.
+    /// `response.incomplete` with `max_output_tokens` when an item finished incomplete (the output limit cut it
+    /// off), else `response.completed`. It has no usage: the gateway's token counts went with the lost event.
     func synthesizedTerminal() -> JSONValue? {
         guard !doneItems.isEmpty, openItems.isEmpty else { return nil }
+        let output = doneItems.map(\.item)
+        let incomplete = output.contains { $0["status"]?.stringValue == "incomplete" }
         var response: [String: JSONValue] = [
             "id": .string(responseID ?? ""),
-            "status": "completed",
-            "output": .array(doneItems.keys.sorted().compactMap { doneItems[$0] }),
+            "status": incomplete ? "incomplete" : "completed",
+            "output": .array(output),
         ]
+        if incomplete { response["incomplete_details"] = ["reason": "max_output_tokens"] }
         if let model { response["model"] = .string(model) }
-        return ["type": "response.completed", "response": .object(response)]
+        return ["type": incomplete ? "response.incomplete" : "response.completed", "response": .object(response)]
     }
 
     private mutating func note(_ event: JSONValue) {
@@ -393,19 +413,46 @@ struct SetappSDKEventMapper {
             if let id = response["id"]?.stringValue, !id.isEmpty { responseID = id }
             if let model = response["model"]?.stringValue, !model.isEmpty { self.model = model }
         }
+        let index = event["output_index"]?.intValue
         switch type {
         case "response.output_item.added":
-            if let index = event["output_index"]?.intValue { openItems.insert(index) }
+            openItems[Self.itemKey(event["item"], index: index)] = index ?? -1
         case "response.output_item.done":
-            if let index = event["output_index"]?.intValue {
-                openItems.remove(index)
-                if let item = event["item"] { doneItems[index] = item }
+            guard let item = event["item"], item.objectValue != nil else { break }
+            let key = Self.itemKey(item, index: index)
+            if openItems.removeValue(forKey: key) == nil, let index,
+               let opened = openItems.first(where: { $0.value == index })?.key {
+                // Announced under another id (or none): the open item at the same index is this one.
+                openItems.removeValue(forKey: opened)
+            }
+            if let existing = doneItems.firstIndex(where: { $0.key == key }) {
+                doneItems[existing].item = item
+            } else {
+                doneItems.append((key, item))
             }
         case _ where Self.terminalTypes.contains(type):
             isFinished = true
         default:
             break
         }
+    }
+
+    private static func itemKey(_ item: JSONValue?, index: Int?) -> String {
+        if let id = item?["id"]?.stringValue, !id.isEmpty { return id }
+        return "#\(index.map(String.init) ?? "?")"
+    }
+
+    /// LiteLLM's mid-stream failure, `{"error": {"message", "type", "param", "code"}}` with no `type` of its own, as
+    /// the `error` event it means: code = its `code` (string or number), else its `type`. Nil for anything else.
+    static func errorEvent(fromFrame frame: JSONValue) -> JSONValue? {
+        // Every Responses event type but "error" has a dot; a frame without one (or without a type) isn't an event.
+        let type = frame.typeName ?? ""
+        guard !type.contains("."), type != "error", let error = frame["error"], error.objectValue != nil else {
+            return nil
+        }
+        let code = error["code"]?.stringValue ?? error["code"]?.intValue.map(String.init) ?? error["type"]?.stringValue
+        return errorJSON(code: code, message: error["message"]?.stringValue ?? "", param: error["param"]?.stringValue,
+                         sequenceNumber: nil)
     }
 
     /// A decoding failure inside a lifecycle event's `output` or `usage`.
