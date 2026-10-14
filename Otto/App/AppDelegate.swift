@@ -170,9 +170,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .first { $0.processIdentifier != ownPID && !$0.isTerminated }
     }
 
-    /// First launch without an API key: Settings opens on Models, where the key goes.
+    /// First launch that can't send yet (no API key, and not on Setapp AI, which needs none): Settings opens on
+    /// Models, where the key goes.
     private func showOnboardingIfNeeded(_ composition: AppComposition) {
-        guard !LaunchOptions.demo, !composition.settings.hasAPIKey else { return }
+        guard !LaunchOptions.demo, !composition.settings.isProviderReady else { return }
         let defaults = UserDefaults.standard
         guard !defaults.bool(forKey: Self.onboardingDefaultsKey) else { return }
         defaults.set(true, forKey: Self.onboardingDefaultsKey)

@@ -28,6 +28,9 @@ import os
     var speaker: ReplySpeaker?
     /// tccutil reset.
     var processRunner: ProcessRunning?
+    /// The member's Setapp AI account: Models then offers the provider choice and shows the credit balance
+    /// (§19 Setapp AI). The Setapp build's live account, a static one in snapshots, nil everywhere else.
+    var setappAI: (any SetappAIAccountModel)? = nil
     #if OTTO_LICENSING
     /// Settings → License. nil in demo and inert graphs (the tab then says licenses aren't checked).
     var license: LicenseControlling? = nil

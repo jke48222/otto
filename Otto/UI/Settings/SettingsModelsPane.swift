@@ -3,7 +3,9 @@
 //  Otto
 //
 //  Settings → Models: the Anthropic API key, the model and response style, web access, the cost label on
-//  replies, and what Otto's replies have cost so far (local estimates at list prices).
+//  replies, and what Otto's replies have cost so far (local estimates at list prices). With a Setapp AI account
+//  (§19 Setapp AI) the pane starts with the provider choice; on Setapp AI it shows the credit balance in place of
+//  the key and drops the list prices, which the member doesn't pay.
 //
 
 import SwiftUI
@@ -14,19 +16,41 @@ struct SettingsModelsPane: View {
 
     var body: some View {
         SettingsPane(tab: .models, settings: settings) {
-            SettingsAPIKeySection(settings: settings)
+            if let account = services.setappAI {
+                SettingsProviderSection(settings: settings, account: account)
+            }
+            if !usesSetappAI {
+                SettingsAPIKeySection(settings: settings)
+            }
             modelSection
             Section {
                 Toggle(isOn: $settings.webAccess) {
-                    labeled("Web search & fetch", "Let Claude look things up and read pages.")
+                    // The gateway has web search but no web fetch.
+                    if usesSetappAI {
+                        labeled("Web search", "Let Claude look things up.")
+                    } else {
+                        labeled("Web search & fetch", "Let Claude look things up and read pages.")
+                    }
                 }
                 Toggle(isOn: Bindable(settings.usage).showCost) {
                     labeled("Show cost on replies", "An estimate appears next to a reply when you point at it.")
                 }
             }
-            SettingsUsageSection(ledger: services.ledger)
+            SettingsUsageSection(ledger: services.ledger, hasSetappAI: services.setappAI != nil)
                 .id(SettingsAnchor.usage.rawValue)
         }
+    }
+
+    /// Under Usage when the build has a Setapp AI account (the ledger never counts those replies).
+    static let setappAIUsageNote = "Setapp AI replies use credits and aren't counted here."
+
+    /// Setapp AI answers, as far as this pane goes: the build has a Setapp AI account and it is the chosen provider.
+    private var usesSetappAI: Bool { Self.usesSetappAI(settings: settings, account: services.setappAI) }
+
+    /// Pure. Decided from the account rather than `AIProvider.available`, so the Setapp AI pane can be drawn
+    /// (snapshots, tests) in builds that don't offer the provider.
+    static func usesSetappAI(settings: AppSettings, account: (any SetappAIAccountModel)?) -> Bool {
+        account != nil && settings.aiProvider == .setappAI
     }
 
     // MARK: Model
@@ -37,7 +61,7 @@ struct SettingsModelsPane: View {
                 ForEach(ModelOption.allCases) { option in
                     VStack(alignment: .leading, spacing: 1) {
                         Text(option.displayName)
-                        Text(Self.subtitle(for: option))
+                        Text(Self.subtitle(for: option, showsPrice: !usesSetappAI))
                             .font(.caption)
                             .foregroundStyle(SettingsTone.secondaryText)
                     }
@@ -63,9 +87,9 @@ struct SettingsModelsPane: View {
         }
     }
 
-    /// "Most capable · $5 / $25 per million tokens".
-    static func subtitle(for option: ModelOption) -> String {
-        guard let price = ModelPricing.price(for: option.rawValue) else { return option.subtitle }
+    /// "Most capable · $5 / $25 per million tokens", or "Most capable" without the price (Setapp AI bills in credits).
+    static func subtitle(for option: ModelOption, showsPrice: Bool = true) -> String {
+        guard showsPrice, let price = ModelPricing.price(for: option.rawValue) else { return option.subtitle }
         return "\(option.subtitle) · \(perMillion(price.input)) / \(perMillion(price.output)) per million tokens"
     }
 
@@ -234,9 +258,11 @@ private struct SettingsAPIKeySection: View {
 
 // MARK: - Usage
 
-/// Totals from the local usage ledger: by period, and by model for this month.
+/// Totals from the local usage ledger: by period, and by model for this month. Setapp AI replies are never in it.
 private struct SettingsUsageSection: View {
     let ledger: UsageLedger
+    /// The build has a Setapp AI account: say why its replies are missing from the totals.
+    let hasSetappAI: Bool
 
     @Environment(\.settingsOpenExternal) private var openExternal
     @State private var confirmsReset = false
@@ -290,6 +316,9 @@ private struct SettingsUsageSection: View {
                 }
             }
 
+            if hasSetappAI {
+                SettingsCaption(SettingsModelsPane.setappAIUsageNote)
+            }
             SettingsCaption("Estimates at list prices (updated \(Self.pricesMonth)). Web search is $10 per 1,000 "
                             + "searches. Your invoice in the Anthropic Console is authoritative.")
             HStack {
