@@ -889,8 +889,8 @@ final class SetappAICheck {
         let page = WebPage(url: URL(string: "https://www.swift.example/blog/")!, title: "Swift Blog",
                            text: "Swift 6.2 is out.",
                            links: [WebLink(text: "Forums", url: URL(string: "https://forums.swift.example/")!)])
-        let notes = WebPage(url: URL(string: "https://www.swift.example/notes.pdf")!, title: "notes.pdf", text: "",
-                            pdf: Data("%PDF-1.4\n%%EOF".utf8))
+        let notesPDF = WebPage(url: URL(string: "https://www.swift.example/notes.pdf")!, title: "notes.pdf", text: "",
+                               pdf: Data("%PDF-1.4\n%%EOF".utf8))
         let tab = "<browser_tab>\nTitle: Swift Blog\nURL: https://www.swift.example/blog/\n</browser_tab>"
         let pageRead: [JSONValue] = [
             ["role": "user", "content": [["type": "text", "text": .string(tab)],
@@ -900,7 +900,7 @@ final class SetappAICheck {
                 SetappWebFetch.callBlock(id: "call_page", input: ["url": "https://www.swift.example/blog/"]),
                 SetappWebFetch.resultBlock(id: "call_page", page: page),
                 SetappWebFetch.callBlock(id: "call_notes", input: ["url": "https://www.swift.example/notes.pdf"]),
-                SetappWebFetch.resultBlock(id: "call_notes", page: notes),
+                SetappWebFetch.resultBlock(id: "call_notes", page: notesPDF),
                 ["type": "otto_responses_reasoning", "item": reasoning.setting("id", to: "rs_2")],
                 SetappWebFetch.callBlock(id: "call_forums", input: ["url": "https://forums.swift.example/"]),
                 SetappWebFetch.errorBlock(id: "call_forums", failure: .read(.httpStatus(403))),
@@ -920,7 +920,7 @@ final class SetappAICheck {
                 SetappWebFetch.callBlock(id: "call_page", input: ["url": "https://www.swift.example/blog/"]),
                 SetappWebFetch.resultBlock(id: "call_page", page: page),
                 SetappWebFetch.callBlock(id: "call_notes", input: ["url": "https://www.swift.example/notes.pdf"]),
-                SetappWebFetch.resultBlock(id: "call_notes", page: notes),
+                SetappWebFetch.resultBlock(id: "call_notes", page: notesPDF),
             ]],
         ]
         for (name, messages, calls) in [("read round", pageRead, ["call_page", "call_notes"]),
