@@ -25,12 +25,9 @@ struct SettingsModelsPane: View {
             modelSection
             Section {
                 Toggle(isOn: $settings.webAccess) {
-                    // The gateway has web search but no web fetch.
-                    if usesSetappAI {
-                        labeled("Web search", Self.setappAIWebSearchSubtitle(for: settings.model))
-                    } else {
-                        labeled("Web search & fetch", "Let Claude look things up and read pages.")
-                    }
+                    // On Setapp AI the gateway searches and Otto reads pages itself, except on Haiku 4.5.
+                    labeled("Web search & fetch",
+                            usesSetappAI ? Self.setappAIWebSearchSubtitle(for: settings.model) : Self.webAccessSubtitle)
                 }
                 Toggle(isOn: Bindable(settings.usage).showCost) {
                     labeled("Show cost on replies", Self.showCostSubtitle(usesSetappAI: usesSetappAI))
@@ -66,9 +63,13 @@ struct SettingsModelsPane: View {
     /// The web search caption for Haiku 4.5 on Setapp AI (the header's model menu says the same).
     static let setappAIHaikuWebSearchCaption = HeaderModelMenu.setappAINoWebSearchCaption
 
-    /// Pure. The web toggle's subtitle on Setapp AI: the gateway searches with Opus 5 and Sonnet 5 only.
+    /// The web toggle's subtitle.
+    static let webAccessSubtitle = "Let Claude look things up and read pages."
+
+    /// Pure. The web toggle's subtitle on Setapp AI: the gateway searches, and Otto reads pages, with Opus 5 and
+    /// Sonnet 5 only.
     static func setappAIWebSearchSubtitle(for model: ModelOption) -> String {
-        model.supportsSetappAIWebSearch ? "Let Claude look things up." : setappAIHaikuWebSearchCaption
+        model.supportsSetappAIWebSearch ? webAccessSubtitle : setappAIHaikuWebSearchCaption
     }
 
     // MARK: Model

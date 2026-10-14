@@ -483,8 +483,9 @@ final class SettingsPanesTests: XCTestCase {
     func testSetappAICopyIsTheSpecifiedCopy() {
         XCTAssertEqual(SettingsProviderSection.gatewayCaption, "Your messages go to Setapp's AI gateway, run by MacPaw, "
                        + "which passes them to Anthropic. Setapp counts credits for each reply.")
-        XCTAssertEqual(SettingsProviderSection.webSearchCaption, "Web search works with Opus 5 and Sonnet 5. Setapp AI "
-                       + "can't open web pages, so an attached browser tab gives Claude only its title and address.")
+        XCTAssertEqual(SettingsProviderSection.webSearchCaption, "Web search and reading pages work with Opus 5 and "
+                       + "Sonnet 5. Otto opens each page on your Mac, without your cookies, so Claude can read an attached "
+                       + "browser tab.")
         XCTAssertEqual(SettingsModelsPane.setappAIUsageNote, "Setapp AI replies use credits and aren't counted here.")
         XCTAssertEqual(SetappAICreditsRow.loadingText, "Loading your credits…")
         XCTAssertEqual(SettingsModelsPane.showCostSubtitle(usesSetappAI: true),
@@ -493,15 +494,26 @@ final class SettingsPanesTests: XCTestCase {
                        "An estimate appears next to a reply when you point at it.")
     }
 
-    func testTheWebToggleSaysHaikuDoesntSearchOnSetappAI() {
+    func testTheWebToggleSaysHaikuDoesntSearchOrReadPagesOnSetappAI() {
         XCTAssertEqual(SettingsModelsPane.setappAIWebSearchSubtitle(for: .haiku45),
                        "No web search on Haiku 4.5 with Setapp AI")
         XCTAssertEqual(SettingsModelsPane.setappAIWebSearchSubtitle(for: .haiku45),
                        HeaderModelMenu.webSearchCaption(model: .haiku45, provider: .setappAI),
                        "Settings and the header menu say the same")
         for model in [ModelOption.opus5, .sonnet5] {
-            XCTAssertEqual(SettingsModelsPane.setappAIWebSearchSubtitle(for: model), "Let Claude look things up.")
+            XCTAssertEqual(SettingsModelsPane.setappAIWebSearchSubtitle(for: model), "Let Claude look things up and read pages.")
+            XCTAssertEqual(SettingsModelsPane.setappAIWebSearchSubtitle(for: model), SettingsModelsPane.webAccessSubtitle,
+                           "on Setapp AI the toggle says what it says on the user's own key")
+            // The caption's claim: Otto offers its web fetch on these models through Setapp AI, and not on Haiku.
+            let request = MessagesRequest(model: model, system: "", messages: [], maxTokens: 1, effort: .low, webAccess: true)
+            XCTAssertTrue(SetappWebFetch.isOffered(request, options: .standard), model.rawValue)
         }
+        let haiku = MessagesRequest(model: .haiku45, system: "", messages: [], maxTokens: 1, effort: .low, webAccess: true)
+        XCTAssertFalse(SetappWebFetch.isOffered(haiku, options: .standard))
+        // "without your cookies": the session Otto reads pages with stores and sends none.
+        let configuration = WebPageReader.makeConfiguration(timeout: WebPageReader.timeout, protocolClasses: nil)
+        XCTAssertNil(configuration.httpCookieStorage)
+        XCTAssertFalse(configuration.httpShouldSetCookies)
     }
 
     func testTheAnthropicInvoiceShowsOnlyWithOwnKeyUsage() {
