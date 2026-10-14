@@ -259,6 +259,33 @@ final class UsagePricingTests: XCTestCase {
                        UsageTotals(usage: TokenUsage(input: 1_000), costNanos: 0, unpricedTokens: 1_000))
     }
 
+    func testSetappAIIdsAreNeverPricedNorCountedAsUnpriced() throws {
+        for option in ModelOption.allCases {
+            XCTAssertNil(ModelPricing.price(for: option.setappAIModelID), option.rawValue)
+            XCTAssertNil(ModelPricing.canonicalID(for: option.setappAIModelID), option.rawValue)
+            XCTAssertNotNil(ModelPricing.price(for: option.rawValue), option.rawValue)
+        }
+        XCTAssertNil(ModelPricing.price(for: "anthropic/claude-opus-5-20260901"))
+
+        let request = try XCTUnwrap(RequestUsage.parse(
+            usage: ["input_tokens": 1_000, "output_tokens": 200, "server_tool_use": ["web_search_requests": 1]],
+            requestedModel: "claude-opus-5", servedModel: "anthropic/claude-opus-5", stopReason: "end_turn",
+            isPartial: false, isDemo: false))
+        let line = try XCTUnwrap(request.lines.first)
+        XCTAssertEqual(line.model, "anthropic/claude-opus-5")
+        XCTAssertNil(line.costNanos)
+        XCTAssertTrue(line.viaSetappAI)
+        // Paid in credits: no dollar cost, and not an unpriced model either.
+        XCTAssertEqual(UsageTotals(line: line),
+                       UsageTotals(usage: TokenUsage(input: 1_000, output: 200, webSearches: 1), costNanos: 0,
+                                   unpricedTokens: 0))
+
+        var answer = AnswerUsage(messageID: UUID())
+        answer.add(request)
+        XCTAssertTrue(answer.viaSetappAI)
+        XCTAssertFalse(AnswerUsage(messageID: UUID()).viaSetappAI)
+    }
+
     // MARK: - Answers
 
     func testAnswerMergesRequestsByModelAndTracksTheServingModel() {

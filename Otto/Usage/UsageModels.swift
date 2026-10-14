@@ -77,11 +77,16 @@ extension TokenUsage {
 
 // MARK: - Priced lines
 
-/// Tokens of one model and what they cost. `costNanos` is nil when the model isn't in `ModelPricing.table`.
+/// Tokens of one model and what they cost. `costNanos` is nil when the model isn't in `ModelPricing.table`, which
+/// includes every Setapp AI line.
 struct PricedLine: Equatable, Codable, Sendable {
     var model: String
     var usage: TokenUsage
     var costNanos: Int64?
+
+    /// Served through Setapp AI (`ModelProvenance`): paid in the member's credits, so it has no dollar cost and
+    /// isn't an unpriced model either.
+    var viaSetappAI: Bool { ModelProvenance.split(model).viaSetappAI }
 }
 
 /// The billable attempts of one Messages API response.
@@ -167,6 +172,9 @@ struct AnswerUsage: Equatable, Sendable {
     /// Model of the last line.
     var servedModel: String? { lines.last?.model }
 
+    /// The latest request went through Setapp AI: the footer names the model and Setapp AI, never a cost.
+    var viaSetappAI: Bool { lines.last?.viaSetappAI ?? false }
+
     /// All lines' tokens added up.
     var usage: TokenUsage { lines.reduce(TokenUsage()) { $0 + $1.usage } }
 
@@ -196,7 +204,8 @@ struct UsageTotals: Equatable, Codable, Sendable {
     var usage = TokenUsage()
     /// Cost of the priced tokens.
     var costNanos: Int64 = 0
-    /// Tokens of models with no list price (also counted in `usage`, never in `costNanos`).
+    /// Tokens of models with no list price (also counted in `usage`, never in `costNanos`). Setapp AI tokens are
+    /// never unpriced: they are paid in credits, and the ledger keeps them out of its totals altogether.
     var unpricedTokens = 0
     var replies = 0
 
@@ -211,8 +220,9 @@ struct UsageTotals: Equatable, Codable, Sendable {
 
     /// The totals of one priced line (no reply counted).
     init(line: PricedLine) {
+        let isUnpriced = line.costNanos == nil && !line.viaSetappAI
         self.init(usage: line.usage, costNanos: line.costNanos ?? 0,
-                  unpricedTokens: line.costNanos == nil ? line.usage.totalTokens : 0)
+                  unpricedTokens: isUnpriced ? line.usage.totalTokens : 0)
     }
 
     init(usage: TokenUsage = TokenUsage(), costNanos: Int64 = 0, unpricedTokens: Int = 0, replies: Int = 0) {

@@ -381,6 +381,17 @@ final class UsageComponentsTests: XCTestCase {
         XCTAssertNil(AnswerCostLabel.text(answer: nil, fallbackModel: ""))
     }
 
+    func testCostLabelOfASetappAIReplyNamesSetappAIWithoutACost() throws {
+        let setapp = answer(model: ModelOption.sonnet5.setappAIModelID, searches: 1)
+        XCTAssertEqual(AnswerCostLabel.text(answer: setapp, fallbackModel: nil), "Sonnet 5 · Setapp AI")
+        let tooltip = try XCTUnwrap(AnswerCostLabel.tooltip(answer: setapp))
+        XCTAssertFalse(tooltip.contains("$"), tooltip)
+        XCTAssertTrue(tooltip.hasSuffix(CostFormatter.setappAINote), tooltip)
+        // Before the ledger knows the reply, the message's own Setapp AI id reads the same way.
+        XCTAssertEqual(AnswerCostLabel.text(answer: nil, fallbackModel: ModelOption.opus5.setappAIModelID),
+                       "Opus 5 · Setapp AI")
+    }
+
     func testUsageMenuRows() {
         let today = UsageTotals(costNanos: 120_000_000, replies: 8)
         XCTAssertEqual(UsageMenuItems.todayTitle(today), "Today  ≈12¢ · 8 replies")

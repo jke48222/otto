@@ -59,9 +59,11 @@ enum ModelPricing {
         canonicalID(for: model).flatMap { table[$0] }
     }
 
-    /// The table key `price(for:)` resolves `model` to, or nil when the model isn't priced.
+    /// The table key `price(for:)` resolves `model` to, or nil when the model isn't priced. A Setapp AI id
+    /// ("anthropic/claude-opus-5", `ModelProvenance`) is never priced: Setapp bills it in credits.
     static func canonicalID(for model: String) -> String? {
         let id = strippingDemoSuffix(model)
+        guard !ModelProvenance.split(id).viaSetappAI else { return nil }
         if table[id] != nil { return id }
         return table.keys
             .filter { id.hasPrefix($0 + "-") }

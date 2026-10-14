@@ -4,7 +4,7 @@
 //
 //  The ledger on a fixed UTC calendar with an injected clock: answers and day buckets, reply counting,
 //  range totals, the file round trip and its permissions, the debounced write, quarantine of damaged
-//  files, the 400-day archive, demo replies, reset, and refusing an unsafe ledger file.
+//  files, the 400-day archive, demo and Setapp AI replies, reset, and refusing an unsafe ledger file.
 //
 
 import XCTest
@@ -326,6 +326,63 @@ import XCTest
     }
 
     // MARK: - Helpers
+
+    // MARK: - Setapp AI
+
+    func testSetappAIRepliesKeepTheirFooterButStayOutOfTheTotals() throws {
+        let url = ledgerURL
+        let ledger = makeLedger(fileURL: url)
+        let id = UUID()
+        // What ChatSession reports for a gateway reply: Otto asked for the model, Setapp AI served its own id.
+        ledger.record(usage: ["input_tokens": 1_000, "output_tokens": 500, "cache_read_input_tokens": 4_000,
+                              "server_tool_use": ["web_search_requests": 2]],
+                      requestedModel: "claude-opus-5", servedModel: "anthropic/claude-opus-5", stopReason: "end_turn",
+                      isPartial: false, messageID: id, at: clock)
+        ledger.finishAnswer(messageID: id)
+        ledger.flush()
+
+        let answer = try XCTUnwrap(ledger.answer(for: id))
+        XCTAssertTrue(answer.viaSetappAI)
+        XCTAssertFalse(answer.fellBack, "the gateway's id for the requested model is not a fallback")
+        XCTAssertNil(answer.totalNanos)
+        XCTAssertEqual(CostFormatter.summary(answer), "Opus 5 · Setapp AI")
+        XCTAssertEqual(AnswerCostLabel.text(answer: answer, fallbackModel: nil), "Opus 5 · Setapp AI")
+
+        // No dollars, no unpriced tokens, no reply count, nothing on disk.
+        XCTAssertTrue(ledger.days.isEmpty)
+        XCTAssertEqual(ledger.today, UsageTotals())
+        XCTAssertEqual(ledger.thisMonth, UsageTotals())
+        XCTAssertTrue(ledger.totalsByModel(from: .distantPast, to: .distantFuture).isEmpty)
+        XCTAssertEqual(UsageMenuItems.todayTitle(ledger.today), "Today  0¢ · 0 replies")
+        XCTAssertEqual(UsageMenuItems.monthTitle(ledger.thisMonth), "This month  0¢")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+    }
+
+    func testDollarTotalsCountOnlyOwnKeyReplies() throws {
+        let url = ledgerURL
+        let ledger = makeLedger(fileURL: url)
+        let ownKey = UUID()
+        ledger.record(usage: opusUsage, requestedModel: "claude-opus-5", servedModel: "claude-opus-5",
+                      stopReason: "end_turn", isPartial: false, messageID: ownKey, at: clock)
+        ledger.finishAnswer(messageID: ownKey)
+        for _ in 0..<3 {
+            let setapp = UUID()
+            ledger.record(usage: opusUsage, requestedModel: "claude-opus-5", servedModel: "anthropic/claude-opus-5",
+                          stopReason: "end_turn", isPartial: false, messageID: setapp, at: clock)
+            // A reply cut off partway reports again as partial; it still never counts.
+            ledger.record(usage: ["input_tokens": 300], requestedModel: "claude-opus-5",
+                          servedModel: "anthropic/claude-opus-5", stopReason: nil, isPartial: true, messageID: setapp,
+                          at: clock)
+            ledger.finishAnswer(messageID: setapp)
+        }
+        ledger.flush()
+
+        XCTAssertEqual(ledger.today, UsageTotals(usage: TokenUsage(input: 1_000, output: 500), costNanos: 17_500_000,
+                                                 replies: 1))
+        XCTAssertEqual(ledger.days["2026-09-27"]?.keys.sorted(), ["claude-opus-5"])
+        let text = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertFalse(text.contains("anthropic/"), text)
+    }
 
     private let opusUsage: JSONValue = ["input_tokens": 1_000, "output_tokens": 500]
 
