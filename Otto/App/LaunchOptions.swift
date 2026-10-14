@@ -12,6 +12,8 @@
 //                        scripts/record_promo.swift says go (handshake files live in <dir>)
 //    --promo-scene <n>   which promo scene to play (default: hero)
 //    --promo-stills <dir> render the marketing stills (docs/media) into <dir> and exit
+//    --setapp-ai-check <dir>  (Debug, Setapp build) round-trip Setapp AI requests and events through the Setapp
+//                        Framework's own types offline, write report.json into <dir>, and exit (0 = all passed)
 //    --license-state <s>  (Debug, licensing builds) run the license engine on an in-memory store seeded for
 //                        one state: trial, trial-last-day, ended, removed, licensed, overdue, required or
 //                        keychain-error; the Keychain is never read or written

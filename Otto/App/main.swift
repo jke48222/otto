@@ -7,6 +7,14 @@
 
 import AppKit
 
+#if DEBUG && OTTO_SETAPP
+// The offline Setapp AI adapter check (Otto/Debug/SetappAICheck.swift) runs before NSApplication does, so the
+// Setapp Framework never starts and nothing appears on screen.
+if let directory = SetappAICheck.directory(in: CommandLine.arguments) {
+    SetappAICheck.runAndExit(reportingTo: directory)
+}
+#endif
+
 MainActor.assumeIsolated {
     let application = NSApplication.shared
     let delegate = AppDelegate()

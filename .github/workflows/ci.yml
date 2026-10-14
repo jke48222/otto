@@ -223,6 +223,13 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             build
 
+      # The Setapp test host can't run (the Setapp Framework shows its activation dialog), so the Setapp AI adapter
+      # is checked by the Debug app itself, before the framework starts: offline, nothing on screen.
+      - name: Setapp AI adapter check
+        if: matrix.flavor == 'setapp'
+        run: |
+          build/setapp/Build/Products/Debug/Otto.app/Contents/MacOS/Otto --setapp-ai-check build/setapp-ai-check
+
       # (a) With the committed configuration, the Release build fails if and only if the checker reports a problem,
       # and a failing build's log carries every error line the checker printed.
       - name: Loud failure with the committed configuration

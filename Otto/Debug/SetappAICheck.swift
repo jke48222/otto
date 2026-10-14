@@ -396,12 +396,17 @@ final class ScriptedSetappSDK: @unchecked Sendable {
     let finalError: Error?
     let wrapsErrors: Bool
     let holdsOpen: Bool
+    /// Fail an undecodable line the way the connector's binary does: `SetappAIError(.general)` over its parsing
+    /// error, whose text ends with ", line: <the event>".
+    let failsLikeTheConnector: Bool
 
-    init(lines: [String], finalError: Error? = nil, wrapsErrors: Bool = false, holdsOpen: Bool = false) {
+    init(lines: [String], finalError: Error? = nil, wrapsErrors: Bool = false, holdsOpen: Bool = false,
+         failsLikeTheConnector: Bool = false) {
         self.lines = lines
         self.finalError = finalError
         self.wrapsErrors = wrapsErrors
         self.holdsOpen = holdsOpen
+        self.failsLikeTheConnector = failsLikeTheConnector
     }
 
     var receivedParameters: [SetappAIAPI.Responses.CreateRequestParameters] { lock.withLock { parameters } }
@@ -426,7 +431,13 @@ final class ScriptedSetappSDK: @unchecked Sendable {
                     }
                     continuation.yield(event)
                 } catch {
-                    continuation.finish(throwing: wrap(error))
+                    if failsLikeTheConnector {
+                        let parse = FakeWebServiceError.parsingError(
+                            message: "[ModelWebService] Failed to parse SSE event: \(error), line: \(line)")
+                        continuation.finish(throwing: SetappAIError(code: .general, underlyingError: parse, recoveryURL: nil))
+                    } else {
+                        continuation.finish(throwing: wrap(error))
+                    }
                     return
                 }
             }
@@ -557,6 +568,8 @@ final class SetappAICheck {
         await step("account: state mapping", accountStateMapping)
         await step("account: an unconfigured build asks nothing", accountUnconfigured)
         await step("account: purchase page uses the SDK link or falls back", accountPurchase)
+        await step("ResponsesRequestBuilder bodies round-trip through the SDK", builderBodies)
+        await step("every fixture stream ends the same through the SDK, the transport and the client", fixturesEndToEnd)
 
         let report = Report(startedAt: startedAt, sdk: "Setapp Framework 5.5.0 (SetappAI)",
                             passed: steps.filter(\.passed).count, failed: steps.filter { !$0.passed }.count,
@@ -829,6 +842,124 @@ final class SetappAICheck {
         expectEqual(SendableJSON.value(serialized), ["one": 1], "SendableJSON reads it as a number")
         expectEqual(SendableJSON.value(NSNull()), .null, "NSNull")
         expectEqual(SendableJSON.value([true, 3, 2.5, "s"] as [Any]), [true, 3, 2.5, "s"], "Swift values")
+    }
+
+    // MARK: End to end
+
+    /// Bodies built by the real `ResponsesRequestBuilder` from Otto's own content blocks, so the round trip covers
+    /// what ships rather than hand-written samples.
+    private func builderBodies() async throws {
+        let pngData = String(SetappAdapterSamples.pngDataURL.dropFirst("data:image/png;base64,".count))
+        let png: [JSONValue] = [["type": "image",
+                                 "source": ["type": "base64", "media_type": "image/png", "data": .string(pngData)]]]
+        let pdf: JSONValue = ["type": "document", "title": "Lease",
+                              "source": ["type": "base64", "media_type": "application/pdf", "data": "JVBERi0xLjQK"]]
+        let notes: JSONValue = ["type": "document", "title": "notes.txt",
+                                "source": ["type": "text", "media_type": "text/plain", "data": "Buy milk"]]
+        let reasoning: JSONValue = ["id": "rs_1", "type": "reasoning", "encrypted_content": "gAAAAB",
+                                    "summary": [["type": "summary_text", "text": "Checking the calendar."]]]
+        let toolRound: [JSONValue] = [
+            ["role": "user", "content": .array(png + [pdf, notes, ["type": "text", "text": "Add the dentist on Friday."]])],
+            ["role": "assistant", "content": [
+                ["type": "otto_responses_reasoning", "item": reasoning],
+                ["type": "tool_use", "id": "call_1", "name": "calendar_add_event", "input": ["title": "Dentist"]],
+            ]],
+            ["role": "user", "content": [
+                ["type": "tool_result", "tool_use_id": "call_1", "content": [["type": "text", "text": "Added."]]],
+            ]],
+        ]
+        // An Anthropic-format definition, as ToolRegistry.definitions hands it to every client.
+        let calendar = SetappAdapterSamples.calendarTool
+        let tools: [JSONValue] = [[
+            "name": calendar["name"] ?? "", "description": calendar["description"] ?? "",
+            "input_schema": calendar["parameters"] ?? [:], "eager_input_streaming": true, "strict": true,
+        ]]
+        let requests: [(String, MessagesRequest)] = [
+            ("plain", MessagesRequest(model: .opus5, system: "You are Otto.", messages: [
+                ["role": "user", "content": [["type": "text", "text": "Hi"]]]], maxTokens: 64_000, effort: .medium,
+                webAccess: true)),
+            ("tool round", MessagesRequest(model: .sonnet5, system: "You are Otto.", messages: toolRound,
+                maxTokens: 64_000, effort: .high, webAccess: true, clientTools: tools)),
+            ("haiku wrap-up", MessagesRequest(model: .haiku45, system: "", messages: toolRound, maxTokens: 32_000,
+                effort: .low, webAccess: false, clientTools: tools, toolChoice: ["type": "none"])),
+        ]
+        for (name, request) in requests {
+            for options in [ResponsesRequestOptions.standard, .compatible] {
+                let body = ResponsesRequestBuilder.body(for: request, options: options)
+                let wire = try SetappSDKRequest.wireBody(SetappSDKRequest.parameters(from: body))
+                let intended = SetappSDKRequest.intendedBody(body)
+                let label = "\(name) (\(options == .standard ? "standard" : "compatible"))"
+                expectEqual(SetappAdapterJSON.differences(SetappAdapterJSON.normalized(intended),
+                                                          SetappAdapterJSON.normalized(wire)), [],
+                            "\(label) round-trips through the SDK")
+            }
+        }
+        note("\(requests.count) requests × standard and compatible options")
+    }
+
+    /// Each shared fixture, played through the scripted SDK (decoded the way its connector decodes), the transport and
+    /// `ResponsesClient`, must end the way the accumulator ends when it reads the raw events itself.
+    private func fixturesEndToEnd() async throws {
+        let request = MessagesRequest(model: .opus5, system: "You are Otto.",
+                                      messages: [["role": "user", "content": [["type": "text", "text": "Hi"]]]],
+                                      maxTokens: 64_000, effort: .medium, webAccess: true)
+        for (name, lines) in ResponsesFixtures.all {
+            for (index, line) in lines.enumerated() {
+                do {
+                    _ = try SetappSDKCoding.decoder().decode(SetappAIAPI.StreamingEvent.self, from: Data(line.utf8))
+                } catch {
+                    note("\(name) line \(index) (\(SetappAdapterJSON.decode(line).typeName ?? "?")) doesn't decode: \(error)")
+                }
+            }
+            var expected = ResponsesStreamAccumulator(requestedModel: .opus5)
+            var expectedText = ""
+            var expectedError: LLMError?
+            do {
+                for line in lines {
+                    for event in try expected.handle(SetappAdapterJSON.decode(line)) {
+                        if case .textDelta(let text) = event { expectedText += text }
+                    }
+                }
+            } catch {
+                expectedError = error as? LLMError
+            }
+
+            let client = ResponsesClient(transport: ScriptedSetappSDK(lines: lines, failsLikeTheConnector: true).transport(),
+                                         retryDelays: [])
+            var text = ""
+            var result: StreamResult?
+            var thrown: Error?
+            do {
+                for try await event in client.stream(request) {
+                    switch event {
+                    case .textDelta(let delta): text += delta
+                    case .completed(let completed): result = completed
+                    default: break
+                    }
+                }
+            } catch {
+                thrown = error
+            }
+
+            if let expectedError {
+                expectEqual(thrown as? LLMError, expectedError, "\(name) fails the same way")
+                continue
+            }
+            expect(thrown == nil, "\(name) finishes: \(String(describing: thrown))")
+            guard let result, expected.isComplete else {
+                fail("\(name) has no result")
+                continue
+            }
+            let reference = expected.result()
+            expectEqual(text, expectedText, "\(name) streams the same text")
+            expectEqual(result.content, reference.content, "\(name) stores the same blocks")
+            expectEqual(result.stopReason, reference.stopReason, "\(name) stops the same way")
+            expectEqual(result.model, reference.model, "\(name) names the same model")
+            if result.usage != reference.usage {
+                note("\(name): usage differs through the SDK (\(result.usage?.encodedString() ?? "none") vs \(reference.usage?.encodedString() ?? "none"))")
+            }
+        }
+        note("\(ResponsesFixtures.all.count) fixture streams")
     }
 
     // MARK: Transport

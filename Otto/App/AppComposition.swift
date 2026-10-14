@@ -186,6 +186,12 @@ final class AppComposition {
             flavor: isDemo ? FlavorServices() : liveFlavorServices(),
             makeClient: {
                 if LaunchOptions.demo { return MockLLMClient() }
+                #if OTTO_SETAPP
+                // Setapp AI (§19) needs no key; the transport reports a build without J22 as `.notConfigured`.
+                if settings.effectiveProvider == .setappAI {
+                    return ResponsesClient(transport: SetappSDKTransport())
+                }
+                #endif
                 guard let apiKey = settings.resolvedAPIKey else { throw LLMError.missingAPIKey }
                 return AnthropicClient(apiKey: apiKey)
             }
@@ -378,6 +384,9 @@ final class AppComposition {
                                      notifications: notifications, sendGate: flavor.sendGate)
         let viewModel = NotchViewModel(settings: settings, chat: chat, services: services)
         self.viewModel = viewModel
+        #if OTTO_SETAPP
+        viewModel.setappAI = flavor.setappAI
+        #endif
         if !isLive {
             viewModel.openExternalURL = { externalURLs.record($0) }
         }
@@ -409,6 +418,9 @@ final class AppComposition {
         #endif
         #if OTTO_SPARKLE || OTTO_SETAPP
         settingsServices.updater = flavor.updater
+        #endif
+        #if OTTO_SETAPP
+        settingsServices.setappAI = flavor.setappAI
         #endif
         let settingsWindowController = SettingsWindowController(settings: settings, services: settingsServices)
         if !isLive {
@@ -679,6 +691,11 @@ final class AppComposition {
         #if OTTO_SPARKLE || OTTO_SETAPP
         var updater: UpdaterControlling? = nil
         #endif
+        #if OTTO_SETAPP
+        /// Setapp AI (§19): the member's credits and the way to buy more. nil in the demo, inert, snapshot and
+        /// self-test graphs.
+        var setappAI: (any SetappAIAccountModel)? = nil
+        #endif
 
         /// What pauses sending (`NotchServices.sendGate`): the license engine, and nothing in the other builds.
         var sendGate: ComposerGating? {
@@ -753,6 +770,7 @@ final class AppComposition {
         #endif
         #if OTTO_SETAPP
         installSetappUsageReports()
+        installSetappCreditRefresh()
         #endif
     }
 
@@ -788,6 +806,20 @@ final class AppComposition {
     }
     #endif
 
+    #if OTTO_SETAPP
+    /// A reply that ran out of Setapp AI credits makes the balance in Settings stale, so it is fetched again
+    /// (past the SDK's cache) as soon as that failure shows.
+    private func installSetappCreditRefresh() {
+        guard let account = flavor.setappAI else { return }
+        let chat = chat
+        let creditsLoop = ObservationLoop(read: { chat.messages.last?.state }) { state in
+            guard case .failed(let copy)? = state, copy == SetappAIFailure.insufficientCredits.copy else { return }
+            account.refreshCredits(force: true)
+        }
+        cancellations.append { creditsLoop.cancel() }
+    }
+    #endif
+
     /// The live graph's flavor parts (never in demo mode): the license engine and the flavor's updater. Nothing
     /// starts until `start()`.
     private static func liveFlavorServices() -> FlavorServices {
@@ -799,6 +831,7 @@ final class AppComposition {
         flavor.updater = SparkleUpdater()
         #elseif OTTO_SETAPP
         flavor.updater = SetappUpdater()
+        flavor.setappAI = LiveSetappAIAccount()
         #endif
         return flavor
     }
