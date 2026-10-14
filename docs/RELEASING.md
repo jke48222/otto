@@ -63,6 +63,7 @@ with its number. `Config/Commercial.xcconfig` and `site/commerce.json` hold the 
 | J19 | The launch window: start, end (the Polar discount's own end) and the time zone the site prints | `commerce.json` `launch.*` |
 | J20 | The Polar canary key (below) | your login Keychain |
 | J21 | The Gumroad canary key (below) | your login Keychain |
+| J22 | A Setapp OAuth client for Otto (developer account → Apps → OAuth Clients → Add new), for Setapp AI | `OTTO_SETAPP_AI_CLIENT_ID` and `OTTO_SETAPP_AI_CLIENT_SECRET` in `Config/Local.xcconfig`, never in git |
 
 `scripts/check_commercial_config.sh --flavor paid --configuration Release --xcconfig Config/Commercial.xcconfig`
 lists every setting that is still a placeholder or malformed. A Release build of either flavor stops with
@@ -423,7 +424,14 @@ Setapp build through Setapp's test flow ("Testing your apps" in Setapp's docs) a
 - your usage shows in Setapp's dashboard;
 - `lipo -archs` on `Otto.app/Contents/MacOS/Otto` prints `x86_64 arm64`;
 - it works on the latest macOS;
-- with the direct Otto running, launching the Setapp Otto quits itself and opens the direct one's notch.
+- with the direct Otto running, launching the Setapp Otto quits itself and opens the direct one's notch;
+- Setapp AI (J22 set, signed in to Setapp with AI credits): Settings → Models starts on Setapp AI and shows
+  your credit balance; a question streams an answer; "search the web for …" on Opus 5 shows a search row and
+  sources; "add … to my calendar" with Actions on shows the approval card and finishes after you approve;
+  a PDF and an image attach and get answered; the hover label reads "Opus 5 · Setapp AI" and the dollar totals
+  don't move; switching to your own key mid-conversation and asking again works;
+- Setapp AI failures: with no credits left the reply offers **Get Credits**; with Setapp quit the reply asks
+  you to open Setapp, and Retry works once it's back.
 
 ## Support
 
@@ -813,7 +821,7 @@ relaunches on a Mac that bought at launch.
 
 After HM3, when you choose; doesn't block anything.
 
-- **Setapp:** J14, then the checks in [Setapp](#setapp) before the first upload, then the upload.
+- **Setapp:** J14 and J22, then the checks in [Setapp](#setapp) before the first upload, then the upload.
 - **Gumroad:** publish the product with Discover off and the link unshared. Buy it once with a 100% offer
   code and save that key as the Gumroad canary (J21), then set `OTTO_GUMROAD_PRODUCT_ID` (J13). Cut the next
   1.1.x release, whose preflight checks both canaries, upload its DMG to Gumroad, and turn Discover on.
