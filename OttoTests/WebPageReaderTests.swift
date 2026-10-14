@@ -308,14 +308,80 @@ final class WebPageReaderTests: XCTestCase {
         XCTAssertFalse(page.isPartial)
     }
 
-    func testLinksFollowTheBaseAddressAndStopAtTheLimit() {
+    func testLinksFollowTheBaseAddressAndStopAtTheLimit() throws {
         let page = URL(string: "https://docs.example/a/b")!
-        let base = HTMLPageInfo.links(in: #"<base href="https://cdn.example/root/"><a href="x">X</a>"#, pageURL: page)
+        let base = try HTMLPageInfo.links(in: #"<base href="https://cdn.example/root/"><a href="x">X</a>"#, pageURL: page)
         XCTAssertEqual(base.map(\.url.absoluteString), ["https://cdn.example/root/x"])
         let many = (0..<300).map { #"<a href="/p\#($0)">Page \#($0)</a>"# }.joined()
-        let links = HTMLPageInfo.links(in: many, pageURL: page)
+        let links = try HTMLPageInfo.links(in: many, pageURL: page)
         XCTAssertEqual(links.count, HTMLPageInfo.maxLinks)
         XCTAssertEqual(links.first, WebLink(text: "Page 0", url: URL(string: "https://docs.example/p0")!))
+    }
+
+    func testAttributeSpellingsStillParse() throws {
+        let page = URL(string: "https://docs.example/")!
+        let html = #"<A class="x" HREF = 'https://one.example/'>One</A> <a data-x=1 href=https://two.example/?a=1&amp;b=2 "#
+            + #"target=_blank>Two</a> <a id=y href="/three" title='a > b'>Three</a>"#
+        XCTAssertEqual(try HTMLPageInfo.links(in: html, pageURL: page).map(\.url.absoluteString),
+                       ["https://one.example/", "https://two.example/?a=1&b=2", "https://docs.example/three"])
+        XCTAssertEqual(HTMLPageInfo.title(in: "<head><TITLE lang=en>Hello &amp; welcome</title ></head>"),
+                       "Hello & welcome")
+        XCTAssertNil(HTMLPageInfo.title(in: "<title>Never closed"))
+    }
+
+    /// Links are looked for in the first 1 MB of the source, and an address longer than 4,096 characters is skipped.
+    func testTheLinkSearchIsBounded() throws {
+        let page = URL(string: "https://docs.example/")!
+        let filler = String(repeating: "x", count: HTMLPageInfo.linkSearchLength)
+        let html = #"<a href="https://early.example/">Early</a>"# + filler + #"<a href="https://late.example/">Late</a>"#
+        XCTAssertEqual(try HTMLPageInfo.links(in: html, pageURL: page).map(\.url.absoluteString),
+                       ["https://early.example/"])
+        let long = "https://long.example/" + String(repeating: "a", count: HTMLPageInfo.maxHrefCharacters)
+        XCTAssertEqual(try HTMLPageInfo.links(in: #"<a href="\#(long)">L</a><a href="/ok">OK</a>"#, pageURL: page)
+            .map(\.url.absoluteString), ["https://docs.example/ok"])
+    }
+
+    /// A page made of tags that never close costs one pass. The old patterns took 16 s on 60 KB of `<a ` and more
+    /// than two minutes on 180 KB, and nothing could stop them.
+    func testHostileMarkupIsReadInLinearTime() throws {
+        let fiveMB = 5 * 1_024 * 1_024
+        func repeated(_ unit: String) -> String {
+            String(repeating: unit, count: (fiveMB + unit.utf8.count - 1) / unit.utf8.count)
+        }
+        let runs = [
+            repeated("<a "), repeated("<a href=x "), repeated(#"<a href="x" "#), repeated("<title "),
+            "<title>" + repeated("<title>"), repeated("<base "), repeated("<base href=y "),
+            repeated("<a href=x <title <base href=y "), repeated("<a\thref\t=\t"),
+        ]
+        let url = try XCTUnwrap(URL(string: Self.pageURL))
+        for run in runs {
+            let data = Data((run + "<p>Readable</p>").utf8)
+            XCTAssertGreaterThanOrEqual(data.count, fiveMB)
+            let start = ContinuousClock.now
+            _ = try? WebPageReader.page(from: data, mimeType: "text/html", charset: "utf-8", url: url, isPartial: false)
+            let elapsed = ContinuousClock.now - start
+            XCTAssertLessThan(elapsed, .seconds(1), "\(run.prefix(24))… took \(elapsed)")
+        }
+    }
+
+    /// A stopped read (or one past its deadline) ends between the steps of the conversion and inside the link search.
+    func testTheConversionStopsAtACheckpoint() throws {
+        struct Stopped: Error {}
+        let url = try XCTUnwrap(URL(string: Self.pageURL))
+        let html = Data(((0..<500).map { #"<a href="/p\#($0)">Page</a>"# }.joined()).utf8)
+        var calls = 0
+        XCTAssertThrowsError(try WebPageReader.page(from: html, mimeType: "text/html", charset: nil, url: url,
+                                                    isPartial: false, checkpoint: { calls += 1; throw Stopped() })) {
+            XCTAssertTrue($0 is Stopped)
+        }
+        XCTAssertEqual(calls, 1, "the first checkpoint, after decoding")
+        calls = 0
+        XCTAssertThrowsError(try HTMLPageInfo.links(in: String(decoding: html, as: UTF8.self), pageURL: url,
+                                                    limit: 1_000, checkpoint: {
+            calls += 1
+            if calls == 2 { throw Stopped() }
+        })) { XCTAssertTrue($0 is Stopped) }
+        XCTAssertEqual(calls, 2, "every 100 anchors")
     }
 
     func testTheHTMLCharsetIsHonored() async throws {

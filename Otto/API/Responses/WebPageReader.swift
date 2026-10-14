@@ -217,11 +217,14 @@ struct WebPageReader: WebPageReading {
     // MARK: - Reading
 
     func read(_ url: URL) async throws -> WebPage {
-        let deadline = timeout
+        let seconds = max(0, timeout)
+        let deadline = ContinuousClock.now + .milliseconds(Int64(seconds * 1_000))
         return try await withThrowingTaskGroup(of: WebPage.self) { group in
-            group.addTask { try await self.follow(url) }
+            // The group returns only once both tasks have ended: the reading task stops at its next checkpoint when the
+            // deadline passes (or the reply is stopped), because synchronous work can't be interrupted from outside.
+            group.addTask { try await self.follow(url, deadline: deadline) }
             group.addTask {
-                try await Task.sleep(nanoseconds: UInt64(max(0, deadline) * 1_000_000_000))
+                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
                 throw WebPageReadError.timedOut
             }
             defer { group.cancelAll() }
@@ -230,8 +233,14 @@ struct WebPageReader: WebPageReading {
         }
     }
 
+    /// Throws when the read was stopped or its deadline passed.
+    private static func checkpoint(_ deadline: ContinuousClock.Instant) throws {
+        try Task.checkCancellation()
+        if ContinuousClock.now >= deadline { throw WebPageReadError.timedOut }
+    }
+
     /// Requests `start`, following each redirect only after checking where it goes.
-    private func follow(_ start: URL) async throws -> WebPage {
+    private func follow(_ start: URL, deadline: ContinuousClock.Instant) async throws -> WebPage {
         var url = start
         var redirects = 0
         while true {
@@ -266,8 +275,9 @@ struct WebPageReader: WebPageReading {
                 Self.logger.error("A page came from a local address after its host resolved to a public one")
                 throw WebPageReadError.blockedAddress
             }
+            try Self.checkpoint(deadline)
             return try Self.page(from: data, mimeType: mimeType, charset: http.textEncodingName, url: url,
-                                 isPartial: isPartial)
+                                 isPartial: isPartial, checkpoint: { try Self.checkpoint(deadline) })
         }
     }
 
@@ -379,8 +389,10 @@ struct WebPageReader: WebPageReading {
         }
     }
 
-    /// The readable page in `data`. Internal for tests.
-    static func page(from data: Data, mimeType: String?, charset: String?, url: URL, isPartial: Bool) throws -> WebPage {
+    /// The readable page in `data`. Internal for tests. `checkpoint` runs between the steps of the conversion (and
+    /// inside the link search) and throws to stop it: each step is bounded, and none can be interrupted part way.
+    static func page(from data: Data, mimeType: String?, charset: String?, url: URL, isPartial: Bool,
+                     checkpoint: () throws -> Void = {}) throws -> WebPage {
         switch try contentKind(mimeType: mimeType, data: data) {
         case .pdf:
             guard !isPartial else { throw WebPageReadError.pdfTooLarge }
@@ -389,10 +401,14 @@ struct WebPageReader: WebPageReading {
             guard let source = AttachmentLoader.decodeHTML(data, declaredCharset: charset, fileURL: nil) else {
                 throw WebPageReadError.unreadable
             }
+            try checkpoint()
             let text = HTMLText.plainText(fromHTML: source, maxOutputBytes: maxHTMLTextBytes)
             guard text.contains(where: { !$0.isWhitespace }) else { throw WebPageReadError.noText }
-            return WebPage(url: url, title: HTMLPageInfo.title(in: source), text: text,
-                           links: HTMLPageInfo.links(in: source, pageURL: url), isPartial: isPartial)
+            try checkpoint()
+            let title = HTMLPageInfo.title(in: source)
+            try checkpoint()
+            let links = try HTMLPageInfo.links(in: source, pageURL: url, checkpoint: checkpoint)
+            return WebPage(url: url, title: title, text: text, links: links, isPartial: isPartial)
         case .text:
             let declared = charset.flatMap(HTMLText.encoding(ianaName:))
             guard let text = declared.flatMap({ String(data: data, encoding: $0) })
@@ -570,22 +586,30 @@ private final class FetchTaskDelegate: NSObject, URLSessionTaskDelegate, @unchec
 
 // MARK: - HTML title and links
 
-/// A page's `<title>` and its links, read from the HTML source with patterns (HTMLText drops both). Bounded: the
-/// title is looked for near the start, and at most `maxAnchors` anchors are read.
+/// A page's `<title>` and its links, read from the HTML source with patterns (HTMLText drops both). Every pattern
+/// runs in linear time: no part of one can run past a `<` or `>` it doesn't own, so a page full of tags that never
+/// close (`<a `, `<title`, `<base` over and over) costs one pass, not one pass per tag. The title is looked for in
+/// the first 512 KB, links in the first 1 MB, at most `maxAnchors` anchors are read and `maxLinks` kept.
 enum HTMLPageInfo {
     static let maxTitleCharacters = 300
     static let maxLinkTextCharacters = 120
     static let maxLinks = 100
     static let maxAnchors = 2_000
+    /// An address longer than this is skipped rather than decoded.
+    static let maxHrefCharacters = 4_096
     /// Where the title is looked for: it sits in the head.
     private static let titleSearchLength = 512 * 1_024
+    /// How much of the source links are looked for in, in UTF-16 units.
+    static let linkSearchLength = 1_024 * 1_024
 
+    /// The attribute value: double-quoted, single-quoted, or bare up to whitespace, a quote or a tag bracket.
+    private static let hrefValue = #"\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'<>]+))"#
     private static let titlePattern = try! NSRegularExpression(
-        pattern: #"<title\b[^>]*>([\s\S]*?)</title\s*>"#, options: [.caseInsensitive])
+        pattern: #"<title\b[^<>]*>([^<]*)</title\s*>"#, options: [.caseInsensitive])
     private static let basePattern = try! NSRegularExpression(
-        pattern: #"<base\b[^>]*?\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))"#, options: [.caseInsensitive])
+        pattern: #"<base\b[^<>]*?"# + hrefValue, options: [.caseInsensitive])
     private static let anchorPattern = try! NSRegularExpression(
-        pattern: #"<a\b[^>]*?\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))[^>]*>"#, options: [.caseInsensitive])
+        pattern: #"<a\b[^<>]*?"# + hrefValue + #"[^<>]*>"#, options: [.caseInsensitive])
 
     static func title(in html: String) -> String? {
         let source = html as NSString
@@ -596,12 +620,14 @@ enum HTMLPageInfo {
     }
 
     /// The page's http and https links in order, resolved against its `<base>` (else `pageURL`), without fragments,
-    /// links back to the page itself or repeats.
-    static func links(in html: String, pageURL: URL, limit: Int = maxLinks) -> [WebLink] {
+    /// links back to the page itself or repeats. `checkpoint` runs every 100 anchors and throws to stop (the reply
+    /// was stopped, or the read's deadline passed).
+    static func links(in html: String, pageURL: URL, limit: Int = maxLinks,
+                      checkpoint: () throws -> Void = {}) throws -> [WebLink] {
         let source = html as NSString
-        let whole = NSRange(location: 0, length: source.length)
+        let searched = NSRange(location: 0, length: min(source.length, linkSearchLength))
         var base = pageURL
-        if let match = basePattern.firstMatch(in: html, range: whole),
+        if let match = basePattern.firstMatch(in: html, range: searched),
            let href = attribute(of: match, in: source).flatMap(decodedAttribute),
            let resolved = URL(string: href, relativeTo: pageURL)?.absoluteURL {
             base = resolved
@@ -610,11 +636,19 @@ enum HTMLPageInfo {
         var seen: Set<URL> = page.map { [$0] } ?? []
         var links: [WebLink] = []
         var anchors = 0
-        anchorPattern.enumerateMatches(in: html, range: whole) { match, _, stop in
+        var stopped: Error?
+        anchorPattern.enumerateMatches(in: html, range: searched) { match, _, stop in
             anchors += 1
             if anchors > maxAnchors || links.count >= limit {
                 stop.pointee = true
                 return
+            }
+            if anchors % 100 == 0 {
+                do { try checkpoint() } catch {
+                    stopped = error
+                    stop.pointee = true
+                    return
+                }
             }
             guard let match, let href = attribute(of: match, in: source).flatMap(decodedAttribute),
                   let resolved = URL(string: href, relativeTo: base)?.absoluteURL,
@@ -623,6 +657,7 @@ enum HTMLPageInfo {
                   let url = withoutFragment(resolved), seen.insert(url).inserted else { return }
             links.append(WebLink(text: anchorText(after: match.range, in: source), url: url))
         }
+        if let stopped { throw stopped }
         return links
     }
 
@@ -635,6 +670,7 @@ enum HTMLPageInfo {
 
     private static func attribute(of match: NSTextCheckingResult, in source: NSString) -> String? {
         for group in 1...3 where match.range(at: group).location != NSNotFound {
+            guard match.range(at: group).length <= maxHrefCharacters else { return nil }
             return source.substring(with: match.range(at: group))
         }
         return nil
