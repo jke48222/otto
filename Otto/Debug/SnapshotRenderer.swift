@@ -9,7 +9,8 @@
 //  the subsystems' own `debugSeed`s. Approval scenes run one real scripted turn, so the card is exactly what the
 //  executor builds. Views are hosted in an off-screen window with animations off and captured at 2×. Builds
 //  with licensing add the composer gate and Settings → License scenes under licensing/ (and the paid build its
-//  Updates scene under paid/), each on a StaticLicenseModel.
+//  Updates scene under paid/), each on a StaticLicenseModel. The Setapp AI scenes (§19) draw in every build, on a
+//  StaticSetappAIAccount.
 //
 
 // Debug tooling: compiled only into Debug builds, or into a Release build made with the
@@ -111,6 +112,28 @@ enum SnapshotRenderer {
             hoverPoint: nil,
             to: directory.appendingPathComponent("settings.png")
         )
+
+        for scene in SetappAISettingsScene.allCases {
+            defaults.removePersistentDomain(forName: defaultsSuite)
+            let stage = SnapshotStage(defaults: defaults, reply: .answer(SnapshotFixtures.shortAnswer))
+            await stage.prepareSettings()
+            stage.settings.aiProvider = scene.provider
+            var services = stage.settingsServices()
+            let account = scene.account()
+            services.setappAI = account
+            // As the Setapp build's composition sets it from the live account.
+            stage.settings.isSetappAIConfigured = account.isConfigured
+            await render(
+                SettingsView(settings: stage.settings, tab: .models, services: services)
+                    .environment(SettingsNavigation()),
+                size: CGSize(width: SettingsWindowController.contentWidth, height: SetappAISettingsScene.height),
+                background: .windowBackgroundColor,
+                expectsNotchAtTop: false,
+                hoverPoint: nil,
+                to: directory.appendingPathComponent(scene.fileName)
+            )
+            stage.tearDown()
+        }
 
         #if OTTO_LICENSING
         await renderFlavorScenes(to: directory, defaults: defaults)
@@ -404,6 +427,8 @@ private enum SnapshotScene: String, CaseIterable {
     case openGlance = "open-glance"
     case openAnchored = "open-anchored"
     case conversationCost = "conversation-cost"
+    case conversationSetappCost = "conversation-setapp-cost"
+    case conversationSetappCredits = "conversation-setapp-credits"
     case openShortcuts = "open-shortcuts"
     case openEditing = "open-editing"
     case openTall = "open-tall"
@@ -448,7 +473,10 @@ private enum SnapshotScene: String, CaseIterable {
 
     /// Where the pointer rests for scenes that show hover-only controls: on the last reply, above its footer.
     var hoverPoint: CGPoint? {
-        self == .conversationCost ? CGPoint(x: Self.canvasSize.width / 2, y: 300) : nil
+        switch self {
+        case .conversationCost, .conversationSetappCost: return CGPoint(x: Self.canvasSize.width / 2, y: 300)
+        default: return nil
+        }
     }
 
     /// What the scripted Claude answers in this scene.
@@ -466,6 +494,34 @@ private enum SnapshotScene: String, CaseIterable {
             return SnapshotFixtures.linkAfterReadingCall
         default:
             return .answer(SnapshotFixtures.regeneratedAnswer)
+        }
+    }
+}
+
+/// Settings → Models with a Setapp AI account (§19 Setapp AI), drawn in every build: the pane decides from the
+/// account, not from the build's providers. Taller than the window, so the whole pane shows, Usage included.
+private enum SetappAISettingsScene: String, CaseIterable {
+    case setappAI = "settings-models-setapp"
+    case ownKey = "settings-models-setapp-own-key"
+    case failed = "settings-models-setapp-failed"
+    case notSetUp = "settings-models-setapp-not-set-up"
+
+    static let height: CGFloat = 1_180
+
+    var fileName: String { rawValue + ".png" }
+
+    var provider: AIProvider { self == .ownKey ? .anthropic : .setappAI }
+
+    @MainActor func account() -> StaticSetappAIAccount {
+        switch self {
+        case .setappAI, .ownKey:
+            return StaticSetappAIAccount(creditState: .loaded(SetappCreditBalance(available: 1_234, granted: 6_000)))
+        case .failed:
+            return StaticSetappAIAccount(creditState: .failed("Couldn't load your credits. Make sure Setapp is open."))
+        case .notSetUp:
+            // A build without the Setapp OAuth client (J22), on a fresh install's default provider: it answers on
+            // the user's own key, so that row is checked and the key field shows.
+            return StaticSetappAIAccount(isConfigured: false)
         }
     }
 }
@@ -812,6 +868,27 @@ private final class SnapshotStage {
             settings.usage.showCost = true
             let answers = messages.filter { $0.role == .assistant }.compactMap { SnapshotFixtures.answerUsage(for: $0.id) }
             viewModel.ledger.debugSeed(answers: answers, days: [:])
+            show(.open)
+
+        case .conversationSetappCost:
+            // A reply through Setapp AI: the footer names the model and Setapp AI, with no dollar figure.
+            viewModel.setappAI = StaticSetappAIAccount()
+            settings.aiProvider = .setappAI
+            let messages = SnapshotFixtures.conversation(model: ModelOption.opus5.setappAIModelID)
+            chat.debugSeed(messages: messages, isStreaming: false)
+            settings.usage.showCost = true
+            let answers = messages.filter { $0.role == .assistant }.compactMap {
+                SnapshotFixtures.answerUsage(for: $0.id, servedModel: ModelOption.opus5.setappAIModelID)
+            }
+            viewModel.ledger.debugSeed(answers: answers, days: [:])
+            show(.open)
+
+        case .conversationSetappCredits:
+            viewModel.setappAI = StaticSetappAIAccount(
+                creditState: .loaded(SetappCreditBalance(available: 0, granted: 6_000))
+            )
+            settings.aiProvider = .setappAI
+            chat.debugSeed(messages: SnapshotFixtures.outOfCreditsTurn(), isStreaming: false)
             show(.open)
 
         case .openShortcuts:
@@ -1433,7 +1510,8 @@ private enum SnapshotFixtures {
 
     // MARK: Conversations
 
-    static func conversation() -> [ChatMessage] {
+    /// `model`: the id the reply was served under (a Setapp AI id for the Setapp AI scenes).
+    static func conversation(model: String = ModelOption.opus5.rawValue) -> [ChatMessage] {
         let notes = Attachment(
             kind: .text,
             displayName: "concurrency-notes.md",
@@ -1471,10 +1549,20 @@ private enum SnapshotFixtures {
                 ("Approachable Concurrency", "https://forums.swift.org/t/approachable-concurrency/"),
             ]),
             state: .complete,
-            model: ModelOption.opus5.rawValue,
+            model: model,
             createdAt: Date(timeIntervalSinceReferenceDate: 800_000_010)
         )
         return [user, assistant]
+    }
+
+    /// The conversation on Setapp AI, then a follow-up the gateway turned away: the member is out of credits.
+    /// The request failed before it started, so the reply has no model.
+    static func outOfCreditsTurn() -> [ChatMessage] {
+        let user = ChatMessage(role: .user, text: "Show me how to call that from a SwiftUI view.",
+                               createdAt: Date(timeIntervalSinceReferenceDate: 800_000_060))
+        let assistant = ChatMessage(role: .assistant, state: .failed(SetappAIFailure.insufficientCredits.copy),
+                                    createdAt: Date(timeIntervalSinceReferenceDate: 800_000_061))
+        return conversation(model: ModelOption.opus5.setappAIModelID) + [user, assistant]
     }
 
     static func streamingTurn() -> [ChatMessage] {
@@ -1852,8 +1940,9 @@ private enum SnapshotFixtures {
 
     // MARK: Usage
 
-    /// What the answer cost: one request on Opus with a search and a warm cache.
-    static func answerUsage(for messageID: UUID) -> AnswerUsage? {
+    /// What the answer cost: one request on Opus with a search and a warm cache. `servedModel` is the id it was
+    /// served under (a Setapp AI id has no dollar cost).
+    static func answerUsage(for messageID: UUID, servedModel: String = ModelOption.opus5.rawValue) -> AnswerUsage? {
         let usage: JSONValue = [
             "input_tokens": 1_840,
             "output_tokens": 412,
@@ -1862,7 +1951,7 @@ private enum SnapshotFixtures {
             "server_tool_use": ["web_search_requests": 1],
         ]
         guard let request = RequestUsage.parse(usage: usage, requestedModel: ModelOption.opus5.rawValue,
-                                               servedModel: ModelOption.opus5.rawValue, stopReason: "end_turn",
+                                               servedModel: servedModel, stopReason: "end_turn",
                                                isPartial: false, isDemo: false) else { return nil }
         var answer = AnswerUsage(messageID: messageID)
         answer.add(request)

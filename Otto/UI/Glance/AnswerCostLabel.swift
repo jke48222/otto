@@ -5,7 +5,8 @@
 //  The right side of a reply's hover footer: which model answered and what the answer cost
 //  ("Opus 5 · ≈0.8¢ · 1 search · 92% cached"), with the per-token breakdown as its tooltip. It reads only
 //  this answer's entry in the usage ledger, so other replies' usage never redraws it. Before the ledger
-//  knows the answer (or when the API reported no usage) it shows the model name alone.
+//  knows the answer (or when the API reported no usage) it shows the model name alone. A reply served through
+//  Setapp AI reads "Opus 5 · Setapp AI" either way: Setapp bills it in credits, so it never shows dollars.
 //
 
 import SwiftUI
@@ -16,8 +17,8 @@ struct AnswerCostLabel: View {
     /// The message's own model id, shown when the ledger has nothing for this answer.
     let fallbackModel: String?
 
-    /// Pure. The label: the ledger's summary when it knows the answer, else the fallback model's short name,
-    /// else nil (nothing to show).
+    /// Pure. The label: the ledger's summary when it knows the answer, else the fallback model's short name
+    /// ("Opus 5 · Setapp AI" for a Setapp AI id), else nil (nothing to show).
     static func text(answer: AnswerUsage?, fallbackModel: String?) -> String? {
         if let answer, answer.requests > 0, !answer.lines.isEmpty {
             return CostFormatter.summary(answer)

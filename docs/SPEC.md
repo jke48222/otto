@@ -56,7 +56,11 @@ Global conventions
 ### 1. API module (owner: `api` agent): `Otto/API/*`, `OttoTests/API*Tests.swift`
 
 Files: `AnthropicClient.swift`, `SSEParser.swift`, `StreamAccumulator.swift`, `MockLLMClient.swift`,
-`KeychainStore.swift`.
+`KeychainStore.swift`, and `Responses/` for Setapp AI (section 19): `ResponsesContracts.swift`,
+`ResponsesRequestBuilder.swift`, `ResponsesStreamAccumulator.swift`, `ResponsesClient.swift`. Otto keeps one
+conversation format, Anthropic Messages blocks; `ResponsesClient` is a second `LLMClient` that translates to and
+from the OpenAI Responses API at its edge. `AnthropicClient.anthropicMessages(_:)` drops the blocks only Setapp AI
+turns carry (`ProviderBlocks`) before every request.
 
 ```swift
 enum KeychainStore {
@@ -333,7 +337,8 @@ when only attachments). Append the user message and an assistant message (`state
    `.toolActivity` → upsert by id; `.sources` → append unique by URL; `.fallback` → model = toModel;
    `.completed(r)` → append `r.content` to `apiContent`, record stop reason.
 4. Stop reasons: `pause_turn` → re-request (≤ 5 times) with the partial assistant message included as the
-   last history entry (no new user message), continuing to accumulate into the same message;
+   last history entry (no new user message), continuing to accumulate into the same message (a Setapp AI pause
+   after pages read on the Mac also gets fresh limits and the "Safer" check, section 19, "Web fetch");
    `refusal` → `.refused("Otto can't help with that one.")` and set `includeInContext = false` on both
    this assistant message and its user message; `max_tokens` → `.complete` but append "\n\n_(Reply
    truncated.)_" to `text`; anything else → `.complete`.
@@ -1085,7 +1090,9 @@ sends `tool_choice: {"type":"none"}` and the reply ends with a short note.
 
 **Web budget.** Web search and fetch run on Anthropic's side with no card, so each reply gets at most 10
 searches and 10 fetches (`max_uses` at most 5 per request, the tool omitted at 0). Once the chat holds private
-data and fresh untrusted content, the rest of that reply carries no server tools, and a row says why.
+data and fresh untrusted content, the rest of that reply carries no server tools, and a row says why. On Setapp AI
+the gateway searches and Otto reads pages on the Mac under the same budget and the same pause, checked again before
+each step of a reply that reads pages (section 19, "Web fetch").
 
 **Executor** (`ToolExecutor.execute(round, store:)`):
 
@@ -1236,13 +1243,14 @@ never shows a dialog, and never downgrades on an answer that could be an outage.
   `build/release/<flavor>/DerivedData`), so none of them overwrites the source build's `Otto.app`.
 - Flavor code sits behind `#if OTTO_LICENSING`, `#if OTTO_SPARKLE`, `#if OTTO_SETAPP`, or `#if OTTO_SPARKLE ||
   OTTO_SETAPP` for the shared updates UI. Every file under `Otto/Licensing/`, `Otto/Updates/` and `Otto/Setapp/` is
-  wrapped in its flag as a whole file, and so is every test file that needs a flag, because `project.yml` compiles all
+  wrapped in its flag as a whole file (except `Otto/Setapp/SetappAIContracts.swift`, the flavor-neutral credit model), and so is every test file that needs a flag, because `project.yml` compiles all
   of `OttoTests/` into every project. `import Sparkle` and `import Setapp` appear only inside their flags.
 - `OttoBuild` (`Otto/App/OttoBuild.swift`, compiled everywhere) names the flavor and its footer label and lists
   `allBundleIDs`. It refuses to compile Setapp together with licensing or Sparkle, and Sparkle without licensing.
 - The flavor-neutral seams are compiled in every flavor and inert in the source build: `ComposerGate` and
-  `ComposerGating`, `NotchServices.sendGate`, `UsageReportThrottle`, `StatusItemController.extraMenuItems` and
-  `BuildInfoFooter`.
+  `ComposerGating`, `NotchServices.sendGate`, `UsageReportThrottle`, `StatusItemController.extraMenuItems`,
+  `BuildInfoFooter`, and for Setapp AI `AIProvider`, `ProviderBlocks`, `Otto/API/Responses/` and
+  `SetappAIContracts.swift` (`AIProvider.available` is `[.anthropic]` outside the Setapp build).
 - The paid build shares the source build's bundle id on purpose: moving to the signed app keeps preferences, history
   and the API key, after one Keychain "Always Allow" prompt.
 
@@ -1431,9 +1439,140 @@ services and signs `Autoupdate`, `Updater.app`, `Sparkle.framework` and then `Ot
 event when the notch becomes engaged or a message is sent, at most once per 5 minutes. `SetappUpdater` asks Setapp for a
 pending update 30 s after launch, every 6 hours and when Settings → General appears, then offers "Update and
 Relaunch…". The Setapp build has no trial, license keys, License tab, Sparkle, "Buy a License" or pricing links. It
-keeps the user's own Anthropic key and never routes prompts through Setapp. It shares Otto's data folder and Keychain
+answers through Setapp AI (below) or the user's own Anthropic key, the member's choice. It shares Otto's data folder and Keychain
 service with the direct build but not its preferences, and the launch guard (section 8) allows one Otto of any flavor
 at a time.
+
+**Setapp AI.** Since 2026-10-13 the Setapp build offers a second provider, `AIProvider.setappAI`, the default for a
+fresh install: Setapp's AI Gateway, reached through the Setapp Framework's `SetappAI` module and billed in the member's
+Setapp AI credits, so a member can ask without an API key. Settings → Models starts with **Provider** (Setapp AI or
+"Your Anthropic key"); with Setapp AI chosen it shows the credit balance with **Get Credits**, hides the key field and
+the list prices, and says where messages go. `settings.aiProvider` (`otto.aiProvider`) stores the choice.
+`effectiveProvider` falls back to `.anthropic` in a build that doesn't offer Setapp AI. It does the same in a Setapp
+build without the OAuth client (J22, `settings.isSetappAIConfigured`, set at launch and never stored), where Models
+checks "Your Anthropic key" and shows the key field. With nothing stored, an existing API key (Keychain or `ANTHROPIC_API_KEY`)
+starts the Setapp build on that key instead. The first launch of a build that offers Setapp AI opens Models once
+(`otto.setappAI.introduced`), so the member sees the choice and where messages go before asking anything.
+
+- **Credits.** The balance is fetched past the SDK's cache when Models appears on Setapp AI, when Settings becomes
+  key, two seconds after each Setapp AI reply finishes (one fetch for a reply with tool rounds) and at once when a
+  reply runs out of credits. On Setapp AI the ⋮ menu's Usage rows become one row, the balance or "Setapp AI uses
+  credits, not dollars". Get Credits opens the SDK's purchase link (https only, else `setapp.com/ai`) the way its
+  window opens links: Settings lowers its floating panel first, the notch closes first. A reply out of credits
+  offers Get Credits with a quieter **Open Settings**; a balance that failed to load offers Try Again and Get Credits.
+- **Haiku 4.5** doesn't search through the gateway: on Setapp AI the header menu's Web search is off with "No web
+  search on Haiku 4.5 with Setapp AI", Settings says the same, and ⌘3's notice adds "no web search".
+- **Request.** `makeClient` returns `ResponsesClient(transport: SetappSDKTransport())`. `ResponsesRequestBuilder`
+  turns the `MessagesRequest` into an OpenAI Responses body with `model` `anthropic/<id>` (the gateway serves
+  `anthropic/claude-opus-5`, `-sonnet-5` and `-haiku-4-5`), `instructions`, `"store": false` and `"stream": true`.
+  The `input` items are user text, `input_image` data URLs, PDFs as `input_file`, text documents wrapped in
+  `<document>`, and `function_call` and `function_call_output` for tool rounds. Every spelling of the document tag
+  inside a file is neutralized, and the title is escaped like an earlier action result. Opus 5 and Sonnet 5 also get
+  `reasoning {effort, summary: auto}`, with the encrypted reasoning replayed across a tool round, and `web_search`.
+  The search cap goes two ways, `max_tool_calls` and `search_context_size` (`medium` with 5 or more searches left,
+  else `low`), because LiteLLM ignores the first and turns the second into Anthropic's `max_uses`. Then comes Otto's
+  own `web_fetch` function (below), then the client tools as function tools. Server fallbacks and prompt-caching
+  controls have no gateway equivalent, and `pause_turn` comes only from Otto's own page reads (below).
+- **Web fetch.** The gateway has no fetch tool, so Otto reads pages itself and an attached browser tab is read as on
+  Anthropic. `ResponsesRequestBuilder` offers a strict function tool `web_fetch` (`{"url": string}`, described the
+  way Anthropic's fetch works). It goes out exactly when AnthropicClient would send its server `web_fetch` for the
+  same request (`SetappWebFetch.isOffered`). That takes web access on, a fetch left in `serverToolLimits.webFetch`
+  (none once the reply's 10 are spent, or during the "Safer" web pause), and a model with `webFetchToolType` (not
+  Haiku 4.5). The user's own key keeps Anthropic's server tool and never gets the function. `ResponsesClient`
+  answers the calls on the Mac and never sends a gateway request of its own:
+  - Each call spends one of the request's `max_uses`, and a call past them is told the limit was reached and reads
+    nothing. Only an address already in the conversation sent to the model can be read
+    (`SetappWebFetch.Allowlist`). That is Anthropic's rule, and it keeps Claude from putting private data into an
+    address. The addresses come from the user's text and text documents, a browser tab's URL line, web search
+    results, citations, and earlier fetched pages (their final address and every address in their text, the listed
+    links included). Claude's own text, tool inputs, Otto's notes and other tools' output never count. The match is
+    exact after normalization: scheme and host lowercased, the default port, the fragment and an empty query
+    dropped, an empty path as `/`, and an http address matches its https twin. Every page is read over https: Otto's
+    App Transport Security allows no plain http, and Otto adds no exception for it. Anything else gets the error
+    "This URL isn't in the conversation, so Otto can't open it."
+  - `WebPageReader` reads the allowed addresses side by side. Each read is a GET from an ephemeral `URLSession` (no
+    cookies, cache or credentials, every challenge but server trust cancelled) with `Accept-Language: en` and
+    `User-Agent: Otto/<version>`. It gets 20 s in all. A data delegate counts the body as URLSession decodes it and
+    cancels the download once the count passes 5 MB, so a compressed body never inflates far past the cap; the page
+    is read up to there, and a PDF that big is refused. Each hop is checked before it is requested: never from https
+    down to http, and at most 5 redirects, followed one at a time. A host that is, or resolves to, a loopback,
+    private, link-local, CGNAT, multicast, unspecified, IPv6 unique-local or local-use NAT64 address, or a local or
+    single-label name, is refused with URLGuard's ranges.
+  - Every request is then checked against the address its connection reached, whatever came back: a page, a page cut
+    at the cap, a redirect, an error status, a PDF over the cap or a failure. The task's metrics are awaited for up to
+    a second. A local or private address is refused, and so is a request whose metrics or remote address are missing
+    or unreadable, so the check fails closed and Claude learns nothing about what answered. A connection through a
+    proxy reports the proxy's address (often on this Mac), so it is left to the lookup before the request. Only an
+    offline failure, which never leaves the Mac, skips the check.
+  - HTML becomes text with `HTMLText`, as attachments do, with its title (from the first 512 KB) and up to 100 links
+    (from the first 1 MB; an address over 4,096 characters is skipped). No title or link pattern can run past a `<`
+    or `>` it doesn't own, so a page of tags that never close costs one pass (5 MB in well under a second). The
+    conversion also stops between its steps, and every 100 links, once the read is stopped or out of time. Text, JSON
+    and XML stay as they are. A PDF is never parsed on the Mac: it must start like one (`%PDF-` in its first
+    kilobyte) and carry no `/Encrypt` entry, then it goes on whole for the model to read, as Anthropic's fetch
+    returns one. Other types are refused. Claude gets the final address, the title and at most 100,000 characters,
+    with a note when the page was cut, or the PDF.
+  - A response that asked only for pages ends, once they are read, with `pause_turn` and the reads in its usage, the
+    way Anthropic pauses a long server-tool turn. ChatSession's pause_turn path then sends the next request with the
+    partial turn, so every step of the reply is a ChatSession request. Each gets what's left of the reply's budget
+    (at most 5 fetches per request), the "Safer" check a tool round ends with
+    (`ToolExecuting.webPause(after:tools:knownTools:)`), compaction after an overflow, the stall bounds, the retries
+    and the compatibility retry. ChatSession's 5
+    continuations bound the steps, and the last one offers no fetch, so the reply ends with an answer from the pages
+    read rather than "Stopped after several web lookups." With client calls waiting too, the response ends at
+    `tool_use` and the tool loop sends the pages back with the results. A call cut off by the output limit, in a
+    refused response or in the action limit's wrap-up, or one reusing an earlier call's id, isn't run. Stop cancels
+    the reads.
+  - Each call is stored as Anthropic's pair, a `server_tool_use` and a `web_fetch_tool_result`: the text as a text
+    document, or a PDF as a base64 `application/pdf` document, with `content.url` the final address, or a
+    `web_fetch_tool_error` with its code. Both are marked `"otto_provider": "setapp-ai"` and `"otto_reader": "mac"`.
+    TrustLedger reads the pair as `webFetch(host)`, high, PDF or not, like Anthropic's fetch, so the provenance
+    line, the caution banner and arming, "Always allow" and the "Safer" pause behave the same. The read counts as a
+    fetch and no search, in the usage (`web_fetch_requests`) and in `webBudgetLeft` after a relaunch. The reply shows
+    "Reading <host>" and the page as a source, with no action row or activity log line, as for Anthropic's fetch.
+  - A gateway request that offers web fetch sends the pairs back the way client calls go: a response's calls first,
+    then all their outputs in call order, client results included. Anthropic behind the gateway takes a turn's tool
+    results together after all its calls, and a call followed by its own output would split the turn and lose its
+    thinking. A PDF's output reads "(The PDF follows.)" after its address and title, and the file goes as an
+    `input_file` in the user message after the outputs, as a tool result's images do. A request without web fetch
+    (the budget spent, the "Safer" pause, the last continuation, the compatibility retry) can't name the tool. The
+    pages of the turn it continues then go as data in a user message, each in a `<fetched_page … untrusted="true">`
+    fence escaped like an earlier action result. A fresh request leaves them out, as ToolHistory leaves Anthropic's
+    out. AnthropicClient strips the pairs like every Setapp-only block.
+- **Stream.** `ResponsesStreamAccumulator` turns the gateway's events into the same `StreamEvent`s, live when they
+  arrive and reconciled from the terminal response when the SDK delivers only text deltas and the final response.
+  Stored blocks stay Anthropic-shaped: text, client `tool_use`, and a `thinking` block for the summary plus the raw
+  reasoning item (`otto_responses_reasoning`). Each gateway web search is stored as a `server_tool_use` and
+  `web_search_tool_result` pair marked `"otto_provider": "setapp-ai"`, so TrustLedger, the web budget and History
+  treat it like an Anthropic search. Citations with no search item still get such a pair, so web provenance never
+  fails open. Every web call spends a search, and a page read also spends a fetch. Stop reasons map to `tool_use`,
+  `max_tokens` (which wins over a cut-off tool call), `refusal` and `end_turn`, and a response that only read pages
+  on the Mac ends in `pause_turn`. A response that is `incomplete` with
+  no reason (LiteLLM's way of reporting both) is `max_tokens` at the output limit and `refusal` below it. Usage maps
+  to Anthropic's keys. A call id repeated within a response, or reused from an earlier round, is ignored.
+- **Errors.** `ResponsesTransportError` maps to the existing `LLMError`s plus `LLMError.setappAI(SetappAIFailure)`:
+  out of credits (footer **Get Credits**), model not on the plan or J22 missing (**Open Settings**), Setapp
+  unreachable (Retry). A context overflow reads as "prompt is too long" so ChatSession compacts as it does for
+  Anthropic. In-stream error codes map by family (invalid request, forbidden, rate limit, overloaded, credits).
+  Retries happen only before the first output. A refusal before any output (a `badRequest`, or an invalid-request
+  error right after the acknowledgement) is retried once without reasoning and strict tools when the body carried
+  them, because the gateway's handling of those for Anthropic models can't be checked offline. A reply waits at most
+  45 s for its first event and 300 s between events, then fails as Setapp unreachable.
+- **SDK.** `SetappSDKTransport` configures the SDK once from the Info.plist keys `OttoSetappAIClientID` and
+  `OttoSetappAIClientSecret` (J22, from the git-ignored `Config/Local.xcconfig`; the secret ships in the app, which is
+  Setapp's documented design) with errors propagated to Otto's own UI. The SDK's typed Codable needs the connector's
+  snake_case settings and loses or refuses several OpenAI fields, so every input item and tool goes through as the
+  SDK's raw `.unsupported` value, and nullable enums are sent as `anyOf` with a null type. Events the SDK can't decode
+  end its stream. The transport recovers the raw event from the connector's error text when it can and otherwise,
+  for an undecodable terminal event only, rebuilds it from the finished items (as `incomplete` when one of them is,
+  logged as an error). A stream that simply ends early is an error, and LiteLLM's typeless `{"error": …}` frame
+  becomes an error event. `LiveSetappAIAccount` reads the balance (15 s timeout,
+  rounded down) and hands over Setapp's purchase link (5 s timeout).
+- **Cost.** A Setapp AI reply keeps the gateway's model id, so it is never priced in dollars: its label reads
+  "Opus 5 · Setapp AI" and dollar totals count only replies on the user's own key.
+- **Check.** `--setapp-ai-check <dir>` (Debug, Setapp build) runs before the Setapp Framework starts and round-trips
+  requests, `ResponsesRequestBuilder` bodies and every `ResponsesFixtures` stream through the SDK's own types, the
+  transport and the client, offline. CI runs it. Nothing here has run against the live gateway until J22 exists.
 
 **Network.** The source build contacts none of these.
 
@@ -1444,10 +1583,15 @@ at a time.
 | `<site host>/appcast.xml` | at most once a day, and Check Now | paid |
 | the downloads host (Vercel Blob) | when an update downloads | paid |
 | Setapp, through the Setapp app | a usage event at most every 5 minutes while in use | setapp |
+| Setapp's AI Gateway (`api.macpaw.com/ai`), through the Setapp Framework | each message, only with Setapp AI chosen: the conversation, attachments and tool results, as the Anthropic request would carry them, with the pages Claude read on the Mac (a PDF whole); the gateway passes it to Anthropic | setapp |
+| the site of a page Claude reads | only with Setapp AI chosen, when Claude reads a page already in the conversation (an attached browser tab, a search result). It is a GET over https from the user's Mac, and its redirects, with `User-Agent: Otto/<version>`, `Accept-Language: en` and no cookies or credentials. On the user's own key Anthropic fetches pages from its servers | setapp |
 
-Every license and update request uses an ephemeral `URLSession` (no cookies, cache or credentials) and pins
-`Accept-Language: en`, so none carries the Mac's language list. Logs use the categories `License`, `Updates` and
+Every license and update request, and every page read for Setapp AI, uses an ephemeral `URLSession` (no cookies,
+cache or credentials) and pins `Accept-Language: en`, so none carries the Mac's language list. Logs use the categories `License`, `Updates` and
 `Setapp` and carry the backend, operation, outcome name and HTTP status, never a key, activation id, label or email.
+Setapp AI logs under `ResponsesClient` and `SetappAI` with error codes public and message text private, and never
+the OAuth secret; page reads log under `WebFetch` and `ResponsesClient` with outcome codes and sizes public and hosts
+private.
 
 **Tests.** The source suite keeps passing with no flag. Flag-only tests (`LicensePolicyTests`, `LicenseControllerTests`,
 `PolarLicenseBackendTests` and the rest) run in the licensing-check and paid builds; `SparkleUpdaterTests` and
@@ -1455,7 +1599,12 @@ Every license and update request uses an ephemeral `URLSession` (no cookies, cac
 against a `com.jalenedusei.otto.tests.<UUID>` service, and `PolarSandboxLiveTests` only with
 `OTTO_POLAR_SANDBOX_TESTS=1` and sandbox credentials. `scripts/snapshot.sh --licensing` and `--paid` render the license
 and updates scenes into `docs/snapshots/licensing/` and `docs/snapshots/paid/`; the Setapp build has no snapshots,
-because its framework starts at launch. CONTRIBUTING.md lists the commands.
+because its framework starts at launch. Setapp AI's translation, stream, client and UI tests run in the source
+suite (`ResponsesRequestBuilderTests`, `ResponsesStreamAccumulatorTests`, `ResponsesClientTests`, the Setapp AI
+cases in the cost, settings and conversation tests, `SetappAIIntegrationTests`), and so do its web fetch's
+(`SetappWebFetchTests`, `ResponsesClientWebFetchTests`, and `WebPageReaderTests` on a URLProtocol stub, a resolver
+table and a connection table in place of URLSession's metrics, so no test reaches DNS or the network). Its Settings and reply scenes
+render in the source build from `StaticSetappAIAccount`, and the SDK side is covered by `--setapp-ai-check`. CONTRIBUTING.md lists the commands.
 
 ### 20. Otto for iPhone
 

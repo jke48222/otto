@@ -109,6 +109,40 @@ final class AppCompositionFlavorTests: XCTestCase {
                        "ChatSession's own error path shows the gate's message on that turn")
     }
 
+    // MARK: - First launch (§19 Setapp AI)
+
+    func testFirstLaunchOpensModelsOnceForTheKeyOrToShowTheSetappAIChoice() {
+        let setappBuild: [AIProvider] = [.setappAI, .anthropic]
+        func opens(_ defaults: UserDefaults, ready: Bool, providers: [AIProvider], demo: Bool = false) -> Bool {
+            AppDelegate.opensModelsOnLaunch(defaults: defaults, isDemo: demo, isProviderReady: ready,
+                                            providers: providers)
+        }
+
+        // A build without Setapp AI: only while there is no key to send with, and once.
+        let direct = TestDefaults.make(for: self)
+        XCTAssertFalse(opens(direct, ready: true, providers: [.anthropic]))
+        XCTAssertTrue(opens(direct, ready: false, providers: [.anthropic]))
+        XCTAssertFalse(opens(direct, ready: false, providers: [.anthropic]), "once")
+        XCTAssertNil(direct.object(forKey: AppDelegate.setappAIIntroducedKey))
+
+        // The Setapp build on Setapp AI can send at once, so this is the one place the member sees the choice.
+        let member = TestDefaults.make(for: self)
+        XCTAssertTrue(opens(member, ready: true, providers: setappBuild))
+        XCTAssertTrue(member.bool(forKey: AppDelegate.setappAIIntroducedKey))
+        XCTAssertNil(member.object(forKey: AppDelegate.onboardingDefaultsKey), "nothing was said about a key")
+        XCTAssertFalse(opens(member, ready: true, providers: setappBuild), "once")
+
+        // Not set up and no key: one opening covers both, and neither comes back.
+        let unconfigured = TestDefaults.make(for: self)
+        XCTAssertTrue(opens(unconfigured, ready: false, providers: setappBuild))
+        XCTAssertFalse(opens(unconfigured, ready: false, providers: setappBuild))
+
+        // The demo never opens it, and records nothing for the real app to skip later.
+        let demo = TestDefaults.make(for: self)
+        XCTAssertFalse(opens(demo, ready: false, providers: setappBuild, demo: true))
+        XCTAssertTrue(demo.dictionaryRepresentation().keys.filter { $0.hasPrefix("otto.") }.isEmpty)
+    }
+
     // MARK: - Builds with licensing
 
     #if OTTO_LICENSING

@@ -84,6 +84,9 @@ struct NotchDebugSeed {
     /// What can pause sending (§14.10.1): the paid build's license engine, or a static model in the self-test,
     /// snapshots and tests. nil everywhere else, so sending is never gated there.
     let sendGate: ComposerGating?
+    /// The member's Setapp AI account (§19 Setapp AI), behind "Get Credits" on a reply that ran out of credits. The
+    /// Setapp build's composition sets it, and snapshots set a static one; nil everywhere else.
+    var setappAI: (any SetappAIAccountModel)?
 
     // MARK: Presentation and composer
 
@@ -1200,6 +1203,17 @@ struct NotchDebugSeed {
             onOpenSettingsTab(tab ?? anchor?.tab, anchor)
         } else {
             onOpenSettings?()
+        }
+    }
+
+    /// "Get Credits" on a reply Setapp AI turned away for lack of credits: closes the notch and opens Setapp's page
+    /// for buying more, the way the notch opens every outside link. Does nothing without a Setapp AI account.
+    func getSetappCredits() {
+        guard let setappAI else { return }
+        close(.programmatic)
+        Task { [weak self] in
+            let url = await setappAI.purchaseURL()
+            self?.openExternalURL(url)
         }
     }
 

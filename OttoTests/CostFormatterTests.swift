@@ -3,7 +3,7 @@
 //  OttoTests
 //
 //  Cost and token strings at every boundary, model display names, and the reply footer's summary
-//  and tooltip for ordinary, fallback, interrupted, unpriced and demo replies.
+//  and tooltip for ordinary, fallback, interrupted, unpriced, demo and Setapp AI replies.
 //
 
 import XCTest
@@ -177,7 +177,48 @@ final class CostFormatterTests: XCTestCase {
         XCTAssertTrue(CostFormatter.tooltip(demo).hasSuffix("≈ $0.0175 at list prices. Demo replies aren't billed."))
     }
 
+    // MARK: - Setapp AI
+
+    func testSetappAIModelNamesSaySetappAI() {
+        XCTAssertEqual(CostFormatter.modelName(ModelOption.opus5.setappAIModelID), "Opus 5 · Setapp AI")
+        XCTAssertEqual(CostFormatter.modelName(ModelOption.sonnet5.setappAIModelID), "Sonnet 5 · Setapp AI")
+        XCTAssertEqual(CostFormatter.modelName(ModelOption.haiku45.setappAIModelID), "Haiku 4.5 · Setapp AI")
+        XCTAssertEqual(CostFormatter.modelName("anthropic/claude-opus-5-20260901"), "Opus 5 · Setapp AI")
+        XCTAssertEqual(CostFormatter.modelName("anthropic/claude-opus-6"), "Opus 6 · Setapp AI")
+        // Only the gateway's prefix marks Setapp AI; the plain ids are unchanged.
+        XCTAssertEqual(CostFormatter.modelName("claude-opus-5"), "Opus 5")
+    }
+
+    func testSetappAISummaryIsTheModelAndSetappAIWithNoDollars() {
+        let setapp = setappAIAnswer()
+        XCTAssertEqual(CostFormatter.summary(setapp), "Opus 5 · Setapp AI")
+
+        // Not even an interrupted reply, a search or a warm cache adds a figure.
+        var busy = setapp
+        busy.isPartial = true
+        busy.lines[0].usage.webSearches = 2
+        busy.lines[0].usage.cacheRead = 40_000
+        XCTAssertEqual(CostFormatter.summary(busy), "Opus 5 · Setapp AI")
+    }
+
+    func testSetappAITooltipHasTokensButNoPriceAndNoUnpricedWarning() {
+        let tooltip = CostFormatter.tooltip(setappAIAnswer())
+        XCTAssertEqual(tooltip.components(separatedBy: "\n"), [
+            "Opus 5 · Setapp AI · 1 request",
+            "Input    1,204 tok",
+            "Output     612 tok",
+            CostFormatter.setappAINote,
+        ])
+        XCTAssertFalse(tooltip.contains("$"), tooltip)
+        XCTAssertFalse(tooltip.contains("list price"), tooltip)
+    }
+
     // MARK: - Helpers
+
+    /// One request through Setapp AI: priced the way `RequestUsage.parse` prices it (not at all).
+    private func setappAIAnswer() -> AnswerUsage {
+        answer(lines: [line(ModelOption.opus5.setappAIModelID, TokenUsage(input: 1_204, output: 612))])
+    }
 
     /// glance.md §2.1's tooltip example: Opus 5, two requests, one search.
     private func exampleAnswer() -> AnswerUsage {

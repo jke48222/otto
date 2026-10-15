@@ -63,6 +63,7 @@ with its number. `Config/Commercial.xcconfig` and `site/commerce.json` hold the 
 | J19 | The launch window: start, end (the Polar discount's own end) and the time zone the site prints | `commerce.json` `launch.*` |
 | J20 | The Polar canary key (below) | your login Keychain |
 | J21 | The Gumroad canary key (below) | your login Keychain |
+| J22 | A Setapp OAuth client for Otto (developer account → Apps → OAuth Clients → Add new), for Setapp AI | `OTTO_SETAPP_AI_CLIENT_ID` and `OTTO_SETAPP_AI_CLIENT_SECRET` in `Config/Local.xcconfig`, never in git |
 
 `scripts/check_commercial_config.sh --flavor paid --configuration Release --xcconfig Config/Commercial.xcconfig`
 lists every setting that is still a placeholder or malformed. A Release build of either flavor stops with
@@ -423,7 +424,17 @@ Setapp build through Setapp's test flow ("Testing your apps" in Setapp's docs) a
 - your usage shows in Setapp's dashboard;
 - `lipo -archs` on `Otto.app/Contents/MacOS/Otto` prints `x86_64 arm64`;
 - it works on the latest macOS;
-- with the direct Otto running, launching the Setapp Otto quits itself and opens the direct one's notch.
+- with the direct Otto running, launching the Setapp Otto quits itself and opens the direct one's notch;
+- Setapp AI (J22 set, signed in to Setapp with AI credits): Settings → Models starts on Setapp AI and shows
+  your credit balance; a question streams an answer; "search the web for …" on Opus 5 shows a search row and
+  sources; "add … to my calendar" with Actions on shows the approval card and finishes after you approve;
+  a PDF and an image attach and get answered; the hover label reads "Opus 5 · Setapp AI" and the dollar totals
+  don't move; switching to your own key mid-conversation and asking again works;
+- Setapp AI failures: with no credits left the reply offers **Get Credits**; with Setapp quit the reply asks
+  you to open Setapp, and Retry works once it's back.
+- the privacy page is ready: restore the Setapp section of `site/privacy.html` (the comment under "Other
+  requests") with its Setapp AI paragraph, add Setapp and MacPaw's AI gateway to "What every server sees", and
+  deploy that before the first upload.
 
 ## Support
 
@@ -781,7 +792,7 @@ After H2, HM2 and HM4; blocks WMd part A and announcing the launch. In this orde
 3. Before the flip, check four things. `https://polar.sh/<slug>` lists no product (unless you now switch the
    product to public because you want the Polar page). The Gumroad product is unpublished or doesn't exist.
    The Polar launch discount's `ends_at` is the launch end you chose. The regular and the launch checkout
-   links show $19 and $14, and a US address shows sales tax added, matching the tax line on `/buy`.
+   links show the prices in `site/commerce.json` (`price.usd`, and `launch.usd` during a launch week), and a US address shows sales tax added, matching the tax line on `/buy`.
 4. Commit J4 (both checkout links) and J19 (`launch.startsAt` = today, `launch.endsAt` = the discount's
    `ends_at`, `launch.timeZone`) in `site/commerce.json`. `node scripts/site_render.mjs --check-commerce`
    exits 0.
@@ -813,7 +824,7 @@ relaunches on a Mac that bought at launch.
 
 After HM3, when you choose; doesn't block anything.
 
-- **Setapp:** J14, then the checks in [Setapp](#setapp) before the first upload, then the upload.
+- **Setapp:** J14 and J22, then the checks in [Setapp](#setapp) before the first upload, then the upload.
 - **Gumroad:** publish the product with Discover off and the link unshared. Buy it once with a 100% offer
   code and save that key as the Gumroad canary (J21), then set `OTTO_GUMROAD_PRODUCT_ID` (J13). Cut the next
   1.1.x release, whose preflight checks both canaries, upload its DMG to Gumroad, and turn Discover on.

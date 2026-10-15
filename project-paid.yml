@@ -48,4 +48,7 @@ targets:
     preBuildScripts:
       - name: Check commercial configuration
         script: bash "$SRCROOT/scripts/check_commercial_config.sh" --flavor paid --from-build-env
+        # Xcode otherwise prints every build setting into the log, Config/Local.xcconfig values included
+        # (the Setapp AI OAuth secret, J22).
+        showEnvVars: false
         basedOnDependencyAnalysis: false

@@ -94,6 +94,17 @@ extension NotchViewModel {
         openSettings(tab: .models, anchor: .usage)
     }
 
+    /// The member's credits for the ⋮ menu while Setapp AI answers; nil on the user's own key or without an account.
+    var setappAICredits: SetappCreditState? {
+        Self.setappAICredits(provider: settings.effectiveProvider, account: setappAI)
+    }
+
+    /// Pure. Credits replace the menu's dollar rows only while Setapp AI is the provider and there is an account.
+    static func setappAICredits(provider: AIProvider, account: (any SetappAIAccountModel)?) -> SetappCreditState? {
+        guard provider == .setappAI, let account else { return nil }
+        return account.creditState
+    }
+
     // MARK: - Wiring (§6.13)
 
     func installGlanceFeatures() {

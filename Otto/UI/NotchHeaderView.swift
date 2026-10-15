@@ -213,7 +213,9 @@ private struct HeaderMenuButton: View {
             Button("Keyboard Shortcuts", systemImage: "keyboard") { viewModel.toggleShortcutSheet() }
                 .keyboardShortcut("/", modifiers: .command)
             Divider()
-            UsageMenuItems(ledger: viewModel.ledger) { viewModel.openUsageDetails() }
+            UsageMenuItems(ledger: viewModel.ledger, setappAICredits: viewModel.setappAICredits) {
+                viewModel.openUsageDetails()
+            }
             Divider()
             Button("Settings…", systemImage: "gearshape") { viewModel.openSettings() }
                 .keyboardShortcut(",", modifiers: .command)

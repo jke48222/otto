@@ -54,7 +54,11 @@ enum CostFormatter {
 
     /// The reply footer: "Opus 5 · ≈0.8¢ · 1 search · 92% cached". "(fallback)" after a server fallback, "≥" for an
     /// interrupted reply, tokens instead of a cost for a model with no list price, and "(demo)" after a demo cost.
+    /// A Setapp AI reply is only "Opus 5 · Setapp AI": Setapp bills it in credits, so there is no dollar figure.
     static func summary(_ answer: AnswerUsage) -> String {
+        if answer.viaSetappAI, let model = answer.servedModel {
+            return modelName(model)
+        }
         var pieces: [String] = []
         if let model = answer.servedModel {
             pieces.append(modelName(model) + (answer.fellBack ? " (fallback)" : ""))
@@ -75,7 +79,8 @@ enum CostFormatter {
         return pieces.joined(separator: " · ")
     }
 
-    /// The reply footer's tooltip: a header, one row per kind of token with its cost, and the total.
+    /// The reply footer's tooltip: a header, one row per kind of token with its cost, and the total. A Setapp AI
+    /// reply has token counts only, and `setappAINote` in place of the total.
     static func tooltip(_ answer: AnswerUsage) -> String {
         let usage = answer.usage
         var header = answer.servedModel.map { modelName($0) + (answer.fellBack ? " (fallback)" : "") } ?? "Usage"
@@ -111,7 +116,9 @@ enum CostFormatter {
             lines.append(line)
         }
 
-        if let total = displayedTotal(answer) {
+        if answer.viaSetappAI {
+            lines.append(setappAINote)
+        } else if let total = displayedTotal(answer) {
             let mark = answer.isPartial ? "≥" : "≈"
             let note: String
             if answer.isDemo {
@@ -128,10 +135,23 @@ enum CostFormatter {
         return lines.joined(separator: "\n")
     }
 
-    /// Short display name for a model id: "Opus 5", "Opus 4.8", "Haiku 4.5". Dated snapshots and the demo suffix
+    /// The tooltip's last line for a Setapp AI reply, in place of a dollar total.
+    static let setappAINote = "Setapp AI bills this reply in credits."
+
+    /// Short display name for a model id: "Opus 5", "Opus 4.8", "Haiku 4.5", and "Opus 5 · Setapp AI" for a reply
+    /// served through Setapp AI ("anthropic/claude-opus-5", `ModelProvenance`). Dated snapshots and the demo suffix
     /// are dropped; an id Otto doesn't recognize is shown cleaned but otherwise as reported.
     static func modelName(_ model: String) -> String {
-        let id = ModelPricing.canonicalID(for: model) ?? ModelPricing.strippingDemoSuffix(model)
+        let (viaSetappAI, baseID) = ModelProvenance.split(ModelPricing.strippingDemoSuffix(model))
+        let name = shortName(baseID)
+        return viaSetappAI ? name + " · Setapp AI" : name
+    }
+
+    // MARK: - Private
+
+    /// `modelName` without the provider.
+    private static func shortName(_ id: String) -> String {
+        let id = ModelPricing.canonicalID(for: id) ?? id
         if let option = ModelOption(rawValue: id) { return option.shortName }
         var parts = id.split(separator: "-").map(String.init)
         guard parts.count >= 3, parts[0] == "claude", let family = parts[1].first, family.isLetter else {
@@ -145,8 +165,6 @@ enum CostFormatter {
         let name = parts[1].prefix(1).uppercased() + parts[1].dropFirst()
         return DisplayText.sanitized(name + " " + version.joined(separator: "."), maxLength: 40)
     }
-
-    // MARK: - Private
 
     /// The answer's cost; for a demo answer, what it would cost at list prices. nil when a model isn't priced.
     private static func displayedTotal(_ answer: AnswerUsage) -> Int64? {

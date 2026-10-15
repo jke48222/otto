@@ -5,7 +5,8 @@
 //  Keeps what each reply of this session cost (for the footers) and per-day, per-model totals (for the
 //  menu and Settings). Only numbers and model ids are stored, never prompts, replies or times finer
 //  than a day. The totals live in `usage-ledger.json` at the root of Otto's data folder, written with
-//  `SecureFile` at most once a second off the main thread; demo replies are never counted.
+//  `SecureFile` at most once a second off the main thread; demo replies are never counted, and neither are Setapp
+//  AI replies, which Setapp bills in credits (their footers still name the model).
 //
 
 import Darwin
@@ -86,10 +87,11 @@ import os
             || Self.isFallback(requestedModel: requestedModel, servedModel: servedModel)
         answers[messageID] = answer
 
-        guard !isDemo else { return }
+        // Setapp AI lines are paid in the member's credits: they stay out of the dollar totals and the reply counts.
+        guard !isDemo, !request.lines.allSatisfy(\.viaSetappAI) else { return }
         let key = dayKey(for: date)
         var bucket = days[key] ?? [:]
-        for line in request.lines where !line.usage.isEmpty || (line.costNanos ?? 0) != 0 {
+        for line in request.lines where !line.viaSetappAI && (!line.usage.isEmpty || (line.costNanos ?? 0) != 0) {
             let model = Self.ledgerModelID(line.model)
             bucket[model] = (bucket[model] ?? UsageTotals()) + UsageTotals(line: line)
         }
@@ -100,7 +102,7 @@ import os
 
     func finishAnswer(messageID: UUID) {
         guard let answer = answers[messageID], let served = answer.servedModel,
-              !answer.isDemo, !finishedAnswers.contains(messageID) else { return }
+              !answer.isDemo, !answer.viaSetappAI, !finishedAnswers.contains(messageID) else { return }
         finishedAnswers.insert(messageID)
         let key = dayKey(for: now())
         let model = Self.ledgerModelID(served)
@@ -244,11 +246,12 @@ import os
             ?? DisplayText.sanitized(ModelPricing.strippingDemoSuffix(model), maxLength: 64)
     }
 
-    /// The server answered with another model than the one Otto asked for (a dated snapshot of it is the same).
+    /// The server answered with another model than the one Otto asked for (a dated snapshot of it is the same, and
+    /// so is the Setapp AI id of it: Otto asks for "claude-opus-5" and the gateway answers "anthropic/claude-opus-5").
     private static func isFallback(requestedModel: String, servedModel: String?) -> Bool {
         guard let servedModel else { return false }
-        let requested = ModelPricing.strippingDemoSuffix(requestedModel)
-        let served = ModelPricing.strippingDemoSuffix(servedModel)
+        let requested = ModelProvenance.split(ModelPricing.strippingDemoSuffix(requestedModel)).baseID
+        let served = ModelProvenance.split(ModelPricing.strippingDemoSuffix(servedModel)).baseID
         return served != requested && !served.hasPrefix(requested + "-")
     }
 

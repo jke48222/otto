@@ -667,7 +667,8 @@ made-up calendar.
 
 Otto is an accessory app (no Dock icon) built with AppKit for the window and event plumbing and SwiftUI
 for everything you see. The source build uses only Apple frameworks. The signed app adds Sparkle for updates,
-and a Setapp build, which isn't offered in 1.1.0, adds the Setapp Framework.
+and a Setapp build, which isn't offered in 1.1.0, adds the Setapp Framework. That build can also answer through
+Setapp AI, Setapp's AI gateway billed in a member's Setapp AI credits, so a member can use Otto without an API key.
 
 ```
 Otto/
@@ -687,7 +688,7 @@ Otto/
 ├── Usage/        pricing, usage ledger, cost labels
 ├── Licensing/    paid build only: the trial, Polar license keys (Gumroad's are off in 1.1.0), Keychain records
 ├── Updates/      Sparkle updates in the paid build, Setapp's updater in the Setapp build
-├── Setapp/       Setapp build only: usage events and release notes
+├── Setapp/       Setapp build only: usage events, release notes and the Setapp AI transport and credits
 ├── UI/           SwiftUI views: notch, dock cards, pages, chat, glance, voice, Settings panes, theme
 └── Debug/        Debug-build tools: snapshot renderer, on-screen self-test, promo stage for the launch media
 OttoiOS/          Otto for iPhone: the chat screen, approvals, Recents, Settings, the Live Activity, notifications, intents

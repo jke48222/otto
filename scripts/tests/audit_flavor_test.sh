@@ -44,6 +44,10 @@ expect_line() {
     if printf '%s\n' "$output" | grep -qE -- "$1"; then pass; else fail "$2: no line matching /$1/"; fi
 }
 
+expect_no_line() {
+    if printf '%s\n' "$output" | grep -qE -- "$1"; then fail "$2: unexpected line matching /$1/"; else pass; fi
+}
+
 # MARK: - Syntax and usage
 
 if bash -n "$audit"; then pass; else fail "bash -n audit_flavor.sh"; fi
@@ -142,8 +146,11 @@ expect_line "^FAIL lipo -archs is 'arm64', not x86_64 arm64$" "a single-architec
 run --flavor source --configuration Debug "$thin_app"
 expect_status 0 "Debug skips the lipo row"
 
-# Setapp: its bundle id and public key.
+# Setapp: its bundle id, public key and Setapp AI client (J22).
 setapp_app=$(make_app setapp com.jalenedusei.otto-setapp "x86_64 arm64" "$plain_source")
+setapp_plist="$setapp_app/Contents/Info.plist"
+plutil -insert OttoSetappAIClientID -string "otto-fixture-setapp-ai-client" "$setapp_plist"
+plutil -insert OttoSetappAIClientSecret -string "otto-fixture-setapp-ai-secret" "$setapp_plist"
 run --flavor setapp "$setapp_app"
 expect_status 1 "a Setapp Release bundle without its public key"
 expect_line '^FAIL Contents/Resources/setappPublicKey\.pem is missing$' "a Setapp Release bundle without its public key"
@@ -157,6 +164,56 @@ expect_status 1 "the source audit of a Setapp bundle"
 expect_line "^FAIL CFBundleIdentifier is 'com\.jalenedusei\.otto-setapp', not com\.jalenedusei\.otto$" \
     "the source audit of a Setapp bundle names the bundle id"
 expect_line '^FAIL Contents/Resources/setappPublicKey\.pem exists$' "the source audit of a Setapp bundle names the key"
+
+# Setapp AI: the OAuth client's keys must be set in Release (Debug builds leave them empty until J22), and their
+# values never appear in the output.
+run --flavor setapp "$setapp_app"
+expect_line '^ok   Info\.plist has OttoSetappAIClientID and OttoSetappAIClientSecret, set$' "a Setapp bundle with its client"
+expect_no_line 'otto-fixture-setapp-ai' "the audit never prints the client's values"
+for unusable in "" "   " '$(OTTO_SETAPP_AI_CLIENT_SECRET)'; do
+    plutil -replace OttoSetappAIClientSecret -string "$unusable" "$setapp_plist"
+    run --flavor setapp "$setapp_app"
+    expect_status 1 "a Setapp Release bundle with the secret '$unusable'"
+    expect_line '^FAIL Info\.plist has no usable value for OttoSetappAIClientSecret \(J22\)$' \
+        "a Setapp Release bundle with the secret '$unusable'"
+    run --flavor setapp --configuration Debug "$setapp_app"
+    expect_status 0 "a Setapp Debug bundle with the secret '$unusable'"
+    expect_line '^ok   Info\.plist has OttoSetappAIClientID and OttoSetappAIClientSecret \(empty in this Debug build\)$' \
+        "a Setapp Debug bundle with the secret '$unusable'"
+done
+plutil -remove OttoSetappAIClientID "$setapp_plist"
+plutil -replace OttoSetappAIClientSecret -string "otto-fixture-setapp-ai-secret" "$setapp_plist"
+run --flavor setapp --configuration Debug "$setapp_app"
+expect_status 1 "a Setapp bundle without the client id key"
+expect_line '^FAIL Info\.plist lacks OttoSetappAIClientID$' "a Setapp bundle without the client id key"
+plutil -insert OttoSetappAIClientID -string "otto-fixture-setapp-ai-client" "$setapp_plist"
+run --flavor source "$setapp_app"
+expect_line '^FAIL Info\.plist has OttoSetappAIClientID OttoSetappAIClientSecret$' \
+    "the source audit of a Setapp bundle names the Setapp AI keys"
+
+# Setapp AI: SetappSDKTransport is required only with --expect-wired, and never in the other flavors. The stand-in
+# exports a Swift type metadata accessor for it (and one named SetappManager for the existing row).
+wired_source='void transport(void) __asm__("_$s4Otto18SetappSDKTransportVMa");
+void transport(void) {}
+void manager(void) __asm__("_$s4Otto13SetappManagerCMa");
+void manager(void) {}
+int main(void) { transport(); manager(); return 0; }'
+run --flavor setapp --expect-wired "$setapp_app"
+expect_status 1 "an unwired Setapp bundle with --expect-wired"
+expect_line "^FAIL symbols don't include SetappSDKTransport$" "--expect-wired checks the Setapp AI transport"
+wired_app=$(make_app wired com.jalenedusei.otto-setapp "x86_64 arm64" "$wired_source")
+plutil -insert OttoSetappAIClientID -string "otto-fixture-setapp-ai-client" "$wired_app/Contents/Info.plist"
+plutil -insert OttoSetappAIClientSecret -string "otto-fixture-setapp-ai-secret" "$wired_app/Contents/Info.plist"
+cp "$repo/scripts/tests/fixtures/commercial/setappPublicKey.pem" "$wired_app/Contents/Resources/"
+run --flavor setapp --expect-wired "$wired_app"
+expect_status 0 "a wired Setapp bundle"
+expect_line '^ok   symbols include SetappSDKTransport$' "a wired Setapp bundle has the Setapp AI transport"
+run --flavor source "$wired_app"
+expect_status 1 "the source audit of a wired Setapp bundle"
+expect_line '^FAIL symbols include SetappSDKTransport$' "the source audit names the Setapp AI transport"
+run --flavor source "$source_app"
+expect_line '^ok   no Setapp AI transport symbols$' "a source bundle has no Setapp AI transport"
+expect_line '^ok   Info\.plist has no Setapp AI keys$' "a source bundle has no Setapp AI keys"
 
 # Paid: the Info.plist keys are always checked; the "present" cells only with --expect-wired.
 paid_app=$(make_app paid com.jalenedusei.otto "x86_64 arm64" "$plain_source")

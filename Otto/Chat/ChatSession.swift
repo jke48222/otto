@@ -739,8 +739,10 @@ import os
         var searchesLeft = ToolLimits.webSearchesPerTurn
         var fetchesLeft = ToolLimits.webFetchesPerTurn
         var webPaused = false
-        /// The server-tool limits of the last fresh request (a pause_turn continuation reuses them).
+        /// The server-tool limits of the last fresh request (an Anthropic pause_turn continuation reuses them).
         var limits = ServerToolLimits()
+        /// The turn paused after pages Otto read on the Mac for Setapp AI (not inside an Anthropic response).
+        var resumesPageReads = false
         /// The turn continues a failed reply (Retry): the executor keeps that reply's per-reply counters.
         var resumesReply = false
     }
@@ -748,8 +750,15 @@ import os
     /// The web search and fetch budget a reply's content leaves, counting its server-tool calls (for a reply this
     /// process no longer has the numbers of).
     static func webBudgetLeft(in content: [JSONValue]) -> (searches: Int, fetches: Int) {
-        let names = content.filter { $0.typeName == "server_tool_use" }.compactMap { $0["name"]?.stringValue }
-        let searches = names.filter { $0 == "web_search" }.count
+        let calls = content.filter { $0.typeName == "server_tool_use" }
+        let names = calls.compactMap { $0["name"]?.stringValue }
+        // A Setapp AI page read came through the gateway's one web tool, so it spent a search as well as a fetch,
+        // the way the live usage counted it. A page Otto read on the Mac for Setapp AI spent only a fetch.
+        let setappPageReads = calls.filter {
+            $0["name"]?.stringValue == "web_fetch" && $0[ProviderBlocks.providerField]?.stringValue == ProviderBlocks.setappAIMarker
+                && !ProviderBlocks.isMacPageRead($0)
+        }.count
+        let searches = names.filter { $0 == "web_search" }.count + setappPageReads
         let fetches = names.filter { $0 == "web_fetch" }.count
         return (max(0, ToolLimits.webSearchesPerTurn - searches), max(0, ToolLimits.webFetchesPerTurn - fetches))
     }
@@ -781,11 +790,18 @@ import os
                 inFlightUsage = nil
                 responseDeliveredEvent = false
                 if !state.resuming {
-                    // A pause_turn continuation resumes that response, so it keeps its server tools and limits.
-                    state.limits = state.webPaused
-                        ? .none
-                        : ServerToolLimits(webSearch: min(5, state.searchesLeft), webFetch: min(5, state.fetchesLeft))
+                    state.limits = Self.freshLimits(state)
+                } else if state.resumesPageReads {
+                    // Setapp AI paused after pages Otto read on the Mac: the next gateway request is a new one, so it
+                    // gets what's left of the reply's budget and the "Safer" pause like a fresh request, and the last
+                    // continuation allowed offers no fetch, so the reply ends with an answer rather than the pause note.
+                    state.limits = Self.freshLimits(state)
+                    if state.pauseContinuations >= Self.maxPauseContinuations {
+                        state.limits = ServerToolLimits(webSearch: state.limits.webSearch, webFetch: 0)
+                    }
                 }
+                // Otherwise an Anthropic pause_turn continuation resumes that response, so it keeps its server tools
+                // and limits.
                 let fullHistory = Self.requestHistory(
                     for: messages,
                     inFlight: assistantID,
@@ -856,9 +872,14 @@ import os
                 case "pause_turn" where state.pauseContinuations < Self.maxPauseContinuations:
                     state.pauseContinuations += 1
                     state.resuming = true
+                    state.resumesPageReads = result.content.contains(where: ProviderBlocks.isMacPageRead)
+                    if state.resumesPageReads {
+                        pauseWebAccessIfNeeded(assistantID, config: config, state: &state)
+                    }
                     continue
                 case "tool_use":
                     state.resuming = false
+                    state.resumesPageReads = false
                     guard try await runToolRound(result, transcript: trustTranscript, assistantID: assistantID,
                                                  config: config, state: &state) else { return }
                     continue
@@ -883,6 +904,36 @@ import os
                 finishTurn(assistantID, outcome: .failed(error))
             }
         }
+    }
+
+    /// The server-tool limits of a fresh request: at most 5 of each per request, what's left of the reply's budget,
+    /// none during the "Safer" web pause.
+    private static func freshLimits(_ state: LoopState) -> ServerToolLimits {
+        state.webPaused
+            ? .none
+            : ServerToolLimits(webSearch: min(5, state.searchesLeft), webFetch: min(5, state.fetchesLeft))
+    }
+
+    /// Before a Setapp AI turn goes on after pages Otto read on the Mac: "Safer" pauses web access for the rest of
+    /// the reply once the chat holds private data and fresh untrusted content, the check a tool round ends with.
+    /// (Anthropic reads pages inside one response, where nothing can pause between them.)
+    private func pauseWebAccessIfNeeded(_ assistantID: UUID, config: TurnConfig, state: inout LoopState) {
+        guard config.webAccess, config.pausesWebAccess, !state.webPaused, let executor else { return }
+        let transcript = Self.requestHistory(
+            for: messages,
+            inFlight: assistantID,
+            resumingInFlight: true,
+            enabledServerTools: nil,
+            clientToolNames: config.clientToolNames,
+            model: config.model,
+            compacting: textOnlyContextIDs
+        )
+        let known = Dictionary(registry.allTools.map { ($0.name, $0) }, uniquingKeysWith: { _, last in last })
+        guard let reason = executor.webPause(after: transcript, tools: config.toolsByName, knownTools: known) else {
+            return
+        }
+        state.webPaused = true
+        appendWebPauseNote(reason, to: assistantID)
     }
 
     /// A response that kept streaming client calls past the reply's limit was cancelled: nothing it asked for runs,
@@ -1155,6 +1206,15 @@ import os
 
         guard let index = messages.lastIndex(where: { $0.id == assistantID }) else { return }
         var message = messages[index]
+
+        switch event {
+        case .toolUseStarted(let id, _), .toolUseReady(let id, _, _, _):
+            // A later response reusing the id of a call an earlier round already ran (a gateway can send any id)
+            // must not reopen that call's row or replace its input; `newClientCallIDs` won't run it again either.
+            if message.toolExchanges.contains(where: { $0.callIDs.contains(id) }) { return }
+        default:
+            break
+        }
 
         switch event {
         case .messageStart(let model):
@@ -1467,7 +1527,7 @@ import os
             return status == 400 || status == 413 || type.map(contentErrorTypes.contains) == true
         case .streamError(let type, _):
             return type.map(contentErrorTypes.contains) == true
-        case .missingAPIKey, .invalidAPIKey, .rateLimited, .overloaded, .network, .decoding:
+        case .missingAPIKey, .invalidAPIKey, .rateLimited, .overloaded, .network, .decoding, .setappAI:
             return false
         }
     }

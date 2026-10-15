@@ -112,11 +112,23 @@ extension NotchViewModel {
     func selectModel(_ model: ModelOption) {
         let wasStreaming = chat.isStreaming
         settings.model = model
+        let text = Self.modelSwitchNotice(model, wasStreaming: wasStreaming, provider: settings.effectiveProvider,
+                                          pdfTooLong: AttachmentBudget.problem(with: attachments, model: model) != nil)
+        showNotice(text, symbol: "sparkles")
+    }
+
+    /// Pure. "Switched to Sonnet 5", or "Haiku 4.5 from your next message" while a reply streams, then what the model
+    /// can't do here: search on Setapp AI (Haiku 4.5), or read a PDF that's attached.
+    static func modelSwitchNotice(_ model: ModelOption, wasStreaming: Bool, provider: AIProvider,
+                                  pdfTooLong: Bool) -> String {
         var text = wasStreaming ? "\(model.shortName) from your next message" : "Switched to \(model.shortName)"
-        if AttachmentBudget.problem(with: attachments, model: model) != nil {
+        if provider == .setappAI && !model.supportsSetappAIWebSearch {
+            text += " · no web search"
+        }
+        if pdfTooLong {
             text += " · a PDF here is too long for \(model.shortName)"
         }
-        showNotice(text, symbol: "sparkles")
+        return text
     }
 
     // MARK: - Reading position (§6.6)

@@ -4,8 +4,8 @@
 //
 //  The Settings window: every pane builds and lays out with inert services, the shortcut recorder's commit,
 //  reject, clear and reset paths, the panel's Space and level behavior (openExternal lowers it until it is key
-//  again; show never activates Otto), deep links to a tab and section, and that only the ★ rows ask macOS
-//  for a permission.
+//  again; show never activates Otto), deep links to a tab and section, that only the ★ rows ask macOS
+//  for a permission, and Models with a Setapp AI account (provider choice, credits, captions).
 //
 
 import AppKit
@@ -461,6 +461,182 @@ final class SettingsPanesTests: XCTestCase {
         XCTAssertEqual(SettingsModelsPane.subtitle(for: .opus5), "Most capable · $5 / $25 per million tokens")
         XCTAssertEqual(SettingsModelsPane.perMillion(2_500), "$2.50")
         XCTAssertEqual(SettingsModelsPane.perMillion(1_000), "$1")
+    }
+
+    // MARK: - Setapp AI
+
+    func testProviderRowsReadAsSpecified() {
+        XCTAssertEqual(Set(SettingsProviderSection.providers), Set(AIProvider.allCases))
+        XCTAssertEqual(SettingsProviderSection.providers.first, .setappAI, "Setapp AI is listed first")
+        XCTAssertEqual(SettingsProviderSection.subtitle(for: .setappAI, isConfigured: true),
+                       "Uses your Setapp AI credits. No API key needed.")
+        XCTAssertEqual(SettingsProviderSection.subtitle(for: .anthropic, isConfigured: true),
+                       "Billed to your Anthropic account, per token.")
+        XCTAssertEqual(SettingsProviderSection.subtitle(for: .setappAI, isConfigured: false), "Not set up in this build.")
+        XCTAssertEqual(SettingsProviderSection.subtitle(for: .anthropic, isConfigured: false),
+                       "Billed to your Anthropic account, per token.")
+        XCTAssertFalse(SettingsProviderSection.isSelectable(.setappAI, isConfigured: false))
+        XCTAssertTrue(SettingsProviderSection.isSelectable(.setappAI, isConfigured: true))
+        XCTAssertTrue(SettingsProviderSection.isSelectable(.anthropic, isConfigured: false))
+    }
+
+    func testSetappAICopyIsTheSpecifiedCopy() {
+        XCTAssertEqual(SettingsProviderSection.gatewayCaption, "Your messages go to Setapp's AI gateway, run by MacPaw, "
+                       + "which passes them to Anthropic. Setapp counts credits for each reply.")
+        XCTAssertEqual(SettingsProviderSection.webSearchCaption, "Web search and reading pages work with Opus 5 and "
+                       + "Sonnet 5. Otto opens each page on your Mac, without your cookies, so Claude can read an attached "
+                       + "browser tab.")
+        XCTAssertEqual(SettingsModelsPane.setappAIUsageNote, "Setapp AI replies use credits and aren't counted here.")
+        XCTAssertEqual(SetappAICreditsRow.loadingText, "Loading your credits…")
+        XCTAssertEqual(SettingsModelsPane.showCostSubtitle(usesSetappAI: true),
+                       "Replies on your own key show an estimate when you point at them.")
+        XCTAssertEqual(SettingsModelsPane.showCostSubtitle(usesSetappAI: false),
+                       "An estimate appears next to a reply when you point at it.")
+    }
+
+    func testTheWebToggleSaysHaikuDoesntSearchOrReadPagesOnSetappAI() {
+        XCTAssertEqual(SettingsModelsPane.setappAIWebSearchSubtitle(for: .haiku45),
+                       "No web search on Haiku 4.5 with Setapp AI")
+        XCTAssertEqual(SettingsModelsPane.setappAIWebSearchSubtitle(for: .haiku45),
+                       HeaderModelMenu.webSearchCaption(model: .haiku45, provider: .setappAI),
+                       "Settings and the header menu say the same")
+        for model in [ModelOption.opus5, .sonnet5] {
+            XCTAssertEqual(SettingsModelsPane.setappAIWebSearchSubtitle(for: model), "Let Claude look things up and read pages.")
+            XCTAssertEqual(SettingsModelsPane.setappAIWebSearchSubtitle(for: model), SettingsModelsPane.webAccessSubtitle,
+                           "on Setapp AI the toggle says what it says on the user's own key")
+            // The caption's claim: Otto offers its web fetch on these models through Setapp AI, and not on Haiku.
+            let request = MessagesRequest(model: model, system: "", messages: [], maxTokens: 1, effort: .low, webAccess: true)
+            XCTAssertTrue(SetappWebFetch.isOffered(request, options: .standard), model.rawValue)
+        }
+        let haiku = MessagesRequest(model: .haiku45, system: "", messages: [], maxTokens: 1, effort: .low, webAccess: true)
+        XCTAssertFalse(SetappWebFetch.isOffered(haiku, options: .standard))
+        // "without your cookies": the session Otto reads pages with stores and sends none.
+        let configuration = WebPageReader.makeConfiguration(timeout: WebPageReader.timeout, protocolClasses: nil)
+        XCTAssertNil(configuration.httpCookieStorage)
+        XCTAssertFalse(configuration.httpShouldSetCookies)
+    }
+
+    func testTheAnthropicInvoiceShowsOnlyWithOwnKeyUsage() {
+        XCTAssertTrue(SettingsModelsPane.showsAnthropicBilling(usesSetappAI: false, hasOwnKeyUsage: false),
+                      "on the user's own key, always")
+        XCTAssertTrue(SettingsModelsPane.showsAnthropicBilling(usesSetappAI: false, hasOwnKeyUsage: true))
+        XCTAssertFalse(SettingsModelsPane.showsAnthropicBilling(usesSetappAI: true, hasOwnKeyUsage: false),
+                       "on Setapp AI with nothing billed to a key, there is no invoice to point at")
+        XCTAssertTrue(SettingsModelsPane.showsAnthropicBilling(usesSetappAI: true, hasOwnKeyUsage: true))
+
+        let ledger = UsageLedger(fileURL: nil)
+        XCTAssertFalse(SettingsModelsPane.hasOwnKeyUsage(ledger))
+        ledger.debugSeed(answers: [], days: ["2025-01-02": [
+            "claude-haiku-4-5": UsageTotals(usage: TokenUsage(input: 10, output: 5), costNanos: 35_000, replies: 1),
+        ]])
+        XCTAssertTrue(SettingsModelsPane.hasOwnKeyUsage(ledger), "any day counts, however long ago")
+    }
+
+    func testTheModelsPaneDecidesFromTheAccountNotTheBuild() {
+        let account = StaticSetappAIAccount()
+        settings.aiProvider = .setappAI
+        XCTAssertTrue(SettingsModelsPane.usesSetappAI(settings: settings, account: account))
+        XCTAssertFalse(SettingsModelsPane.usesSetappAI(settings: settings, account: nil),
+                       "no account: the pane as today, whatever is stored")
+        XCTAssertFalse(SettingsModelsPane.usesSetappAI(settings: settings, account: StaticSetappAIAccount(isConfigured: false)),
+                       "not set up in this build: the user's own key answers, so its field shows")
+        settings.aiProvider = .anthropic
+        XCTAssertFalse(SettingsModelsPane.usesSetappAI(settings: settings, account: account))
+
+        // The balance and the gateway captions show only while Setapp AI is chosen and set up.
+        XCTAssertTrue(SettingsProviderSection.showsCredits(provider: .setappAI, isConfigured: true))
+        XCTAssertFalse(SettingsProviderSection.showsCredits(provider: .setappAI, isConfigured: false))
+        XCTAssertFalse(SettingsProviderSection.showsCredits(provider: .anthropic, isConfigured: true))
+
+        // Not set up: the radio group checks the user's own key, which is what answers.
+        XCTAssertEqual(SettingsProviderSection.shownProvider(stored: .setappAI, isConfigured: false), .anthropic)
+        XCTAssertEqual(SettingsProviderSection.shownProvider(stored: .setappAI, isConfigured: true), .setappAI)
+        XCTAssertEqual(SettingsProviderSection.shownProvider(stored: .anthropic, isConfigured: false), .anthropic)
+    }
+
+    func testTheCreditsRowOffersGetCreditsWhenLoadedOrFailed() {
+        XCTAssertEqual(SetappAICreditsRow.controls(for: .idle), [])
+        XCTAssertEqual(SetappAICreditsRow.controls(for: .loading), [])
+        XCTAssertEqual(SetappAICreditsRow.controls(for: .loaded(SetappCreditBalance(available: 1, granted: 6_000))),
+                       [.getCredits])
+        XCTAssertEqual(SetappAICreditsRow.controls(for: .failed("Couldn't load your credits.")), [.tryAgain, .getCredits],
+                       "a member who can't see the balance may still know they're out")
+    }
+
+    func testGetCreditsOpensSetappsPageThroughSettingsOwnOpener() async {
+        let link = URL(string: "https://store.setapp.com/ai/credits?app=otto")!
+        let account = StaticSetappAIAccount(creditState: .loaded(SetappCreditBalance(available: 0, granted: 6_000)),
+                                            purchaseLink: link)
+        var opened: [URL] = []
+        await SetappAICreditsRow.openPurchasePage(of: account, with: SettingsExternalOpener { opened.append($0) })
+        XCTAssertEqual(opened, [link])
+        XCTAssertEqual(account.calls, ["purchaseURL"])
+        let fallback = await StaticSetappAIAccount().purchaseURL()
+        XCTAssertEqual(fallback, SetappCreditFormatter.fallbackPurchaseURL,
+                       "the static account hands over Setapp's AI page unless told otherwise")
+    }
+
+    func testSettingsBecomingKeyRefreshesTheBalanceOnSetappAI() {
+        for (provider, isConfigured, expected) in [(AIProvider.setappAI, true, ["refresh(force)"]),
+                                                    (.anthropic, true, []), (.setappAI, false, [])] {
+            let account = StaticSetappAIAccount(isConfigured: isConfigured)
+            settings.aiProvider = provider
+            var services = SettingsServices.inert(settings: settings)
+            services.setappAI = account
+            let controller = SettingsWindowController(settings: settings, services: services)
+            controller.preferences = defaults
+            controller.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification))
+            XCTAssertEqual(account.calls, expected, "\(provider) configured: \(isConfigured)")
+        }
+    }
+
+    func testModelRowsDropTheirListPricesOnSetappAI() {
+        XCTAssertEqual(SettingsModelsPane.subtitle(for: .opus5, showsPrice: false), "Most capable")
+        XCTAssertEqual(SettingsModelsPane.subtitle(for: .haiku45, showsPrice: false), "Fastest")
+        XCTAssertEqual(SettingsModelsPane.subtitle(for: .sonnet5, showsPrice: true),
+                       "Fast and capable · $2 / $10 per million tokens")
+    }
+
+    func testTheModelsPaneLaysOutWithASetappAIAccountInEveryState() async throws {
+        let states: [SetappCreditState] = [
+            .idle, .loading,
+            .loaded(SetappCreditBalance(available: 1_234, granted: 6_000)),
+            .loaded(SetappCreditBalance(available: 0, granted: 0)),
+            .failed("Couldn't load your credits. Make sure Setapp is open."),
+        ]
+        for provider in AIProvider.allCases {
+            for state in states {
+                settings.aiProvider = provider
+                var services = SettingsServices.inert(settings: settings)
+                services.setappAI = StaticSetappAIAccount(creditState: state)
+                try await layOut(SettingsView(settings: settings, tab: .models, services: services), tab: .models)
+            }
+        }
+        settings.aiProvider = .setappAI
+        var services = SettingsServices.inert(settings: settings)
+        services.setappAI = StaticSetappAIAccount(isConfigured: false)
+        try await layOut(SettingsView(settings: settings, tab: .models, services: services), tab: .models)
+    }
+
+    func testTheBalanceLoadsWhenTheSetappAIPaneAppears() async throws {
+        let account = StaticSetappAIAccount()
+        settings.aiProvider = .setappAI
+        var services = SettingsServices.inert(settings: settings)
+        services.setappAI = account
+        try await layOut(SettingsView(settings: settings, tab: .models, services: services), tab: .models)
+        XCTAssertEqual(account.calls.first, "refresh(force)", "past the SDK's cache: credits may have moved since")
+        XCTAssertFalse(account.calls.contains("refresh"))
+        XCTAssertFalse(account.calls.contains("purchaseURL"))
+
+        // Nothing to load on the user's own key, or in a build where Setapp AI isn't set up.
+        for (provider, isConfigured) in [(AIProvider.anthropic, true), (.setappAI, false)] {
+            let idle = StaticSetappAIAccount(isConfigured: isConfigured)
+            settings.aiProvider = provider
+            var services = SettingsServices.inert(settings: settings)
+            services.setappAI = idle
+            try await layOut(SettingsView(settings: settings, tab: .models, services: services), tab: .models)
+            XCTAssertEqual(idle.calls, [], "\(provider) configured: \(isConfigured)")
+        }
     }
 
     // MARK: - Helpers

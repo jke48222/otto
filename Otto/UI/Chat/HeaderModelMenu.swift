@@ -48,6 +48,14 @@ struct HeaderModelMenu: View {
         model.supportsEffort ? nil : "\(model.shortName) always answers quickly"
     }
 
+    static let setappAINoWebSearchCaption = "No web search on Haiku 4.5 with Setapp AI"
+
+    /// Pure. Why the web search toggle is off, or nil while the model can search: Setapp AI's gateway searches with
+    /// Opus 5 and Sonnet 5 only.
+    static func webSearchCaption(model: ModelOption, provider: AIProvider) -> String? {
+        provider == .setappAI && !model.supportsSetappAIWebSearch ? setappAINoWebSearchCaption : nil
+    }
+
     static func accessibilityLabel(for model: ModelOption) -> String {
         "Model: \(model.shortName). Change model, response style and web search."
     }
@@ -73,7 +81,7 @@ struct HeaderModelMenu: View {
                     Text(caption)
                 }
             }
-            Toggle("Web search", isOn: $settings.webAccess)
+            webSearchItem
             Divider()
             Button("Settings…", action: onOpenSettings)
                 .keyboardShortcut(",", modifiers: .command)
@@ -106,6 +114,19 @@ struct HeaderModelMenu: View {
         }
         .help("Model, response style and web search")
         .accessibilityLabel(Self.accessibilityLabel(for: settings.model))
+    }
+
+    /// Off and dimmed, with the reason under it, while the model can't search; the stored choice is kept for the
+    /// models that can.
+    @ViewBuilder
+    private var webSearchItem: some View {
+        if let caption = Self.webSearchCaption(model: settings.model, provider: settings.effectiveProvider) {
+            Toggle("Web search", isOn: .constant(false))
+                .disabled(true)
+            Text(caption)
+        } else {
+            Toggle("Web search", isOn: $settings.webAccess)
+        }
     }
 
     @ViewBuilder

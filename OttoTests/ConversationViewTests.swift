@@ -85,6 +85,49 @@ final class ConversationViewTests: XCTestCase {
         XCTAssertEqual(MessageView.apiKeySettingsTab, .models)
     }
 
+    func testAMissingOrRejectedKeyOffersOpenSettings() {
+        for copy in [LLMError.missingAPIKey.errorDescription, LLMError.invalidAPIKey.errorDescription] {
+            let state = MessageState.failed(copy ?? "")
+            XCTAssertEqual(MessageView.failureAction(for: state, hasSetappAIAccount: false), .openSettings)
+            XCTAssertEqual(MessageView.failureAction(for: state, hasSetappAIAccount: true), .openSettings)
+        }
+    }
+
+    func testSetappAIFailuresOfferTheirFix() {
+        func action(_ failure: SetappAIFailure, account: Bool = true) -> MessageView.FailureAction? {
+            MessageView.failureAction(for: .failed(LLMError.setappAI(failure).errorDescription ?? ""),
+                                      hasSetappAIAccount: account)
+        }
+        XCTAssertEqual(action(.insufficientCredits), .getCredits)
+        for option in ModelOption.allCases {
+            XCTAssertEqual(action(.modelNotAllowed(option.shortName)), .openSettings, option.rawValue)
+        }
+        XCTAssertEqual(action(.notConfigured), .openSettings)
+        // Setapp unreachable: Retry is the fix, so nothing goes ahead of it.
+        XCTAssertNil(action(.unavailable))
+        // Get Credits needs an account to buy them for; without one Retry stays the only button.
+        XCTAssertNil(action(.insufficientCredits, account: false))
+        XCTAssertEqual(action(.notConfigured, account: false), .openSettings)
+    }
+
+    func testGetCreditsComesWithAQuieterOpenSettings() {
+        // "Get more, or switch to your own Anthropic key in Settings": both fixes get a button.
+        XCTAssertEqual(MessageView.FailureAction.getCredits.companion, .openSettings)
+        XCTAssertNil(MessageView.FailureAction.openSettings.companion)
+        XCTAssertTrue(SetappAIFailure.insufficientCredits.copy.contains("Settings"))
+    }
+
+    func testOtherRepliesOfferNothingAheadOfRetry() {
+        XCTAssertNil(MessageView.failureAction(for: .failed(LLMError.overloaded.errorDescription ?? ""),
+                                               hasSetappAIAccount: true))
+        XCTAssertNil(MessageView.failureAction(for: .failed("Otto couldn't reach Claude."), hasSetappAIAccount: true))
+        // The copy only counts on a failed reply.
+        XCTAssertNil(MessageView.failureAction(for: .refused(SetappAIFailure.insufficientCredits.copy),
+                                               hasSetappAIAccount: true))
+        XCTAssertNil(MessageView.failureAction(for: .complete, hasSetappAIAccount: true))
+        XCTAssertNil(MessageView.failureAction(for: .cancelled, hasSetappAIAccount: true))
+    }
+
     func testATooLongConversationOffersNewChatInsteadOfRetry() {
         XCTAssertTrue(MessageView.offersNewChat(for: .failed(ChatSession.conversationTooLongDescription)))
         XCTAssertFalse(MessageView.offersNewChat(for: .failed("Otto couldn't reach Claude.")))

@@ -251,6 +251,10 @@ enum URLGuard {
         if bytes[0] == 0x00, bytes[1] == 0x64, bytes[2] == 0xFF, bytes[3] == 0x9B, bytes[4..<12].allSatisfy({ $0 == 0 }) {
             return isBlockedIPv4(embeddedIPv4)
         }
+        // Local-use NAT64 64:ff9b:1::/48 (RFC 8215): a translator on the user's own network, so none of it is public.
+        if bytes[0] == 0x00, bytes[1] == 0x64, bytes[2] == 0xFF, bytes[3] == 0x9B, bytes[4] == 0x00, bytes[5] == 0x01 {
+            return true
+        }
         // 6to4 2002::/16 carries an IPv4 address in bytes 2–5.
         if bytes[0] == 0x20, bytes[1] == 0x02 {
             let sixToFour = UInt32(bytes[2]) << 24 | UInt32(bytes[3]) << 16 | UInt32(bytes[4]) << 8 | UInt32(bytes[5])

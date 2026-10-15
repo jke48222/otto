@@ -381,6 +381,17 @@ final class UsageComponentsTests: XCTestCase {
         XCTAssertNil(AnswerCostLabel.text(answer: nil, fallbackModel: ""))
     }
 
+    func testCostLabelOfASetappAIReplyNamesSetappAIWithoutACost() throws {
+        let setapp = answer(model: ModelOption.sonnet5.setappAIModelID, searches: 1)
+        XCTAssertEqual(AnswerCostLabel.text(answer: setapp, fallbackModel: nil), "Sonnet 5 · Setapp AI")
+        let tooltip = try XCTUnwrap(AnswerCostLabel.tooltip(answer: setapp))
+        XCTAssertFalse(tooltip.contains("$"), tooltip)
+        XCTAssertTrue(tooltip.hasSuffix(CostFormatter.setappAINote), tooltip)
+        // Before the ledger knows the reply, the message's own Setapp AI id reads the same way.
+        XCTAssertEqual(AnswerCostLabel.text(answer: nil, fallbackModel: ModelOption.opus5.setappAIModelID),
+                       "Opus 5 · Setapp AI")
+    }
+
     func testUsageMenuRows() {
         let today = UsageTotals(costNanos: 120_000_000, replies: 8)
         XCTAssertEqual(UsageMenuItems.todayTitle(today), "Today  ≈12¢ · 8 replies")
@@ -390,5 +401,15 @@ final class UsageComponentsTests: XCTestCase {
         XCTAssertEqual(UsageMenuItems.monthTitle(UsageTotals(unpricedTokens: 12_400, replies: 2)),
                        "This month  12.4k tokens")
         XCTAssertEqual(UsageMenuItems.detailsTitle, "Usage Details…")
+    }
+
+    func testUsageMenuShowsCreditsInPlaceOfDollarsOnSetappAI() {
+        XCTAssertEqual(UsageMenuItems.setappAITitle(.loaded(SetappCreditBalance(available: 1_234.9, granted: 6_000))),
+                       "1,234 of 6,000 credits left")
+        XCTAssertEqual(UsageMenuItems.setappAITitle(.loaded(SetappCreditBalance(available: 40, granted: 0))),
+                       "40 credits left")
+        for state in [SetappCreditState.idle, .loading, .failed("Couldn't load your credits.")] {
+            XCTAssertEqual(UsageMenuItems.setappAITitle(state), "Setapp AI uses credits, not dollars", "\(state)")
+        }
     }
 }

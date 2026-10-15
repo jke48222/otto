@@ -186,10 +186,14 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
 
     func windowDidBecomeKey(_ notification: Notification) {
         // Back from System Settings, Finder or the browser: float again, and re-read the permission rows
-        // (the user may have just flipped a switch).
+        // (the user may have just flipped a switch) and, on Setapp AI, the balance past the SDK's cache (they may
+        // have just bought credits, or spent some in the notch).
         panel?.isFloatingPanel = true
         let permissions = services.permissions
         Task { await permissions.refreshAll() }
+        if SettingsModelsPane.usesSetappAI(settings: settings, account: services.setappAI) {
+            services.setappAI?.refreshCredits(force: true)
+        }
     }
 
     func windowWillClose(_ notification: Notification) {

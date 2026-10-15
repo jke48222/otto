@@ -5,7 +5,7 @@
 #
 # Tests scripts/check_commercial_config.sh (SPEC-v2 §14.3, §14.17.2) against the fixtures in
 # scripts/tests/fixtures/commercial: the placeholder file, a valid configuration, each malformed value, the Setapp
-# public key and bundle id, and usage errors. Every run starts from an empty environment, so nothing from the
+# public key, Setapp AI's OAuth client (J22) and bundle id, and usage errors. Every run starts from an empty environment, so nothing from the
 # calling shell or an Xcode build leaks in.
 #
 #   bash scripts/tests/check_commercial_config_test.sh
@@ -216,9 +216,13 @@ run SRCROOT="$scratch/root" CONFIGURATION=Release PRODUCT_BUNDLE_IDENTIFIER=com.
 expect_status 1 "Setapp key without a PEM block"
 expect_line 'setappPublicKey\.pem has no -----BEGIN PUBLIC KEY----- block \(J14\)' "Setapp key without a PEM block"
 
+# Setapp AI's OAuth client (J22) as a build would pass it; the secret must never reach the output.
+fixture_secret="s3cr3t-fixture-value-9f2c"
+setapp_ai_env=(OTTO_SETAPP_AI_CLIENT_ID=otto-fixture-setapp-ai-client "OTTO_SETAPP_AI_CLIENT_SECRET=$fixture_secret")
+
 make_root "$fixtures/setappPublicKey.pem"
-run SRCROOT="$scratch/root" CONFIGURATION=Release PRODUCT_BUNDLE_IDENTIFIER=com.jalenedusei.otto-setapp -- \
-    --flavor setapp --from-build-env --report
+run SRCROOT="$scratch/root" CONFIGURATION=Release PRODUCT_BUNDLE_IDENTIFIER=com.jalenedusei.otto-setapp \
+    "${setapp_ai_env[@]}" -- --flavor setapp --from-build-env --report
 expect_status 0 "Setapp key valid"
 expect_line '^ok setappPublicKey\.pem$' "Setapp key valid"
 expect_line '^ok PRODUCT_BUNDLE_IDENTIFIER$' "Setapp bundle id valid"
@@ -231,10 +235,77 @@ for configuration in Debug Release; do
         "wrong Setapp bundle id is an error in $configuration"
 done
 
-# The Setapp flavor checks only its key and bundle id: the paid build's settings don't apply to it.
+# The Setapp flavor checks its key, its Setapp AI client and its bundle id: the paid build's settings don't apply.
 run SRCROOT="$scratch/root" CONFIGURATION=Release PRODUCT_BUNDLE_IDENTIFIER=com.jalenedusei.otto-setapp -- \
     --flavor setapp --from-build-env
-expect_no_line 'OTTO_' "Setapp ignores the paid build's settings"
+expect_no_line 'OTTO_(SITE|SUPPORT|POLAR|GUMROAD|SPARKLE)' "Setapp ignores the paid build's settings"
+
+# MARK: - Setapp AI's OAuth client (J22)
+
+make_root "$fixtures/setappPublicKey.pem"
+setapp_env=(SRCROOT="$scratch/root" PRODUCT_BUNDLE_IDENTIFIER=com.jalenedusei.otto-setapp)
+
+run "${setapp_env[@]}" CONFIGURATION=Release -- --flavor setapp --from-build-env
+expect_status 1 "Setapp AI client missing, Release"
+expect_line '^error: Config/Local\.xcconfig: OTTO_SETAPP_AI_CLIENT_ID is not set \(J22\)\. Setapp developer account → Apps → OAuth Clients → Add new, .+ See SPEC-v2 §14\.20\.$' \
+    "Setapp AI client id missing, Release"
+expect_line '^error: Config/Local\.xcconfig: OTTO_SETAPP_AI_CLIENT_SECRET is not set \(J22\)\.' "Setapp AI secret missing, Release"
+expect_line_count '^error: ' 2 "Setapp AI client missing, Release: the two J22 settings are the only problems"
+
+run "${setapp_env[@]}" CONFIGURATION=Debug -- --flavor setapp --from-build-env
+expect_status 0 "Setapp AI client missing, Debug"
+expect_line_count '^warning: Config/Local\.xcconfig: OTTO_SETAPP_AI_CLIENT_(ID|SECRET) is not set \(J22\)\.' 2 \
+    "Setapp AI client missing, Debug warns once per setting"
+expect_no_line '^error: ' "Setapp AI client missing, Debug: no errors"
+
+run "${setapp_env[@]}" CONFIGURATION=Release "${setapp_ai_env[@]}" -- --flavor setapp --from-build-env --report
+expect_status 0 "Setapp AI client valid"
+expect_line '^ok OTTO_SETAPP_AI_CLIENT_ID$' "Setapp AI client id valid"
+expect_line '^ok OTTO_SETAPP_AI_CLIENT_SECRET$' "Setapp AI secret valid"
+expect_no_line "$fixture_secret" "a valid secret is never printed"
+
+# bad_secret VALUE PHRASE [LEAK]: the secret set to VALUE is reported with PHRASE, and LEAK (part of VALUE) never
+# appears in the output.
+bad_secret() {
+    run "${setapp_env[@]}" CONFIGURATION=Release OTTO_SETAPP_AI_CLIENT_ID=otto-fixture-setapp-ai-client \
+        "OTTO_SETAPP_AI_CLIENT_SECRET=$1" -- --flavor setapp --from-build-env
+    expect_status 1 "Setapp AI secret '$1'"
+    expect_line "^error: Config/Local\.xcconfig: OTTO_SETAPP_AI_CLIENT_SECRET $2 \(J22\)\." "Setapp AI secret '$1'"
+    expect_line_count '^error: ' 1 "Setapp AI secret '$1' is the only problem"
+    if [ -n "${3:-}" ]; then expect_no_line "$3" "Setapp AI secret '$1' is never printed"; fi
+}
+bad_secret "" "is not set"
+bad_secret "   " "is not set"
+bad_secret "JALEN_MUST_SET_SETAPP_AI_CLIENT_SECRET" "is still a placeholder" "JALEN_MUST_SET_SETAPP"
+bad_secret 's3cr3t-$(OTTO_OTHER_SETTING)' "refers to another build setting; write the value itself" "OTTO_OTHER_SETTING"
+bad_secret "s3cr3t fixture value" "contains spaces" "s3cr3t"
+bad_secret "your-oauth-secret" "is the example value from Setapp's documentation" "your-oauth-secret"
+bad_secret "YOUR_SECRET_HERE" "is the example value from Setapp's documentation" "YOUR_SECRET_HERE"
+
+# --xcconfig mode: FILE first, then the Local.xcconfig beside it (Config/Setapp.xcconfig includes Local.xcconfig,
+# through Signing.xcconfig, before Commercial.xcconfig, so a value in the commercial file wins).
+mkdir -p "$scratch/xc"
+grep -v '^OTTO_SETAPP_AI_' "$fixtures/valid.xcconfig" > "$scratch/xc/Commercial.xcconfig"
+run -- --flavor setapp --configuration Debug --xcconfig "$scratch/xc/Commercial.xcconfig"
+expect_line_count '^warning: Config/Local\.xcconfig: OTTO_SETAPP_AI_CLIENT_(ID|SECRET) is not set \(J22\)\.' 2 \
+    "--xcconfig without a Local.xcconfig"
+
+printf '%s\n' '// Local signing and secrets.' 'CODE_SIGN_IDENTITY = Apple Development' \
+    'OTTO_SETAPP_AI_CLIENT_ID = otto-fixture-setapp-ai-client // the client id' \
+    "OTTO_SETAPP_AI_CLIENT_SECRET = $fixture_secret" > "$scratch/xc/Local.xcconfig"
+run -- --flavor setapp --configuration Debug --xcconfig "$scratch/xc/Commercial.xcconfig" --report
+expect_line '^ok OTTO_SETAPP_AI_CLIENT_ID$' "--xcconfig reads the client id from Local.xcconfig"
+expect_line '^ok OTTO_SETAPP_AI_CLIENT_SECRET$' "--xcconfig reads the secret from Local.xcconfig"
+expect_no_line 'J22' "--xcconfig with a Local.xcconfig: no J22 problem"
+expect_no_line "$fixture_secret" "--xcconfig never prints the secret"
+
+printf '%s\n' 'OTTO_SETAPP_AI_CLIENT_ID = two words' >> "$scratch/xc/Commercial.xcconfig"
+run -- --flavor setapp --configuration Debug --xcconfig "$scratch/xc/Commercial.xcconfig"
+expect_line '^warning: Config/Local\.xcconfig: OTTO_SETAPP_AI_CLIENT_ID contains spaces \(J22\)\.' \
+    "--xcconfig: the commercial file's value wins over Local.xcconfig"
+
+run -- --flavor setapp --configuration Release --xcconfig "$fixtures/valid.xcconfig"
+expect_no_line 'J22' "the fixture configuration carries a fixture Setapp AI client"
 
 # --xcconfig mode reads the repository's own key.
 run -- --flavor setapp --configuration Release --xcconfig "$fixtures/valid.xcconfig"

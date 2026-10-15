@@ -6,7 +6,9 @@
 # Checks the commercial configuration of the paid and Setapp builds (SPEC-v2 §14.3). Every value Jalen still has to
 # supply is a named placeholder: in a Release build it is an error that stops the build before anything compiles; in
 # a Debug build it is a warning. The lines use Xcode's "error:" / "warning:" format, so they land in the issue
-# navigator, and each names its open item (§14.20) and where the value comes from.
+# navigator, and each names its open item (§14.20) and where the value comes from. The Setapp AI OAuth client (J22)
+# has no committed placeholder: it lives in the git-ignored Config/Local.xcconfig, so a missing value reads "is not
+# set", and no line ever prints it.
 #
 #   check_commercial_config.sh --flavor paid|setapp [--configuration Debug|Release]
 #                              (--from-build-env | --xcconfig FILE) [--report]
@@ -14,7 +16,9 @@
 #   --from-build-env  the pre-build phase of both flavor targets: reads CONFIGURATION, PRODUCT_BUNDLE_IDENTIFIER,
 #                     SRCROOT and the OTTO_* settings from the environment Xcode gives run-script phases
 #   --xcconfig FILE   release.sh preflight, CI and tests: reads KEY = value and KEY[config=<C>] = value lines of FILE
-#                     (the [config=] line wins for its configuration), strips // comments, then removes $()
+#                     (the [config=] line wins for its configuration), strips // comments, then removes $(); the
+#                     Setapp AI client (J22) falls back to the Local.xcconfig next to FILE, as Config/Setapp.xcconfig
+#                     includes Config/Local.xcconfig before Config/Commercial.xcconfig
 #   --report          also prints "ok <KEY>" for every setting that passes
 #
 # Exit: 0 valid (Debug may have warnings), 1 any problem in Release (or a wrong Setapp bundle id), 2 usage error.
@@ -119,13 +123,15 @@ if [ "$configuration" = "Release" ]; then severity="error"; else severity="warni
 problems=0
 errors=0
 
-# The value of a setting for this configuration; exit status 3 when the setting isn't defined at all.
+# setting KEY [FILE]: the value of a setting for this configuration; exit status 3 when the setting isn't defined at
+# all. FILE (xcconfig mode only) defaults to the --xcconfig file.
 setting() {
-    local key=$1
+    local key=$1 file=${2:-$xcconfig}
     if [ "$mode" = "env" ]; then
         printenv "$key" || return 3
         return 0
     fi
+    [ -f "$file" ] || return 3
     awk -v key="$key" -v conf="$configuration" '
         {
             line = $0
@@ -147,7 +153,7 @@ setting() {
             if (has_conditional) print conditional
             else if (has_plain) print plain
             else exit 3
-        }' "$xcconfig"
+        }' "$file"
 }
 
 # report_problem SEVERITY WHERE KEY PROBLEM ITEM HINT
@@ -263,6 +269,53 @@ check_setapp_key() {
     fi
 }
 
+# J22: Setapp AI's OAuth client. The secret ships inside the app (Setapp's design for macOS: the SDK trades it, with
+# the member's Setapp sign-in, for a token), but it stays out of git, so both values live in the git-ignored
+# Config/Local.xcconfig. The lines name the setting and never print its value.
+check_setapp_ai_client() {
+    local where="Config/Local.xcconfig"
+    local hint="Setapp developer account → Apps → OAuth Clients → Add new, one client for Otto's Setapp build; View shows its id and secret. Put both in Config/Local.xcconfig, which git ignores (write // inside a value as /\$()/)."
+    local key value status phrase
+    for key in OTTO_SETAPP_AI_CLIENT_ID OTTO_SETAPP_AI_CLIENT_SECRET; do
+        value=$(setting "$key")
+        status=$?
+        if [ $status -eq 3 ] && [ "$mode" = "file" ]; then
+            value=$(setting "$key" "$(dirname "$xcconfig")/Local.xcconfig")
+            status=$?
+        fi
+        value=$(printf '%s' "$value" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+        if [ $status -ne 0 ] || [ -z "$value" ]; then
+            phrase="is not set"
+        elif [[ "$value" == *JALEN_MUST_SET* ]]; then
+            phrase="is still a placeholder"
+        else
+            phrase=$(valid_oauth_value "$value")
+        fi
+        if [ -n "$phrase" ]; then
+            report_problem "$severity" "$where" "$key" "$phrase" "J22" "$hint"
+        else
+            ok "$key"
+        fi
+    done
+}
+
+# The rules SetappAIOAuthClient applies at runtime (Otto/Setapp/SetappSDKTransport.swift).
+valid_oauth_value() {
+    local lowered
+    lowered=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+    if [[ $1 == *'$('* ]]; then
+        echo "refers to another build setting; write the value itself"
+    elif [[ $1 =~ [[:space:]] ]]; then
+        echo "contains spaces"
+    else
+        case "$lowered" in
+            your-oauth-client-id | your-oauth-secret | your_client_id_here | your_secret_here)
+                echo "is the example value from Setapp's documentation"
+                ;;
+        esac
+    fi
+}
+
 check_setapp_bundle_id() {
     # Only Xcode provides the bundle id, so only the build phase checks it; it is an error in every configuration.
     [ "$mode" = "env" ] || return 0
@@ -298,6 +351,7 @@ if [ "$flavor" = "paid" ]; then
     check OTTO_SPARKLE_PUBLIC_ED_KEY "J6" "Run Sparkle's generate_keys on Jalen's Mac and paste the public key it prints." valid_sparkle_key
 else
     check_setapp_key
+    check_setapp_ai_client
     check_setapp_bundle_id
 fi
 

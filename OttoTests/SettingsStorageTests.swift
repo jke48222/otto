@@ -89,6 +89,61 @@ final class SettingsStorageTests: XCTestCase {
         XCTAssertEqual(written, [], "init must not write every default back")
     }
 
+    // MARK: Provider (§19 Setapp AI)
+
+    func testSomeoneWithAKeyStartsOnItEvenWhereSetappAIIsTheDefault() {
+        // A fresh Setapp install starts on Setapp AI; a direct-build customer moving over keeps the key they have.
+        XCTAssertEqual(AppSettings.initialProvider(stored: nil, hasAPIKey: false, defaultProvider: .setappAI), .setappAI)
+        XCTAssertEqual(AppSettings.initialProvider(stored: nil, hasAPIKey: true, defaultProvider: .setappAI), .anthropic)
+        XCTAssertEqual(AppSettings.initialProvider(stored: "teleport", hasAPIKey: true, defaultProvider: .setappAI),
+                       .anthropic, "an unreadable value counts as unset")
+        // A stored choice always wins.
+        XCTAssertEqual(AppSettings.initialProvider(stored: "setappAI", hasAPIKey: true, defaultProvider: .setappAI),
+                       .setappAI)
+        XCTAssertEqual(AppSettings.initialProvider(stored: "anthropic", hasAPIKey: false, defaultProvider: .setappAI),
+                       .anthropic)
+        // Builds without Setapp AI start on the key either way.
+        XCTAssertEqual(AppSettings.initialProvider(stored: nil, hasAPIKey: false, defaultProvider: .anthropic), .anthropic)
+    }
+
+    func testAnEnvironmentKeyChoosesTheKeyWithoutWritingAnything() {
+        let withKey = AppSettings(defaults: defaults, usesKeychain: false,
+                                  environment: ["ANTHROPIC_API_KEY": " sk-ant-test-env \n"])
+        XCTAssertEqual(withKey.resolvedAPIKey, "sk-ant-test-env")
+        XCTAssertEqual(withKey.aiProvider, .anthropic)
+        XCTAssertNil(defaults.object(forKey: "otto.aiProvider"), "the choice stays the user's to make in Settings")
+
+        let blank = AppSettings(defaults: defaults, usesKeychain: false, environment: ["ANTHROPIC_API_KEY": "  "])
+        XCTAssertNil(blank.resolvedAPIKey)
+        XCTAssertEqual(blank.aiProvider, AIProvider.defaultProvider)
+
+        defaults.set("setappAI", forKey: "otto.aiProvider")
+        let stored = AppSettings(defaults: defaults, usesKeychain: false,
+                                 environment: ["ANTHROPIC_API_KEY": "sk-ant-test-env"])
+        XCTAssertEqual(stored.aiProvider, .setappAI, "a stored choice wins over a key")
+    }
+
+    func testSetappAIWithoutItsOAuthClientAnswersOnTheKey() {
+        let setappBuild: [AIProvider] = [.setappAI, .anthropic]
+        XCTAssertEqual(AppSettings.effectiveProvider(chosen: .setappAI, isSetappAIConfigured: true,
+                                                     available: setappBuild), .setappAI)
+        XCTAssertEqual(AppSettings.effectiveProvider(chosen: .setappAI, isSetappAIConfigured: false,
+                                                     available: setappBuild), .anthropic)
+        XCTAssertEqual(AppSettings.effectiveProvider(chosen: .anthropic, isSetappAIConfigured: false,
+                                                     available: setappBuild), .anthropic)
+        XCTAssertEqual(AppSettings.effectiveProvider(chosen: .setappAI, isSetappAIConfigured: true,
+                                                     available: [.anthropic]), .anthropic, "a build without it")
+
+        let settings = AppSettings(defaults: defaults, usesKeychain: false, environment: [:])
+        XCTAssertTrue(settings.isSetappAIConfigured, "true until the Setapp build's composition says otherwise")
+        settings.aiProvider = .setappAI
+        settings.isSetappAIConfigured = false
+        XCTAssertEqual(settings.effectiveProvider, .anthropic)
+        XCTAssertFalse(settings.isProviderReady, "no key, and Setapp AI can't answer")
+        let written = defaults.dictionaryRepresentation().keys.filter { $0.hasPrefix("otto.") && $0 != "otto.launchAtLogin" }
+        XCTAssertEqual(written, ["otto.aiProvider"], "whether Setapp AI is set up is never persisted")
+    }
+
     // MARK: Persist and reload
 
     func testEveryGroupPreferencePersistsUnderItsKeyAndReloads() throws {
