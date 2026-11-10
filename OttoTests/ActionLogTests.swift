@@ -50,7 +50,10 @@ final class ActionLogTests: XCTestCase {
     }
 
     func testFileLogWritesPrivateFilesAndReloads() async throws {
-        let log = ActionLog(directory: logsFolder)
+        // The entries carry fixed dates, so the log gets a fixed clock too. On the real clock they
+        // passed the default 30-day maxAge on 2 October 2026 and were pruned as they were written.
+        let now = Date(timeIntervalSinceReferenceDate: 810_000_120)
+        let log = ActionLog(directory: logsFolder, now: { now })
         let first = entry(from: Date(timeIntervalSinceReferenceDate: 810_000_000))
         await log.append(first)
         await log.append(entry("open_url", from: Date(timeIntervalSinceReferenceDate: 810_000_060)))
@@ -65,7 +68,7 @@ final class ActionLogTests: XCTestCase {
         XCTAssertEqual(lines.count, 2)
         XCTAssertTrue(lines[0].contains("\"tool\":\"run_shortcut\""))
 
-        let reloaded = ActionLog(directory: logsFolder)
+        let reloaded = ActionLog(directory: logsFolder, now: { now })
         let recent = await reloaded.recent(limit: 5)
         XCTAssertEqual(recent.map(\.tool), ["open_url", "run_shortcut"])
         XCTAssertEqual(recent.last, first)
